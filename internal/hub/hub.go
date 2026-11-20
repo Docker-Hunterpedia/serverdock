@@ -43,7 +43,8 @@ const (
 	// in-process session.
 	MaxServerStreams = 32
 	// MaxRemoteStreams bounds the streams the hub has open to one remote agent
-	// session: 16 sessions x 8 x 256 KiB (yamux's minimum window) = 32 MiB worst case.
+	// session: 16 sessions x 8 x 256 KiB (yamux's minimum window) = 32 MiB steady-state worst case;
+	// it holds because an agent-opened stream ends the session (see docs/security.md row 8).
 	MaxRemoteStreams = 8
 	// AuthFailuresPerMinute and AuthFailureBurst shape the per-IP limiter on
 	// failed token checks.

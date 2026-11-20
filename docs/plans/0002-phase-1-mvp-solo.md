@@ -803,7 +803,7 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
   - a per-session semaphore of server-opened streams, **8 for a remote session and 32 for the local one** (when full, calls error);
   - **`MaxStreamWindowSize` stays at yamux's 256 KiB minimum** (yamux rejects 64 KiB; decision 2026-11-20);
   - explicit open and close timeouts.
-  - Worst-case pinned memory: 16 sessions × 8 streams × 256 KiB = **32 MiB**, reachable only by authenticated agents; recorded in `docs/security.md`.
+  - Worst-case pinned memory: 16 sessions × 8 streams × 256 KiB = **32 MiB** steady state, reachable only by authenticated agents. It holds because an agent-opened stream ends the session; closed hub streams can linger up to 10 s, and a violating agent pins about 2 MiB per connection briefly. Recorded in `docs/security.md` row 8.
 - **yamux, agent side:** 32 concurrent streams.
 - **Op request lines** stay capped at `MaxOpLine`.
 - **HTTP servers:**
