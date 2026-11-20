@@ -159,6 +159,16 @@ Full step plan in **Part B**.
   - the registry denies by default and audits;
   - schedules the threat-model review.
 - **Reviewers:** `reviewer`, `security`, `systems`, `footprint`.
+- **Status: M1 DONE (2026-11-20), pending the CI bench numbers and merge.** Commits on `phase-1-m1`:
+  - step 1 CI: `69363c7`; step 2 Phase 0 carry-over: `188c9df`; step 3 goleak: `ad9e8af`, `bcebd8c`;
+  - step 4 Docker deadlines and negotiation: `478e4d0`, review fixes `c013c68`;
+  - step 5 agent TLS listener, hub CA (ADR 0009): `3be6009`, review fixes `e449a0e`, `97983a4`;
+  - step 6 limits: `ef6ad27`, stream cap `02a1de6`;
+  - step 7 migrations and read-only open: `83e8836`; step 8 audit log: `487e6f3`; step 9 action registry: `b72f508`;
+  - security and review fixes: `55b4807` (G1, G12, G3 part), `5b02b20` (nested redaction), `4c7b823` (backups, locks, denied rows), `04870af` (self-marshalling secrets), `5a6ebc3` (private lock file);
+  - step 10 record and close: this commit (the `v2` fixture, `docs/security.md`, `docs/architecture.md`, `docs/roadmap.md`, Dependabot).
+  - Deviations from this plan are listed in the commit messages and in `docs/security.md` "M1 close-out status": the yamux window stays at 256 KiB (streams capped instead), the `update.json` backup skip moved to M7b, and `Op.Validate` relies on the op table.
+  - CI bench numbers (S2, S4): _to be filled in after the push._
 - **Exit evidence:**
   - open items #1/#2/#4/#5/#6 resolved in `docs/security.md`, with links to the tests;
   - CI bench green (S2, S4);

@@ -19,7 +19,7 @@ Goal: decisions locked and a skeleton that proves the footprint.
 - [x] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job ran in PR #1 ([run 44715013248](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44715013248))
 - [x] **Spike 1:** Go binary with embedded Caddy + SQLite + empty SPA → measure idle RSS — implemented and tested; only a local informational measurement so far ([05-phase0-measurements.md](research/05-phase0-measurements.md))
 - [x] **Spike 2:** agent dials out over WebSocket with yamux, survives reconnects, streams container logs on demand — implemented and tested (plain `ws://`; TLS/mTLS come in Phase 1/2)
-- [ ] `docs/security.md` threat model reviewed by the `security` agent — **carried over to Phase 1 as the M2 entry gate**; run during M1 after step 6, so the review covers the agent listener and limits (plan 0002)
+- [x] `docs/security.md` threat model reviewed by the `security` agent — carried over to Phase 1 and done in M1 after step 6 (Draft 2, 2026-11-20); its M1 findings (G1, G3 part, G12, and the review fixes) are built and recorded under "M1 close-out status" in [security.md](security.md)
 
 **Exit:** both spikes measured under budget (≤ 80 MB single node). If not, revisit ADR 0004 (Caddy container fallback).
 **Result (2026-11-20):** met in CI: single node 47.6 MB, remote node 44.1 MB, 0% idle CPU ([research/05](research/05-phase0-measurements.md)). The real 1 GB VPS run is deferred to the Phase 1 exit.
@@ -30,7 +30,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 
 - [ ] Install script with pre-flight checks, setup token, admin + TOTP, first-run onboarding
 - [ ] Signed releases (cosign); `serverdock bench` published with each release
-- [ ] Action registry (typed ops, risk tiers, audit log) — the base for everything else
+- [x] Action registry (typed ops, risk tiers, audit log) — the base for everything else — built in M1 (`internal/actions`, `internal/audit`, `internal/redact`; policy-table, tamper-detection and sentinel tests; no HTTP route yet, those arrive in M2)
 - [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked)
 - [ ] GitHub push-to-deploy + generic webhook, commit status
 - [ ] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys
@@ -44,7 +44,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Per-app CPU/RAM limits; stop-first strategy for stateful apps; connection draining on blue-green
 - [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables
 - [ ] "Update available" notice for app images
-- [ ] IPv6 support; Docker API version negotiation + supported Docker range + Docker RC in CI
+- [ ] IPv6 support; Docker API version negotiation + supported Docker range + Docker RC in CI *(negotiation and the Engine 25+ range are built (M1 step 4); IPv6 and the RC CI matrix are not)*
 - [ ] Token expiry; `serverdock uninstall`, `start/stop/status`, `doctor --bundle`
 - [ ] Docs site with first-deploy guide; in-UI docs links and empty-state hints
 - [ ] Self-update with candidate + rollback; ServerDock state backup + rehearse restore

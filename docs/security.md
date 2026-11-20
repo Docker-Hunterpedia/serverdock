@@ -2,7 +2,7 @@
 
 *Draft 2, reviewed by `security` 2026-11-20 (M2 entry gate). AI-written; not confirmed by the maintainer. Draft 1 (Phase 0) is in git history.*
 
-This draft matches the code on branch `phase-1-m1` after M1 step 6 (limits). M1 steps 7–10 (migrations, audit log, action registry, record and close) are **not built yet**; rows that depend on them say "planned (M1 step N)". It also adds the M2 surface from [plan 0002](plans/0002-phase-1-mvp-solo.md) (M2 section) so that plan 0003 and ADR 0010 start from a reviewed model.
+This draft matches the code on branch `phase-1-m1` at the close of M1 (steps 1–10: CI gate, goroutine-leak tests, Docker deadlines, the agent TLS listener, limits, migrations, the audit log, the action registry, and this record). See [M1 close-out status](#m1-close-out-status). It also adds the M2 surface from [plan 0002](plans/0002-phase-1-mvp-solo.md) (M2 section) so that plan 0003 and ADR 0010 start from a reviewed model.
 
 **Status words** used in every table:
 - **Built** means it is in the code on `phase-1-m1`, with tests.
@@ -22,7 +22,7 @@ This draft matches the code on branch `phase-1-m1` after M1 step 6 (limits). M1 
 | 6 | **Bearer secrets (M2)** | Session cookies, API tokens (`sd_…`) and the setup token (`DATA/setup-token`, 0600). Only hashes are stored. | Each one is an authenticated identity while it is valid. |
 | 7 | **Secretbox master key (M2)** | `DATA/keys/master.key` (0600) | It decrypts every app secret (from M3b), S3 key and notification secret. |
 | 8 | **Panel TLS key (M2)** | Path not named yet (Gap G10) | With it, an attacker can impersonate the panel on the IP. |
-| 9 | **Integrity of history** | The hash-chained audit log (planned, M1 step 8) and deploy records | Used for incident reconstruction. Tail truncation can only be detected against an older head hash (state backups, M7b). |
+| 9 | **Integrity of history** | The hash-chained audit log (built, M1 step 8) and deploy records | Used for incident reconstruction. Tail truncation can only be detected against an older head hash (state backups, M7b). |
 | 10 | **Release and CI integrity** | GitHub repository, branch protection, required checks, and the release signing key (Q5, M7a) | A tampered release, or a tampered self-update, gives root on every install. |
 | 11 | **App data and state backups** | Docker volumes, `DATA/backups/`, S3 | These hold user data. State backups also contain items 3, 4 and 7, encrypted (M7b). |
 
@@ -137,10 +137,10 @@ This draft matches the code on branch `phase-1-m1` after M1 step 6 (limits). M1 
 | Session theft through XSS | `HttpOnly`; strict hash-based CSP; no inline script; SPA output-encodes (Svelte default) | M2 | Planned |
 | Long-lived sessions | Idle and absolute expiry; revoked on password or 2FA change; `admin reset` revokes all | M2 | Planned. **Gap G7**: pruning (Coolify #7394: 58 GB sessions table). |
 | Session fixation and the half-logged-in state between password and TOTP | — | — | **Gap G4** |
-| Token used for dangerous actions | Tokens are refused for destructive and sensitive actions (Q8 default); `SessionOnly` for token, auth and user management; tokens created or rotated only from a session with fresh 2FA, audited; expiry required (default 90 days); scopes `read` < `write` < `admin` | `internal/actions` (M1 step 9), M2 | Planned (M1 step 9, M2) |
-| Dangerous actions with a stolen session | Fresh 2FA (5 min) for sensitive and destructive actions; destructive actions also need `Confirm == Target` | M1 step 9, M2 | Planned |
-| An HTTP or MCP request reaching the `system` actor | One-time `SystemInvoker` handle; import test; route-matrix assertion | M1 step 9, M2, M9 | Planned |
-| Secrets in logs, errors or audit rows | `internal/redact`; sentinel tests | M1 step 8, M2, M3b | Planned. **Gap G9**: M2 sentinels named for the setup token only. |
+| Token used for dangerous actions | Tokens are refused for destructive and sensitive actions (Q8 default); `SessionOnly` for token, auth and user management; tokens created or rotated only from a session with fresh 2FA, audited; expiry required (default 90 days); scopes `read` < `write` < `admin` | `internal/actions` (M1 step 9), M2 | **Built (M1 step 9):** the policy table, `SessionOnly`, and tokens refused for destructive and sensitive actions, each cell tested. **Planned (M2):** token minting rules and expiry. |
+| Dangerous actions with a stolen session | Fresh 2FA (5 min) for sensitive and destructive actions; destructive actions also need `Confirm == Target` | `internal/actions` (M1 step 9), M2 | **Built (M1 step 9)** in the registry (`Confirm == Target`, a fresh-2FA window checked against the registry clock). **Planned (M2):** the 2FA flow that sets the window. |
+| An HTTP or MCP request reaching the `system` actor | One-time `SystemInvoker` handle; import test; route-matrix assertion | `internal/actions` (M1 step 9), M2, M9 | **Built (M1 step 9):** the one-time `SystemInvoker`, `InvokeAs` as the only way to set the executor, and the import test. **Planned (M2, M9):** the route-matrix assertion. |
+| Secrets in logs, errors or audit rows | `internal/redact`; sentinel tests | `internal/redact`, `internal/audit` (M1 steps 8–9), M2, M3b | **Built (M1):** redaction reaches secrets in slices, maps, pointers and embedded structs; a type that marshals itself cannot hide a secret (Register refuses it); sentinel tests search the database bytes and the logs. **Planned (M2, M3b):** the M2 secrets and the secret store. **Gap G9**: M2 sentinels named for the setup token only. |
 
 ### A7 — Hostile web page in the admin's browser
 
@@ -242,9 +242,9 @@ These are found in this review and not yet covered by plan 0002. Each has a seve
 | G9 | Low | **Sentinel coverage for M2 secrets.** Only the setup token is named in the plan's tests. | M2 | Add sentinels for the password, TOTP seed, recovery codes, API token, session id, and the raw `Authorization` and `Cookie` headers. Search the DB bytes, server logs and Caddy logs for them. |
 | G10 | Low | **Panel TLS key path** is not named, and not in the `doctor --bundle` exclusions or the state-backup contents. | M2 (ADR 0010), M7a, M7b | Put it under `DATA/pki/panel/` or `DATA/keys/` (0600). Add it to the M7a bundle exclusions and the M7b archive list. Decide whether a lost key is simply regenerated, which changes the fingerprint the console prints. |
 | G11 | Low | **Agent token in the environment.** `SD_AGENT_TOKEN` in a systemd `Environment=` line is readable by any local user through `systemctl show`. The agent has no file option. | M7a | Add `--token-file` to `server` and `agent` (refuse files readable by group or others), and use `LoadCredential=` or a 0600 `EnvironmentFile=` in the unit. Never use an `Environment=` line. |
-| G12 | Low | **The agent follows HTTP redirects** during the WebSocket handshake (default `CheckRedirect`, `client.go:200`). That can move the bearer token past `ValidateURL`. It is not exploitable today, because only a holder of a pinned-CA leaf can answer. | M1 (one line) or Phase 2 | Set `CheckRedirect` to return `http.ErrUseLastResponse`, and add a test. |
+| G12 | Low (**built in M1**) | **The agent follows HTTP redirects** during the WebSocket handshake (default `CheckRedirect`, `client.go:200`). That can move the bearer token past `ValidateURL`. It is not exploitable today, because only a holder of a pinned-CA leaf can answer. | M1 (one line) or Phase 2 | **Built in M1 (`55b4807`):** the client refuses every redirect, with a test that the target is never contacted. |
 | G13 | Low | **Log content is attacker-controlled.** Any container, or an agent-token holder, controls it. The debug route streams raw bytes to the operator's terminal; M8 renders logs in the browser; M9 sends them to MCP clients. | M8, M9 | Render logs as text only (no HTML injection). Neutralise control characters except a whitelisted SGR subset, or use xterm.js with OSC/DCS disabled. Cap line length. In MCP output, frame logs as untrusted data and run them through redaction. Optionally strip escape sequences from the debug route. |
-| G14 | Low | **Supply-chain drift.** Rule 10 and the roadmap say cosign + SBOM + provenance + Dependabot. Plan M7a / ADR 0016 use a stdlib-ECDSA signed manifest and don't mention SBOM or provenance. There is no `.github/dependabot.yml`, so pinned Action SHAs and Go modules never get update PRs. | Dependabot: M1 step 10. SBOM and provenance: M7a (ADR 0016). | Add a Dependabot config for `github-actions` and `gomod` (weekly, grouped). In ADR 0016, either add an SBOM (`go version -m`, or CycloneDX at build time) and GitHub artifact attestations, or record that they are dropped. Align the roadmap wording. |
+| G14 | Low | **Supply-chain drift.** Rule 10 and the roadmap say cosign + SBOM + provenance + Dependabot. Plan M7a / ADR 0016 use a stdlib-ECDSA signed manifest and don't mention SBOM or provenance. There is no `.github/dependabot.yml`, so pinned Action SHAs and Go modules never get update PRs. | Dependabot: **built in M1 step 10** (`.github/dependabot.yml`, weekly and grouped for `github-actions` and `gomod`). SBOM and provenance: M7a (ADR 0016). | Add a Dependabot config for `github-actions` and `gomod` (weekly, grouped). In ADR 0016, either add an SBOM (`go version -m`, or CycloneDX at build time) and GitHub artifact attestations, or record that they are dropped. Align the roadmap wording. |
 | G15 | Low | **The IP panel stays open after M4.** Once a panel domain has a valid certificate, the self-signed IP panel still works, which teaches users to click through warnings. | M4 | Once the domain certificate is valid, redirect IP access to the domain by default (break-glass opt-in to keep the IP panel). Add HSTS on the domain. Re-check `Host` and `Origin` lists (G8). |
 
 ## Accepted risks (Phase 1)
@@ -279,7 +279,7 @@ These were found in the systems/security review of plan 0001 (2026-11-20). The s
 | 1 | The agent bearer token travelled over plain `ws://` on `:80`. | 1 | **Closed (M1 step 5).** Agents connect over `wss` (TLS 1.3) to the hub's own listener (`--agent-listen`, off by default), pinning the hub CA by fingerprint ([ADR 0009](decisions/0009-agent-channel-tls.md)). `ws://` is loopback-only. The token is 43+ characters or generated into a 0600 file. |
 | 2 | Caddy reloads dropped every remote agent after `stream_close_delay`. | 1 | **Closed (M1 step 5).** `/agent/connect` is served by the hub's own listener. The Caddy route and `StreamCloseDelay` are gone, and `:80/agent/connect` answers 404. A test shows that a Caddy reload keeps the session. |
 | 3 | The shared token gives no per-agent identity: any token holder can claim any non-reserved id and replace that agent. Enrollment + mTLS must bind the id to the credential (ADR 0003). The local agent's id is already reserved. | 2 | **Open. Phase 1 mitigation:** remote agents are experimental, off by default and read-only. Only `logs` is `RemoteOK`, an op missing from the table is refused, and this is enforced in the hub for every op. The token is at least 43 characters with at least 16 distinct ones (a generated token is 256-bit; a hand-made one is only screened). A failed-auth limiter bounds guessing. A token holder can still replace another agent's session and read logs. |
-| 4 | No session cap, per-IP limit, per-agent stream cap or auth-failure rate limit. | 1 | **Closed (M1 step 6)**, except the yamux window bound below. **Follow-up G1 (High):** a token holder can still exhaust hub memory with yamux pings; fix before M1 closes. The limits in place: 16 sessions (`--agent-max-sessions`, 503 before the upgrade); 4 TCP connections per IP and 128 in total on the agent listener (closed in `Accept`, before any TLS work); 5 auth failures/min per IP with burst 10 (429, checked before the token compare); 8 hub-opened streams per remote session (32 for the local one); an agent-opened stream ends that agent's session (yamux would keep an accepted-then-closed stream buffered for up to its close timeout); 32 streams per agent, with one error frame when over; header 64 KiB, body 1 MiB, 10 s header timeout (5 s, no keep-alives, on the agent listener); Caddy public server header and idle limits. **Remaining risk:** an attacker with many source IPs (4 connections each, 128 in total) can hold the agent listener's slots with slow handshakes, each dropped after 5 s and replaced by a new one. This blocks legitimate agents while it lasts. It needs a botnet and doesn't touch the control plane or the panel (separate listeners). |
+| 4 | No session cap, per-IP limit, per-agent stream cap or auth-failure rate limit. | 1 | **Closed (M1 step 6)**, except the yamux window bound below. The ping-flood follow-up (G1, High) is **built** too: `agent.GuardPings` ends a session past 4 pings/s. The limits in place: 16 sessions (`--agent-max-sessions`, 503 before the upgrade); 4 TCP connections per IP and 128 in total on the agent listener (closed in `Accept`, before any TLS work); 5 auth failures/min per IP with burst 10 (429, checked before the token compare); 8 hub-opened streams per remote session (32 for the local one); an agent-opened stream ends that agent's session (yamux would keep an accepted-then-closed stream buffered for up to its close timeout); 32 streams per agent, with one error frame when over; header 64 KiB, body 1 MiB, 10 s header timeout (5 s, no keep-alives, on the agent listener); Caddy public server header and idle limits. **Remaining risk:** an attacker with many source IPs (4 connections each, 128 in total) can hold the agent listener's slots with slow handshakes, each dropped after 5 s and replaced by a new one. This blocks legitimate agents while it lasts. It needs a botnet and doesn't touch the control plane or the panel (separate listeners). |
 | 5 | Non-streaming Docker API calls (inspect) had no timeout. | 1 | **Closed (M1 step 4).** Per-call deadlines: 30 s, and `stop?t=N` gets N + 15 s. Log follow is bounded by its context only. API negotiation refuses Docker older than Engine 25 (API 1.44). |
 | 6 | No goroutine-leak tests. | 1 | **Closed (M1 step 3).** goleak runs in the hub, agent, api and cmd/serverdock test mains (and dockerapi). |
 | 7 | The bench mounts `docker.sock` into the agent container (root-equivalent); keep it confined to the bench. | ongoing | Open. |
@@ -287,9 +287,32 @@ These were found in the systems/security review of plan 0001 (2026-11-20). The s
 
 ## Unattended destructive actions
 
-These are destructive actions that the `SystemInvoker` may run (`System != ""`). Plan 0002 M1 step 9 adds a CI check that every such action is listed here with its reason, for `security` to review.
+These are destructive actions that the `SystemInvoker` may run (`System != ""`). `TestEveryUnattendedDestructiveActionIsListedInTheThreatModel` (in `internal/actions`) fails when a destructive action with a `System` reason is not listed here by name, in backticks, with its reason, for `security` to review.
 
 *None yet.*
+
+## M1 close-out status
+
+Recorded at the end of M1 (2026-11-20). Evidence is the tests named in [plan 0002](plans/0002-phase-1-mvp-solo.md) step by step and the commits in its M1 section.
+
+**Built in M1** (each with tests, `go test -race ./...` green):
+- CI: the fail-closed `bench-gate`, the docs-only reuse rule (pathspec allowlist), CODEOWNERS and Dependabot.
+- goroutine-leak tests in every package that starts goroutines.
+- Docker: per-call deadlines, API negotiation, Engine 25+ required.
+- The agent channel (ADR 0009): its own TLS 1.3 listener, a pinned hub CA, a role marker, lazy renewal, token rules, read-only remote agents (`RemoteOK`), the per-session stream caps, the agent-opened-stream rule, and the yamux ping guard (G1).
+- Limits: per-IP auth-failure limiter before the token compare, session cap, per-IP connection caps in `Accept`, header and body limits; limiters never evict a blocked key (G3, M1 part).
+- The debug socket (0600 in a 0700 directory) replaces the TCP debug listener.
+- Store: forward-only migrations with a pre-migrate backup, foreign-key-safe table rebuilds, the one-server lock (a 0600 file), and a read-only open that works next to a live server as another user.
+- The audit log: a hash chain with boot ids, `audit verify`, redacted rows, rate-limited denied rows.
+- The action registry: risk tiers, the per-actor policy table, the one-time `SystemInvoker`, and the three built-in read actions. No HTTP route reaches it yet.
+
+**Still open, with an owner:**
+- Open item #3 (no per-agent identity) and #7 (bench mounts `docker.sock`): Phase 2 and ongoing.
+- G2, G4–G11, G13 and the rest of G3 (per-account TOTP back-off, a per-/48 bucket): M2 or later, as the gap table says.
+- Not detectable by design: truncating the tail of the audit log, or someone who can write the file rebuilding the whole chain. Compare the head hash and row count (logged at start, returned by `system.info`) with an older copy; M7b stores them in state backups.
+- A denied-row window dropped while its table is full of in-progress windows loses its "suppressed" count. That needs thousands of distinct actor+action pairs denied inside one minute.
+- The `update.json` skip of the pre-migrate backup is M7b, written together with the file.
+- A local user who can already read the service user's files can do far more than anything here; the 0600 lock file and the 0700 debug directory only close the cheap local-denial cases.
 
 ## Debug access
 

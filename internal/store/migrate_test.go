@@ -641,3 +641,81 @@ func TestStartingServerWaitsOutAReadOnlyProbe(t *testing.T) {
 	}
 	s2.Close()
 }
+
+func copyFixture(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, fileName), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// testdata/v2.db is a database as the end of M1 leaves it (migrations 0001 and
+// 0002, an audit chain, a meta row). It must keep opening with the real
+// migration list: editing an applied migration changes its checksum and fails here.
+func TestV2FixtureOpensAndMigrates(t *testing.T) {
+	dir := copyFixture(t, "v2.db")
+	// 1. Nothing pending: opens as is, no backup, data intact, checksums match.
+	s, err := openWithT(t, dir, Options{})
+	if err != nil {
+		t.Fatalf("the v2 fixture no longer opens with the builtin migrations: %v", err)
+	}
+	if got := versions(t, s.R); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("versions %v", got)
+	}
+	var n int
+	s.R.QueryRow(`SELECT count(*) FROM audit_log`).Scan(&n)
+	if n != 5 {
+		t.Fatalf("audit rows %d", n)
+	}
+	var v string
+	if err := s.R.QueryRow(`SELECT value FROM meta WHERE key='fixture'`).Scan(&v); err != nil || v != "v2" {
+		t.Fatalf("meta fixture row: %q %v", v, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, backupDir)); err == nil {
+		t.Error("a backup was taken with nothing to migrate")
+	}
+	s.Close()
+
+	// 2. A future migration 3 runs on top: a verified backup of v2 first, rows kept.
+	next := Migration{3, "0003_next", "CREATE TABLE next_feature (x INTEGER) STRICT; INSERT INTO next_feature VALUES (1);"}
+	s, err = openWithT(t, dir, Options{Migrations: append(append([]Migration{}, builtin...), next)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := versions(t, s.R); len(got) != 3 {
+		t.Fatalf("versions after migrating %v", got)
+	}
+	s.R.QueryRow(`SELECT count(*) FROM audit_log`).Scan(&n)
+	if n != 5 {
+		t.Errorf("audit rows after migrating: %d", n)
+	}
+	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*-v0002-v0003.db"))
+	if len(bs) != 1 {
+		t.Fatalf("backups %v", bs)
+	}
+	if err := quickCheck(ctx, bs[0]); err != nil {
+		t.Errorf("backup quick_check: %v", err)
+	}
+	// The v2 fixture's append-only triggers survived the upgrade.
+	if _, err := s.W.Exec(`DELETE FROM audit_log WHERE id = 1`); err == nil {
+		t.Error("audit_log lost its append-only trigger")
+	}
+}
+
+func TestV2FixtureReadOnlyReportsItsSchema(t *testing.T) {
+	dir := copyFixture(t, "v2.db")
+	ro, err := OpenReadOnly(dir, ReadOnlyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	if ro.Schema != "v2" {
+		t.Errorf("schema %q", ro.Schema)
+	}
+}
