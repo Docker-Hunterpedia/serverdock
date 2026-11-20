@@ -154,6 +154,18 @@ run "force-push (not ancestor) -> full diff" false "docs-only against" EVENT=pul
 echo "ci.yml success" >"$GATE_DIR/$C"
 run "force-push after Go change -> full diff" true "bench-relevant" EVENT=pull_request ACTION=synchronize BEFORE="$F" AFTER="$C" BASE="$BASE" SHA="$C"
 
+# Odd names must never read as docs-only (git quotes them in --name-only).
+nl='
+'
+tab=$(printf '\t')
+for name in 'cmd/ü.go' 'bench/a"b' "bench/tab${tab}x" "cmd/nl${nl}x" 'cmd/ü' go.work vendor/x tool.s docs/x.go; do
+	P=$(commit "$name" odd)
+	echo "ci.yml success" >"$GATE_DIR/$P"
+	sync "odd path $(printf '%s' "$name" | tr '\t\n' '??') (increment)" true "bench-relevant" "$C" "$P"
+	run "odd path $(printf '%s' "$name" | tr '\t\n' '??') (vs base)" true "bench-relevant" EVENT=pull_request ACTION=opened BASE="$BASE" SHA="$P"
+	git reset -q --hard "$C"
+done
+
 # a missing before
 MISSING=1111111111111111111111111111111111111111
 run "missing before -> full diff" true "bench-relevant" EVENT=pull_request ACTION=synchronize BEFORE="$MISSING" AFTER="$C" BASE="$BASE" SHA="$C"

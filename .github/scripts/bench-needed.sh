@@ -17,7 +17,6 @@
 # the base. Check runs from other apps or workflows are never consulted.
 set -u
 
-BENCH_RE='(\.go$|^go\.mod$|^go\.sum$|^bench/|^web/|^\.github/workflows/|^\.github/scripts/)'
 ZERO=0000000000000000000000000000000000000000
 OUT=${GITHUB_OUTPUT:-/dev/stdout}
 
@@ -30,16 +29,26 @@ has_commit() {
 	[ -n "$1" ] && [ "$1" != "$ZERO" ] && git cat-file -e "$1^{commit}" 2>/dev/null
 }
 
+# docs_only succeeds only when EVERY path changed between $1 and $2 is under
+# docs/, ends in .md, or is .github/CODEOWNERS, and no .go file changed anywhere
+# (docs/ may hold Go code that `go vet ./...` compiles). It uses git pathspecs
+# and exit codes, never parsed path text, so quoting, newlines and non-ASCII
+# names cannot hide a file. Any other result, including a git error, is "not
+# docs-only", i.e. bench.
+docs_only() {
+	git diff --quiet "$1" "$2" -- ':(glob)**/*.go' || return 1
+	git diff --quiet "$1" "$2" -- ':(exclude)docs' ':(exclude,glob)**/*.md' ':(exclude).github/CODEOWNERS' || return 1
+}
+
 # full_diff decides from the whole PR (or push) diff against the base.
 full_diff() {
 	if ! has_commit "${BASE:-}"; then
 		emit true "unknown base: running the bench to be safe"
 	fi
-	files=$(git diff --name-only "$BASE" "${SHA:-HEAD}") || emit true "diff failed: running the bench to be safe"
-	if printf '%s\n' "$files" | grep -Eq "$BENCH_RE"; then
-		emit true "bench-relevant files changed against the base"
+	if docs_only "$BASE" "${SHA:-HEAD}"; then
+		emit false "docs-only against the base"
 	fi
-	emit false "docs-only against the base"
+	emit true "bench-relevant files changed against the base"
 }
 
 # reusable reports whether the latest ci.yml bench-gate on $1 succeeded.
@@ -55,12 +64,8 @@ reusable() {
 if [ "${EVENT:-}" = pull_request ] && [ "${ACTION:-}" = synchronize ] &&
 	has_commit "${BEFORE:-}" && has_commit "${AFTER:-}" &&
 	git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
-	if inc=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null); then
-		if ! printf '%s\n' "$inc" | grep -Eq "$BENCH_RE"; then
-			if reusable "$BEFORE"; then
-				emit false "reused bench-gate result from $BEFORE"
-			fi
-		fi
+	if docs_only "$BEFORE" "$AFTER" && reusable "$BEFORE"; then
+		emit false "reused bench-gate result from $BEFORE"
 	fi
 fi
 full_diff
