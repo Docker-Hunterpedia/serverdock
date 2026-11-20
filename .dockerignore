@@ -1,0 +1,4 @@
+.git
+bin
+bench/results
+node_modules

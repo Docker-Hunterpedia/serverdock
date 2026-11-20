@@ -34,3 +34,6 @@ web/.svelte-kit/
 
 # Python cache (diagram scripts)
 __pycache__/
+
+# Quick (local smoke) bench results are not committed
+bench/results/*-quick.*
