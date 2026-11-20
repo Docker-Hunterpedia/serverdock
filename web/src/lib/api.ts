@@ -22,7 +22,8 @@ export class ApiError extends Error {
 		readonly status: number,
 		readonly code: string,
 		message: string,
-		readonly retryAfter?: number
+		readonly retryAfter?: number,
+		readonly triesLeft?: number
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -75,15 +76,17 @@ async function call<T>(method: string, path: string, opts: Options = {}): Promis
 	if (!res.ok) {
 		let code = 'error';
 		let message = res.statusText;
+		let triesLeft: number | undefined;
 		try {
-			const env = (await res.json()) as { error?: { code?: string; message?: string } };
+			const env = (await res.json()) as { error?: { code?: string; message?: string }; tries_left?: number };
 			code = env.error?.code ?? code;
 			message = env.error?.message ?? message;
+			triesLeft = typeof env.tries_left === 'number' ? env.tries_left : undefined;
 		} catch {
 			/* not JSON: keep the status text */
 		}
 		const ra = Number(res.headers.get('Retry-After'));
-		throw new ApiError(res.status, code, message, Number.isFinite(ra) && ra > 0 ? ra : undefined);
+		throw new ApiError(res.status, code, message, Number.isFinite(ra) && ra > 0 ? ra : undefined, triesLeft);
 	}
 	return (await res.json()) as T;
 }
@@ -102,3 +105,35 @@ export async function runAction<T>(name: string, input: object = {}, signal?: Ab
 }
 
 export const systemInfo = (signal?: AbortSignal) => runAction<SystemInfo>('system.info', {}, signal);
+
+// ---- first run and sign-in (public routes) ------------------------------------
+
+export type SetupStatus = {
+	setup_required: boolean;
+	server_time: string;
+	token_file?: string;
+	token_expires_at?: string;
+};
+export type Enrollment = { enrollment_id: string; secret: string; otpauth_uri: string };
+export type Notice = { totp_failures?: number; last_failure_at?: number; last_failure_ip?: string };
+export type SignedIn = { username: string; csrf: string; notice?: Notice; audit?: string; recovery_codes?: string[] };
+
+export const setupStatus = () => call<SetupStatus>('GET', '/api/v1/setup/status');
+
+export const setupEnroll = (token: string, username: string) =>
+	call<Enrollment>('POST', '/api/v1/setup/enroll', { body: { token, username } });
+
+export async function setupComplete(body: { token: string; enrollment_id: string; username: string; password: string; code: string }) {
+	const r = await call<SignedIn>('POST', '/api/v1/setup/complete', { body });
+	csrf = r.csrf;
+	return r;
+}
+
+export const login = (username: string, password: string) =>
+	call<{ two_factor_required: boolean; expires_in: number }>('POST', '/api/v1/auth/login', { body: { username, password } });
+
+export async function twoFactor(body: { code: string } | { recovery_code: string }) {
+	const r = await call<SignedIn>('POST', '/api/v1/auth/2fa', { body });
+	csrf = r.csrf;
+	return r;
+}

@@ -1,5 +1,14 @@
 <script lang="ts">
+	import { flash } from '../../lib/flow.svelte';
 	import PageHeading from '../../lib/PageHeading.svelte';
+
+	// Shown once, right after signing in; never from storage.
+	let notice = $state(flash.notice);
+	let unrecorded = $state(flash.audit === 'unrecorded');
+	flash.notice = undefined;
+	flash.audit = undefined;
+	const failures = $derived(notice?.totp_failures ?? 0);
+	const when = $derived(notice?.last_failure_at ? new Date(notice.last_failure_at * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '');
 </script>
 
 <svelte:head>
@@ -7,6 +16,22 @@
 </svelte:head>
 
 <PageHeading>Overview</PageHeading>
+
+{#if unrecorded}
+	<div role="alert" class="banner">
+		<p><span aria-hidden="true">▲</span> The audit record for this sign-in could not be written. You are signed in, but check the server's disk and logs.</p>
+		<button type="button" onclick={() => (unrecorded = false)}>Dismiss</button>
+	</div>
+{/if}
+{#if failures > 0}
+	<div role="status" class="banner">
+		<p>
+			{failures} wrong two-factor {failures === 1 ? 'code was' : 'codes were'} entered since your last sign-in{when ? `, the latest at ${when}` : ''}{notice?.last_failure_ip ? ` from ${notice.last_failure_ip}` : ''}.
+			If that was not you, change your password.
+		</p>
+		<button type="button" onclick={() => (notice = undefined)}>Dismiss</button>
+	</div>
+{/if}
 
 <section class="empty" aria-labelledby="empty-title">
 	<h2 id="empty-title">No services yet</h2>
