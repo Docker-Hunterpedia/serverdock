@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
+	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/memstat"
 )
 
@@ -65,6 +66,9 @@ type Config struct {
 	Sessions Sessions
 	// Tokens verifies API tokens (M2 step 8); nil means every bearer token is refused.
 	Tokens TokenVerifier
+	// BadTokens limits failed bearer-token lookups per client IP (5 a minute, burst
+	// 10, like the hub's agent token); nil means that default.
+	BadTokens *limits.Keyed
 	// Auth holds the setup and sign-in handlers (M2 step 6b); nil means stubs.
 	Auth *AuthHandlers
 	// PanelHosts are the extra names the Host allowlist accepts (--panel-host).
@@ -88,11 +92,16 @@ type Server struct {
 	routes []Route
 	hosts  map[string]bool
 	log    *slog.Logger
+	// badTokens is the failed-token limiter.
+	badTokens *limits.Keyed
 }
 
 // New builds the route table and the servers' muxes from it.
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, hosts: map[string]bool{}, log: cfg.Log}
+	s := &Server{cfg: cfg, hosts: map[string]bool{}, log: cfg.Log, badTokens: cfg.BadTokens}
+	if s.badTokens == nil {
+		s.badTokens = limits.NewKeyed(5, 10, 0, nil)
+	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}

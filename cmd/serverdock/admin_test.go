@@ -476,10 +476,18 @@ func TestServerRegistryHasNoAdminReset(t *testing.T) {
 	}
 	defer st.Close()
 	al := newAuditLog(t, st)
-	reg := newServerRegistry(al, quietLog(), actions.Deps{Version: "t", Started: time.Now(), Audit: al, DB: st.R})
+	reg := newServerRegistry(al, quietLog(), actions.Deps{Version: "t", Started: time.Now(), Audit: al, DB: st.R}, auth.NewStore(st, nil, nil, auth.Options{}), auth.ActionDeps{})
+	names := map[string]bool{}
 	for _, a := range reg.List() {
 		if a.Name == "auth.admin_reset" || a.ConsoleOnly {
 			t.Fatalf("the server's registry has %s", a.Name)
+		}
+		names[a.Name] = true
+	}
+	for _, want := range []string{"tokens.create", "tokens.list", "tokens.revoke", "auth.password_change", "auth.totp_reenroll_begin", "auth.totp_reenroll_confirm",
+		"auth.recovery_regenerate", "auth.sessions_list", "auth.sessions_revoke", "auth.session_info"} {
+		if !names[want] {
+			t.Errorf("the server's registry lacks %s", want)
 		}
 	}
 	// And the server's source never registers it.

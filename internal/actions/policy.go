@@ -26,12 +26,21 @@ type Actor struct {
 	scope         Scope
 	mfaFreshUntil time.Time
 	boundTarget   string
+	session       string // the signed-in session's public id (user actors from REST)
 }
 
 // UserActor is a signed-in user session; mfaFreshUntil is when its fresh-2FA
 // window ends.
 func UserActor(id string, scope Scope, mfaFreshUntil time.Time) Actor {
 	return Actor{kind: KindUser, id: id, scope: scope, mfaFreshUntil: mfaFreshUntil}
+}
+
+// UserSessionActor is UserActor that also knows which session it is (its public
+// id), so an action can tell "this session" from "the other sessions".
+func UserSessionActor(id, sessionPublicID string, scope Scope, mfaFreshUntil time.Time) Actor {
+	a := UserActor(id, scope, mfaFreshUntil)
+	a.session = sessionPublicID
+	return a
 }
 
 // TokenActor is an API token with a scope.
@@ -48,6 +57,9 @@ func WebhookActor(hookID, boundTarget string) Actor {
 // Kind and ID identify the actor.
 func (a Actor) Kind() ActorKind { return a.kind }
 func (a Actor) ID() string      { return a.id }
+
+// SessionID is the public id of the session a user actor runs in ("" otherwise).
+func (a Actor) SessionID() string { return a.session }
 
 // authorize applies the risk policy:
 //

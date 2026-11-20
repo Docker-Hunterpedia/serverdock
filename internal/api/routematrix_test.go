@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,11 +15,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
+	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
@@ -55,6 +58,7 @@ type fixture struct {
 	revoked  string
 	pending  string
 	hasAdmin bool
+	tokens   map[string]string // case name -> bearer token
 }
 
 const testPassword = "correct horse battery staple"
@@ -97,10 +101,26 @@ func newFixture(t *testing.T, withAdmin bool) *fixture {
 		if f.pending, err2 = f.as.CreatePending(ctx, f.userID, "203.0.113.5"); err2 != nil {
 			t.Fatal(err2)
 		}
+		f.tokens = map[string]string{}
+		mk := func(name, scope string) {
+			secret, _, err := f.as.CreateToken(ctx, f.userID, name, scope, 30)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.tokens[name] = secret
+		}
+		mk("token read", "read")
+		mk("token write", "write")
+		mk("token admin", "admin")
+		mk("token expired", "read")
+		f.st.W.Exec(`UPDATE api_tokens SET expires_at = 1 WHERE name = 'token expired'`)
+		mk("token revoked", "admin")
+		f.st.W.Exec(`UPDATE api_tokens SET revoked_at = 1 WHERE name = 'token revoked'`)
 	}
 	okh := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, 200, map[string]bool{"ok": true}) })
 	f.srv = New(Config{
 		SPA: fstest.MapFS{"index.html": {Data: []byte(`<html><body>spa</body></html>`)}}, Sessions: f.as,
+		Tokens: NewTokenVerifier(f.as), BadTokens: limits.NewKeyed(100000, 100000, 0, nil),
 		PanelHosts: []string{"panel.example.com"},
 		ExtraRoutes: []Route{
 			{Method: "GET", Pattern: "/test/session-or-token", Auth: SessionOrToken, Handler: okh},
@@ -142,7 +162,10 @@ func (f *fixture) cases() []mcase {
 	csrf := func(r *http.Request) { r.Header.Set(CSRFHeader, CSRFToken(f.session)) }
 	origin := func(r *http.Request) { r.Header.Set("Origin", "https://"+r.Host) }
 	sess := func(r *http.Request) { cookie(r, SessionCookie, f.session) }
-	bearer := func(r *http.Request) { r.Header.Set("Authorization", "Bearer sd_"+strings.Repeat("A", 43)) }
+	bearer := func(r *http.Request) { r.Header.Set("Authorization", "Bearer sd_"+strings.Repeat("A", 43)) } // well-formed, unknown
+	tok := func(name string) func(f *fixture, r *http.Request) {
+		return func(f *fixture, r *http.Request) { r.Header.Set("Authorization", "Bearer "+f.tokens[name]) }
+	}
 	return []mcase{
 		{"none", func(f *fixture, r *http.Request) {}},
 		{"pending", func(f *fixture, r *http.Request) { cookie(r, PendingCookie, f.pending) }},
@@ -165,11 +188,16 @@ func (f *fixture) cases() []mcase {
 		}},
 		{"revoked session cookie", func(f *fixture, r *http.Request) { cookie(r, SessionCookie, f.revoked) }},
 		{"stale pending cookie", func(f *fixture, r *http.Request) { cookie(r, PendingCookie, "no-such-pending") }},
-		{"token read", func(f *fixture, r *http.Request) { bearer(r) }},
-		{"token write", func(f *fixture, r *http.Request) { bearer(r) }},
-		{"token admin", func(f *fixture, r *http.Request) { bearer(r) }},
-		{"token expired", func(f *fixture, r *http.Request) { bearer(r) }},
-		{"token revoked", func(f *fixture, r *http.Request) { bearer(r) }},
+		{"token read", tok("token read")},
+		{"token write", tok("token write")},
+		{"token admin", tok("token admin")},
+		{"token expired", tok("token expired")},
+		{"token revoked", tok("token revoked")},
+		{"token unknown", func(f *fixture, r *http.Request) { bearer(r) }},
+		{"token in a cookie", func(f *fixture, r *http.Request) {
+			cookie(r, SessionCookie, f.tokens["token admin"])
+			cookie(r, "token", f.tokens["token admin"])
+		}},
 		{"bearer garbage", func(f *fixture, r *http.Request) { r.Header.Set("Authorization", "Basic Zm9vOmJhcg==") }},
 		{"cookie+bearer", func(f *fixture, r *http.Request) { sess(r); csrf(r); origin(r); bearer(r) }},
 		{"token in query", func(f *fixture, r *http.Request) {
@@ -203,7 +231,7 @@ func expect(rt Route, c string) (status int, code string) {
 		}
 		return false
 	}
-	hasAuthz := has("token read", "token write", "token admin", "token expired", "token revoked", "bearer garbage", "cookie+bearer")
+	hasAuthz := has("token read", "token write", "token admin", "token expired", "token revoked", "token unknown", "bearer garbage", "cookie+bearer")
 	hasValidSession := has("session", "session+origin", "session+csrf", "session+csrf+origin", "pending+session+csrf+origin")
 	hasPending := has("pending", "pending+session+csrf+origin")
 
@@ -218,7 +246,7 @@ func expect(rt Route, c string) (status int, code string) {
 	}
 	stale := func() (int, string) {
 		switch c {
-		case "unknown session cookie", "revoked session cookie":
+		case "unknown session cookie", "revoked session cookie", "token in a cookie": // a token in a cookie is just an unknown session id
 			return 401, "revoked"
 		case "expired session cookie":
 			return 401, "idle_expired"
@@ -266,7 +294,13 @@ func expect(rt Route, c string) (status int, code string) {
 		return sessionRule()
 	case SessionOrToken:
 		if hasAuthz {
-			return 401, "unauthenticated" // no token verifier yet (step 8): every token is refused
+			switch c {
+			case "token read", "token write", "token admin":
+				return 200, "" // a valid token: no cookie, CSRF or Origin involved
+			case "token expired":
+				return 401, "token_expired"
+			}
+			return 401, "unauthenticated" // revoked, unknown, malformed, or a bad bearer next to a good cookie (cookies are then ignored)
 		}
 		return sessionRule()
 	}
@@ -552,4 +586,59 @@ func decodeSecret(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+type countingVerifier struct{ calls atomic.Int32 }
+
+func (c *countingVerifier) VerifyToken(context.Context, string) (TokenInfo, error) {
+	c.calls.Add(1)
+	return TokenInfo{}, errors.New("no")
+}
+
+// The 11th bad token from one IP in a minute is a 429 BEFORE any lookup; another
+// IP is unaffected; the bucket refills.
+func TestBadTokenBucketStopsGuessingBeforeTheLookup(t *testing.T) {
+	cv := &countingVerifier{}
+	clk := &mclock{t: time.Unix(1_800_000_000, 0)}
+	srv := New(Config{SPA: fstest.MapFS{"index.html": {Data: []byte("x")}}, Tokens: cv,
+		BadTokens: limits.NewKeyed(5, 10, 0, clk.Now),
+		ExtraRoutes: []Route{{Method: "GET", Pattern: "/test/t", Auth: SessionOrToken,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, 200, map[string]bool{"ok": true}) })}}})
+	h := srv.Handler()
+	call := func(ip string) (int, string) {
+		r := httptest.NewRequest("GET", "/test/t", nil)
+		r.Host, r.RemoteAddr = "127.0.0.1", ip+":1000"
+		r.Header.Set("Authorization", "Bearer sd_"+strings.Repeat("B", 43))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Code, rec.Header().Get("Retry-After")
+	}
+	for i := 0; i < 10; i++ {
+		if code, _ := call("198.51.100.1"); code != 401 {
+			t.Fatalf("bad token %d: %d", i+1, code)
+		}
+	}
+	if cv.calls.Load() != 10 {
+		t.Fatalf("%d lookups", cv.calls.Load())
+	}
+	code, retry := call("198.51.100.1")
+	if code != 429 || retry == "" || cv.calls.Load() != 10 {
+		t.Fatalf("the 11th bad token: %d (Retry-After %q), %d lookups", code, retry, cv.calls.Load())
+	}
+	if code, _ := call("198.51.100.2"); code != 401 || cv.calls.Load() != 11 {
+		t.Fatalf("another IP: %d, %d lookups", code, cv.calls.Load())
+	}
+	clk.Add(20 * time.Second) // 5 per minute: one token back after 12 s
+	if code, _ := call("198.51.100.1"); code != 401 {
+		t.Fatalf("after the bucket refilled: %d", code)
+	}
+	// A malformed Authorization never reaches the verifier or the bucket.
+	r := httptest.NewRequest("GET", "/test/t", nil)
+	r.Host, r.RemoteAddr = "127.0.0.1", "198.51.100.3:1"
+	r.Header.Set("Authorization", "Basic abc")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != 401 || cv.calls.Load() != 12 {
+		t.Errorf("%d, %d lookups", rec.Code, cv.calls.Load())
+	}
 }

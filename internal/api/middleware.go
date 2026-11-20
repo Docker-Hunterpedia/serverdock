@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
+	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 )
 
 // Cookie and header names.
@@ -27,6 +28,7 @@ const (
 
 // TokenInfo is what a verified API token grants (M2 step 8).
 type TokenInfo struct {
+	ID     int64
 	UserID int64
 	Scope  string
 }
@@ -39,6 +41,22 @@ type TokenVerifier interface {
 
 // ErrTokenExpired is the TokenVerifier error that answers 401 token_expired.
 var ErrTokenExpired = errors.New("api: token expired")
+
+type storeTokens struct{ s *auth.Store }
+
+// NewTokenVerifier checks bearer tokens against the database.
+func NewTokenVerifier(s *auth.Store) TokenVerifier { return storeTokens{s} }
+
+func (v storeTokens) VerifyToken(ctx context.Context, token string) (TokenInfo, error) {
+	c, err := v.s.VerifyToken(ctx, token)
+	if errors.Is(err, auth.ErrAPITokenExpired) {
+		return TokenInfo{}, ErrTokenExpired
+	}
+	if err != nil {
+		return TokenInfo{}, err
+	}
+	return TokenInfo{ID: c.ID, UserID: c.UserID, Scope: c.Scope}, nil
+}
 
 // PrincipalKind says how a request authenticated.
 type PrincipalKind int
@@ -340,8 +358,16 @@ func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, p *Princ
 		WriteError(w, http.StatusUnauthorized, "unauthenticated", "a valid API token is required")
 		return nil, false
 	}
+	// The bad-token bucket is checked BEFORE the lookup: an attacker guessing
+	// tokens is stopped without touching the database.
+	ip := limits.ClientIP(r)
+	if blocked, wait := s.badTokens.Blocked(ip); blocked {
+		tooMany(w, wait)
+		return nil, false
+	}
 	info, err := s.cfg.Tokens.VerifyToken(r.Context(), tok)
 	if err != nil {
+		s.badTokens.Take(ip) // every failure (unknown, revoked, expired) counts
 		if errors.Is(err, ErrTokenExpired) {
 			WriteError(w, http.StatusUnauthorized, "token_expired", "this API token has expired")
 		} else {

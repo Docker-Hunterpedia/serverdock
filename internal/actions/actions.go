@@ -93,6 +93,12 @@ type Def[In Validator, Out any] struct {
 	// with a System reason must be listed in docs/security.md "Unattended
 	// destructive actions" (a test checks).
 	System string
+	// RemovesAccess marks an action that only takes access away (revoke a session or
+	// a token). It always runs: if its audit intent cannot be written it still
+	// executes, and the result comes back with audit.ErrAuditOutcome (the caller
+	// reports audit: "unrecorded"). Refusing to revoke because the log is down
+	// would be worse than a gap in the log.
+	RemovesAccess bool
 	// ConsoleOnly actions are denied to every actor except the SystemInvoker
 	// (`serverdock admin reset`: the operator at the console, as the data owner,
 	// with the server stopped). REST answers 404 for them and OpenAPI omits them.
@@ -164,6 +170,7 @@ type action struct {
 	sensitive     bool
 	sessionOnly   bool
 	consoleOnly   bool
+	removesAccess bool
 	system        string
 	webhookOK     bool
 	inType        reflect.Type
@@ -221,6 +228,8 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 		mustf("Summary is required")
 	case d.Execute == nil:
 		mustf("Execute is required")
+	case d.RemovesAccess && d.Risk == RiskRead:
+		mustf("RemovesAccess is for mutate or destructive actions")
 	case d.ConsoleOnly && d.System == "":
 		mustf("a ConsoleOnly action needs a System reason (the SystemInvoker is the only actor that may run it)")
 	}
@@ -257,7 +266,7 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 	}
 
 	a := &action{name: d.Name, summary: d.Summary, risk: d.Risk, scope: d.Scope, sensitive: d.Sensitive,
-		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
+		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, removesAccess: d.RemovesAccess, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
 	a.prepare = func(raw []byte) (*prepared, error) {
 		var in In
 		if err := decodeStrict(raw, &in); err != nil {
@@ -413,6 +422,7 @@ type Info struct {
 	Sensitive     bool
 	SessionOnly   bool
 	ConsoleOnly   bool
+	RemovesAccess bool
 	System        string
 	WebhookOK     bool
 	InputType     reflect.Type
@@ -425,7 +435,7 @@ func (r *Registry) List() []Info {
 	out := make([]Info, 0, len(r.actions))
 	for _, a := range r.actions {
 		out = append(out, Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
-			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType})
+			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -506,31 +516,79 @@ func (r *Registry) invoke(ctx context.Context, actor Actor, executor, name strin
 		}
 		run = func(ctx context.Context) (Result, error) {
 			plan, err := p.dry(ctx, call)
-			return Result{Plan: &plan}, err
+			return Result{Plan: &plan}, markExec(err)
 		}
 	} else {
 		run = func(ctx context.Context) (Result, error) {
 			out, err := p.exec(ctx, call)
-			return Result{Out: out}, err
+			return Result{Out: out}, markExec(err)
 		}
 	}
 	if act.risk == RiskRead && !act.sensitive {
 		res, err := protect(ctx, run) // plain reads are not audited
-		return res, err
+		return res, redactExec(p.rd, err)
 	}
 	intent := audit.Entry{ActorKind: string(actor.kind), ActorID: actor.id, Executor: executor, Action: act.name, Target: p.target,
 		Risk: act.risk.String(), DryRun: opts.DryRun, ArgsJSON: p.args, RequestID: call.RequestID}
 	oc, err := audit.Execute(ctx, r.sink, r.log, p.rd, intent, run)
+	if act.removesAccess && errors.Is(err, audit.ErrAuditUnavailable) {
+		// An action that only removes access always runs; the gap is flagged.
+		r.log.Error("access-removing action ran without an audit record: the intent could not be written", "action", act.name, "target", p.target, "request_id", call.RequestID)
+		res, rerr := protect(ctx, run)
+		res.Audited, res.AuditOutcomeRecorded = false, false
+		if rerr != nil {
+			return res, redactExec(p.rd, rerr)
+		}
+		return res, audit.ErrAuditOutcome
+	}
 	res := oc.Value
 	res.Audited, res.AuditOutcomeRecorded, res.AuditIntentID = oc.IntentID != 0, oc.AuditOutcomeRecorded, oc.IntentID
-	return res, err
+	return res, redactExec(p.rd, err)
+}
+
+// execFailure marks an error that came out of an action's own code (as opposed to
+// a policy, validation or audit error), so Invoke can redact exactly those.
+type execFailure struct{ err error }
+
+func (e *execFailure) Error() string { return e.err.Error() }
+func (e *execFailure) Unwrap() error { return e.err }
+
+func markExec(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &execFailure{err}
+}
+
+// redactedError carries only redacted text. errors.Is and As still see the cause
+// (a sentinel), but nothing that prints the error shows a secret from the input.
+type redactedError struct {
+	msg   string
+	cause error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.cause }
+
+// redactExec replaces an action's execution error by one whose text has the
+// call's secret values removed before Invoke returns it.
+func redactExec(rd *redact.Redactor, err error) error {
+	var ef *execFailure
+	if err == nil || !errors.As(err, &ef) {
+		return err
+	}
+	red := &redactedError{msg: rd.Err(ef.err), cause: ef.err}
+	if errors.Is(err, audit.ErrAuditOutcome) {
+		return fmt.Errorf("%w: %w", red, audit.ErrAuditOutcome)
+	}
+	return red
 }
 
 func protect(ctx context.Context, fn func(context.Context) (Result, error)) (res Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			_ = debug.Stack()
-			err = fmt.Errorf("action panicked: %v", p)
+			err = markExec(fmt.Errorf("action panicked: %v", p))
 		}
 	}()
 	return fn(ctx)

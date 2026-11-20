@@ -342,8 +342,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		maxSessions = hub.DefaultMaxSessions
 	}
 	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	lim := api.NewLimits(nil)
 	srv := api.New(api.Config{
-		SPA: web.FS(), Sessions: authStore, PanelHosts: cfg.PanelHosts,
+		SPA: web.FS(), Sessions: authStore, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
 		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: api.NewLimits(nil), Log: log}),
 		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
 	})
@@ -393,7 +394,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
 		}
 	}
-	_ = newServerRegistry(auditLog, log, deps)
+	_ = newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
@@ -455,8 +456,9 @@ func panelProxy(p *pki.Panel, cfg serverConfig) *proxy.Panel {
 // newServerRegistry is the server's action registry: the built-ins only. It never
 // gets auth.admin_reset: that action is console-only and exists solely in the
 // registry `serverdock admin reset` builds (TestServerRegistryHasNoAdminReset).
-func newServerRegistry(sink actions.Sink, log *slog.Logger, deps actions.Deps) *actions.Registry {
+func newServerRegistry(sink actions.Sink, log *slog.Logger, deps actions.Deps, as *auth.Store, ad auth.ActionDeps) *actions.Registry {
 	reg := actions.New(sink, log)
 	actions.RegisterBuiltins(reg, deps)
+	auth.RegisterAuthActions(reg, as, ad)
 	return reg
 }
