@@ -54,12 +54,12 @@ func TestGates(t *testing.T) {
 	run := func(rssMB, cpu float64) RunStats {
 		return RunStats{VmRSSMedian: rssMB * mb, IdleCPUPercent: cpu}
 	}
-	// Median of medians 41.9 MB is inside 40 MB +5% (42); one outlier run is ignored.
-	s := scenario(1, []RunStats{run(41.9, 0.1), run(60, 0.1), run(30, 0.1)})
+	// Median of medians 83.9 MB is inside 80 MB +5% (84); one outlier run is ignored.
+	s := scenario(2, []RunStats{run(83.9, 0.1), run(120, 0.1), run(30, 0.1)})
 	if !s.Gates[0].Pass {
 		t.Errorf("rss gate: %+v", s.Gates[0])
 	}
-	s = scenario(1, []RunStats{run(42.5, 0.1), run(43, 0.1), run(30, 0.1)})
+	s = scenario(2, []RunStats{run(84.5, 0.1), run(85, 0.1), run(30, 0.1)})
 	if s.Gates[0].Pass {
 		t.Errorf("rss gate should fail: %+v", s.Gates[0])
 	}
@@ -92,22 +92,25 @@ func TestReportLabelsAndVerdict(t *testing.T) {
 	}
 }
 
-func TestScenarios3And4(t *testing.T) {
+func TestScenarioGates(t *testing.T) {
 	run := func(rss float64) []RunStats { return []RunStats{{VmRSSMedian: rss * mb, IdleCPUPercent: 0.1}} }
-	if s := scenario(3, run(20.9)); !s.Gates[0].Pass || !s.Gates[2].Pass {
-		t.Errorf("20.9 MB should pass scenario 3: %+v", s.Gates)
+	// Scenario 4 (remote node with proxy) is gated at 50 MB +5%.
+	if s := scenario(4, run(52.4)); !s.Gates[0].Pass {
+		t.Errorf("52.4 MB should pass scenario 4: %+v", s.Gates)
 	}
-	if s := scenario(3, run(21.5)); s.Gates[0].Pass || !s.Gates[2].Pass {
-		t.Errorf("21.5 MB fails the tolerance gate but not the hard limit: %+v", s.Gates)
+	if s := scenario(4, run(53)); s.Gates[0].Pass {
+		t.Errorf("53 MB should fail scenario 4: %+v", s.Gates)
 	}
-	if s := scenario(3, run(25.5)); s.Gates[2].Pass {
-		t.Errorf("25.5 MB must fail the hard limit: %+v", s.Gates)
-	}
-	// Scenario 4 never fails the run.
-	r := Report{Scenarios: []ScenarioResult{scenario(4, run(70))}, Gates: binaryGates(10 * mb)}
+	// Scenarios 1 and 3 are report only (ADR 0008): over target, the run still passes.
+	r := Report{Scenarios: []ScenarioResult{scenario(1, run(70)), scenario(3, run(45))}, Gates: binaryGates(10 * mb)}
 	r.evaluate()
 	if !r.Pass {
-		t.Error("report-only scenario must not fail the run")
+		t.Error("report-only scenarios must not fail the run")
+	}
+	for _, sc := range r.Scenarios {
+		if len(sc.Gates) != 1 || !sc.Gates[0].Report || sc.Gates[0].Pass {
+			t.Errorf("scenario %d: want one failing report-only gate, got %+v", sc.ID, sc.Gates)
+		}
 	}
 	if !strings.Contains(markdown(r), "report only") {
 		t.Error("markdown should flag report-only")

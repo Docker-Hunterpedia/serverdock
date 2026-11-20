@@ -42,6 +42,8 @@ Based only on the local scenario 2 minus scenario 1 difference (+6.7 MB VmRSS, +
 
 The same data raises a separate question for the reviewers: the single large binary already exceeds the scenario 1 (40 MB) and scenario 3 (20 MB hard fail 25) gates in this informational run, mainly through file-backed pages. Options to evaluate after the CI and VPS numbers: build the remote agent without the proxy and SQLite packages (build tags or a separate `main`), trim linked Caddy modules further, and compare `RssFile` on a real host. This verdict is provisional until the CI and VPS sections above are filled in.
 
+**Follow-up (2026-11-20):** the maintainer accepted [ADR 0008](../decisions/0008-footprint-gates.md). CI now gates scenarios 2 (≤ 80 MB) and 4 (≤ 50 MB); scenarios 1 and 3 are report only until the Phase 2 slim agent.
+
 ## What the Phase 0 spikes verified (tests, not measurements)
 
 - Caddy reload while an agent is connected through `/agent/connect`: the drop is **delayed, not avoided**. With `stream_close_delay` 5m the agent keeps its session and open streams through the reload, but Caddy still closes the old upgraded connection 5 minutes later, and the agent then reconnects with backoff. Without the setting the agent is dropped immediately. Phase 1 consequence: every Caddy reload (every deploy) drops every remote agent after 5 minutes; serve `/agent/connect` from a listener Caddy does not rebuild (see docs/security.md, Phase 0 review items).

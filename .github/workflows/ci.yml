@@ -76,7 +76,7 @@ jobs:
           fi
 
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
-  # reports only. Scenario 4 is report only.
+  # reports only. Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
   bench:
     needs: [lint-test, changes]
     if: needs.changes.outputs.bench == 'true'

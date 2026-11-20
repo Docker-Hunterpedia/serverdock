@@ -82,10 +82,10 @@ type Report struct {
 }
 
 var scenarioNames = map[int]string{
-	1: "server, --proxy=false",
+	1: "server, --proxy=false (report only, ADR 0008)",
 	2: "single node: server + local agent + Caddy",
-	3: "remote agent (measured: the agent container)",
-	4: "remote agent + its own Caddy (report only)",
+	3: "remote agent without proxy (report only until the slim agent, ADR 0008)",
+	4: "remote node: agent + its own Caddy",
 }
 
 type limits struct {
@@ -93,17 +93,20 @@ type limits struct {
 	cpu   float64
 }
 
+// Gated scenarios are the two shapes people deploy (ADR 0008): a single node
+// and a remote node with its own proxy.
 var scenarioLimits = map[int]limits{
-	1: {40, 0.5},
 	2: {80, 1.0},
-	3: {20, 0.3},
+	4: {50, 0.5},
 }
 
-// hardRSS is the absolute memory ceiling (no tolerance) for scenario 3.
-var hardRSS = map[int]float64{3: 25}
+// hardRSS is an absolute memory ceiling (no tolerance). Empty until the slim
+// agent build (Phase 2) brings back scenario 3 with its 20 MB / 25 MB hard gate.
+var hardRSS = map[int]float64{}
 
 // reportRSS is a target shown for report-only scenarios; it never fails the run.
-var reportRSS = map[int]float64{4: 50}
+// Scenario 1 and 3 numbers are mostly file-backed pages of the shared binary.
+var reportRSS = map[int]float64{1: 40, 3: 20}
 
 const gzipLimitMB = 40
 

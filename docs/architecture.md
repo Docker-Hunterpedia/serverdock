@@ -112,13 +112,13 @@ flowchart LR
 
 ## Footprint budget
 
-These are **hard budgets**, measured by `serverdock bench` in CI on a 1 vCPU / 1 GB VM. A PR that exceeds them needs a written reason and `footprint` agent review.
+These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM. The two **totals in bold are hard gates**: a PR that exceeds them fails CI and needs a written reason and `footprint` agent review. Component rows are targets the bench reports but does not enforce yet. The remote-agent row becomes a gate again when the slim agent ships in Phase 2 ([ADR 0008](decisions/0008-footprint-gates.md)).
 
 | Component | Idle RSS | Idle CPU |
 |---|---|---|
 | Control plane (API, hub, scheduler, SQLite, SPA) | ≤ 40 MB | < 0.5% |
 | In-process local agent | + ≤ 8 MB | — |
-| Remote agent | ≤ 20 MB | < 0.3% |
+| Remote agent (slim build, Phase 2) | ≤ 20 MB | < 0.3% |
 | Embedded Caddy | + ≤ 30 MB | — |
 | **Single node total** | **≤ 80 MB** | **< 1%** |
 | **Remote node total (agent + proxy)** | **≤ 50 MB** | **< 0.5%** |

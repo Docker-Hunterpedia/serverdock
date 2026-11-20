@@ -4,11 +4,12 @@
 #   bench/run.sh
 #
 # Scenarios (every container: --memory 1g --cpus 1, nonroot distroless image):
-#   1  server --proxy=false
-#   2  server --proxy=true   (control plane + in-process local agent + Caddy)
-#   3  remote `agent` connected to a scenario-2 server through its proxy (measured: the agent)
-#   4  (report only) remote `agent` plus its own embedded Caddy (--proxy-listen), previewing the
-#      remote-node <= 50 MB budget
+#   1  (report only) server --proxy=false
+#   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB
+#   3  (report only until the Phase 2 slim agent) remote `agent` connected to a scenario-2 server
+#      through its proxy (measured: the agent)
+#   4  GATE  remote `agent` plus its own embedded Caddy (--proxy-listen), remote node <= 50 MB
+#   Gates: docs/decisions/0008-footprint-gates.md
 # Scenarios 3-4 also start a server container (debug listener on the bench network only) and a
 # busybox logger; one log stream is opened and closed during the burst.
 #

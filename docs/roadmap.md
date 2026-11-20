@@ -13,6 +13,7 @@ Goal: decisions locked and a skeleton that proves the footprint.
 - [ ] Confirm vision, features, architecture (maintainer review of these docs)
 - [x] Accept ADRs 0001–0006 (AGPL-3.0, Go, outbound agent, embedded Caddy, SvelteKit, MCP-first AI) — accepted by the maintainer 2026-11-20
 - [x] ADR 0007 (no telemetry by default) — accepted by the maintainer 2026-11-20
+- [x] ADR 0008 (footprint gates on deployed shapes; slim agent in Phase 2) — accepted by the maintainer 2026-11-20
 - [x] Research, feature list, wireframes (13 screens), phase chart
 - [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — workflow written, not yet run on GitHub
 - [ ] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job not yet run
@@ -55,6 +56,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 ## Phase 2 — Multi-server & builds
 
 - [ ] Remote agent (outbound, enrollment token, mTLS), SSH-assisted one-time install
+- [ ] Slim agent build (no SQLite/SPA/control plane); scenario 3 gate ≤ 20 MB, hard fail 25 (ADR 0008)
 - [ ] Builder servers; CI build mode (generated GitHub Actions)
 - [ ] Railpack zero-config builds
 - [ ] GitLab, Gitea, Bitbucket; PR previews incl. Compose; Compose diff review
