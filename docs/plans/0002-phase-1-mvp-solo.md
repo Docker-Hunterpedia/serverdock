@@ -180,6 +180,7 @@ Full step plan in **Part B**.
 
 ## M2 — Auth, first run, SPA shell
 
+- **Status (2026-11-21):** built on `phase-1-m2` (PR #3); the detailed plan is [plan 0003](0003-m2-auth-first-run-spa.md), steps 1–14 done, with its [status table](0003-m2-auth-first-run-spa.md#status-m2-close-out-2026-11-21). Open: the maintainer's manual screen-reader passes (steps 12 and 13), the CI bench numbers and the PR merge.
 - **Entry gate:** `security` has reviewed the threat model (carried over by M1 step 2).
 - **Goal:**
   - the panel is reachable over HTTPS;

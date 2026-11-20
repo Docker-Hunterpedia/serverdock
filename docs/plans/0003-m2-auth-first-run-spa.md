@@ -1,6 +1,6 @@
 # Plan 0003 — Phase 1 M2: auth, first run, SPA shell
 
-**Status:** APPROVED (reviewer, security, systems, accessibility — round 2, 2026-11-20) · **Author:** planner (AI) · **Date:** 2026-11-20
+**Status:** APPROVED (reviewer, security, systems, accessibility — round 2, 2026-11-20); **steps 1–14 built on `phase-1-m2` (2026-11-21), PR #3 merge pending** (see [Status](#status-m2-close-out-2026-11-21)) · **Author:** planner (AI) · **Date:** 2026-11-20
 
 **Roadmap:** Phase 1, milestone M2 of [plan 0002](0002-phase-1-mvp-solo.md). It serves these roadmap items: "setup token, admin + TOTP, first-run onboarding" (the M2 part of item 1), "token expiry" (item 18), "REST API (OpenAPI)" (item 21, the skeleton) and "accessible, phone-usable UI" (item 23, the baseline). This plan is AI-written and not yet confirmed by the maintainer.
 
@@ -12,6 +12,38 @@
 - the [maintainer answers](#maintainer-answers-2026-11-20) to QM2-1 to QM2-3.
 
 **How to read this plan.** It has the same parts as plan 0002 Part B: goal, out of scope, design, footprint, security notes, steps, test plan and reviews. Then come the maintainer answers, the [review round 1 changes](#review-round-1-changes), and **Appendix A, ADR 0010**, ready for review. Step 1 copies Appendix A to `docs/decisions/0010-panel-tls-and-auth.md`.
+
+## Status (M2 close-out, 2026-11-21)
+
+Steps 1 to 14 are built on branch `phase-1-m2` (PR #3), each step reviewed as listed in its step; `security` approved ADR 0010, which is now accepted. Commit links are on the branch; the SHAs below are the step commits and their review-fix commits.
+
+| Step | Commits |
+|---|---|
+| 1 ADR 0010, data directory, startup order, secretbox | `eb4d361` |
+| 2 Control plane on a unix socket | `ce69cbd`, `0c5b9b0` |
+| 3 Panel TLS and the `:80` redirect | `b9f2bd6` |
+| 4 Back-off, hash semaphore, argon2id | `79e8689`, `71ea1f0` |
+| 5 Auth core | `88e399b`, `76a0f47` |
+| 6a Route table, credentials, CSRF, Host allowlist | `93f3426`, `f24e39d` |
+| 6b Setup, login, 2FA, step-up, logout endpoints | `bc53e85`, `5c8d545` |
+| 7 `serverdock admin reset` | `c0f30d0`, `8d47849` |
+| 8 API tokens and auth-management actions | `e11e6b4`, `7da4a8d` |
+| 9 JSON Schema reflector, REST handler, OpenAPI 3.1 | `d5a801f`, `04c676b` |
+| 10 The secret sentinel suite | `62195cf`, `8fc633a` |
+| 11a SPA build, embed, CI, CSP serving | `8773850`, `b69aeb8` |
+| 11b Shell UI and the Playwright + axe harness | `5fe3467`, `815b622` |
+| 12 Setup and sign-in screens, first-run e2e | `06f74a2`, `5bafb52` |
+| 13 Settings › Security | `af54e50`, `fec97ba`, `47cefe2` |
+| 14 Record and close | the commits after `47cefe2` on the branch (docs, the v3 fixture, the route-matrix subset through the real Caddy, the idle-memory check) |
+
+**CI bench (PR #3):** *to be filled in once PR #3 is marked ready and the bench has run (S2, S4, binary size, SPA JS, "S2 after one login").*
+
+**Idle-memory check (step 14, report only under ADR 0011):** one rise of about 5 MB (transparent huge pages in the Docker Desktop VM), then flat; the Go heap and goroutines flat. Details in [Idle-memory check](#idle-memory-check-step-14).
+
+**Open items:**
+1. The maintainer's manual screen-reader passes for step 12 ([checklist](#step-12-manual-screen-reader-pass-checklist-for-the-maintainer)) and step 13 ([checklist](#step-13-manual-screen-reader-pass-checklist-for-the-maintainer)), recorded in the PR (VoiceOver on iOS plus NVDA or VoiceOver on macOS).
+2. The CI bench numbers above, and the PR #3 merge.
+3. Carried forward by design: WebSocket routes (they must pass the same session and `Origin` rules and join the route matrix), the "Final notes from round 2 approvals" for plans 0004 to 0006, and the maintainer's optional manual 1 GB VPS first run from a phone and a desktop (research/05, informational).
 
 ## Goal
 
@@ -491,6 +523,16 @@ S4 (remote agent + its Caddy) is **44.2 MB against 45.0 MB**: 0.8 MB of headroom
 **Measured, and when:** CI bench on every Go PR; **QUICK S4 deltas** in the PRs for steps 4, 9 and 11a (rule 4: a QUICK delta > 0.5 MB needs a full S4 run); a full S4 at step 14; **report-only "S2 after one login"** at steps 6b and 14 (VmRSS 10 s and 60 s after one login; expected S2 + ≤ 1 MB; peak about S2 + 19–22 MB, inside the 64 MiB soft limit).
 
 **Raises idle RAM?** Only the `:443` TLS server, which Q2 requires.
+
+### Idle-memory check (step 14)
+
+Run with `bench/idle-memory.sh` (Docker, `--memory 1g --cpus 1`): the single-node server (scenario 2's flags plus a debug socket), the first run and three sign-ins, then RssAnon sampled every 5 s for 5 minutes with no traffic, and the server's memstats read from the debug socket at +60 s and at the end (HeapInuse, HeapIdle minus HeapReleased, NumGC). Verdicts: flat, zig-zag or growing (the script's header defines them). Report only under ADR 0011.
+
+**Result:** **one rise of about 5 MB, then flat: not growth, not a leak; no heap profile needed, no Background work row added.** Measured on Docker Desktop's Linux VM (kernel 7.0.14-linuxkit, so informational: the helper path of `bench/measure.sh`, not a CI VM), `--memory 1g --cpus 1`, `serverdock-bench:local` built with `-tags spa`, 2026-11-21:
+- **Run 1 (with the debug reads):** RssAnon 12.6 MB for the first 80 s after the last sign-in, one rise to 18.0 MB over about 15 s, then exactly 18.0 MB for the remaining 3.5 minutes (61 samples). Memstats from the debug socket at +60 s and at the end: HeapInuse 4.9 then 4.7 MB (not rising), HeapIdle minus HeapReleased 0.0 then 0.4 MB, NumGC 10 then 12, goroutines 32 then 29. The Go heap is about 5 MB of the 12 to 18 MB, and it did not move.
+- **Run 2 (control, no debug reads at all):** RssAnon 10.9 MB for 55 s, one rise to 16.0 MB, then flat for the rest. So the rise is not caused by reading the debug socket.
+- **What the rise is:** the VM kernel has transparent huge pages set to `always`. A third run that sampled `AnonHugePages` from `/proc/<pid>/smaps_rollup` every 5 s on an idle server (no sign-ins) showed the process holding 8 MB of its anonymous memory in huge pages from the start and RssAnon moving in 2 MB steps with it: 11.6 MB with 8 MB huge, then 13.1 MB with 10 MB huge at about 165 s, then back to 12.9 MB with 8 MB huge at about 265 s. That is `khugepaged` collapsing and splitting pages, not the program allocating. On a VPS with the usual `madvise` setting this step is not expected. The idle series therefore gives: the Go heap is flat, no goroutine growth (29 to 32, then fewer), and RssAnon only changes by THP steps.
+- The earlier local reading ("+2 MB anon 60 s after the third login with no activity in between") is the same effect. The numbers above are not a CI bench number; the CI bench and a run on a real 1 GB VPS (research/05, informational) are the places to confirm the absence of the step.
 
 ### Dependencies (plan 0002 rule 4)
 

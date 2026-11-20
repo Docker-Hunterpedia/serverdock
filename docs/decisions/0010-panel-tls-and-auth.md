@@ -1,6 +1,6 @@
 # 0010 — Panel TLS and authentication
 
-**Status:** proposed (plan 0003; awaiting `security` review) · **Date:** 2026-11-20
+**Status:** accepted · **Date:** 2026-11-20 (proposed), 2026-11-21 (accepted)
 
 **Context.** M2 exposes the first real attack surface: the panel, its first run, sign-in, sessions and API tokens. The maintainer decided (Q2) that the panel is reached over HTTPS on the server IP with a self-signed certificate whose fingerprint the console prints, that a panel domain can be added later, and that the IP redirects to the domain once the domain has a valid certificate. The maintainer also decided (Q8) that API tokens can't run destructive, sensitive or session-only actions, and can never manage tokens, auth settings or users. The threat model ([`docs/security.md`](../security.md) Draft 2) listed gaps G2–G10 for M2. ADR 0009 already separated the hub CA from the panel.
 
@@ -26,3 +26,10 @@
 - Losing `master.key` makes encrypted admin data unreadable and requires `admin reset`; losing `panel.pem` changes the fingerprint.
 - Development and the bench reach the control plane through the socket, and `--internal` is gone.
 - Idle cost: Caddy's TLS server on `:443`. No new timers or goroutines.
+
+**Acceptance (2026-11-21).** `security` reviewed the design before M2 and each implementation step (1 to 13) against it, and approved the result; the maintainer's answers (QM2-1 to QM2-3) are in plan 0003. The decisions above stand as written. What changed while building them, all recorded in [plan 0003](../plans/0003-m2-auth-first-run-spa.md) and [security.md](../security.md#m2-close-out-status):
+- Decision 1: the fingerprint is on Settings › Security and in the log, never on an unauthenticated page; the setup page shows the token's real path and the SSH-tunnel hint instead.
+- Decision 5: the 401 reason codes (`idle_expired`, `absolute_expired`, `revoked`) reach the Signed-out screen, and a shown-once token or recovery-code list stays on screen until the user hides it or leaves (accepted by the maintainer, over `security`'s suggestion of an automatic clear, so that switching apps to paste it on a phone cannot destroy it).
+- Decision 8: the `<unknown>` bucket's multi-IP enumeration is accepted and pinned by a test (`TestUnknownBucketRevealsExistenceToAMultiIPAttacker`).
+- Verification found two defects the design did not predict, both fixed: Caddy's DEBUG log printed the `X-SD-CSRF` header (the proxy's log encoder now redacts it), and SvelteKit's route announcer used an inline style the CSP blocks (a build plugin replaces it).
+- The Playwright suite does not use a test-only server flag: state-changing tests start a fresh binary and edit its temporary database; WebSocket routes do not exist yet and must pass the same rules when they arrive.

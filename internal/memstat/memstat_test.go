@@ -45,4 +45,8 @@ func TestRead(t *testing.T) {
 	if s.Goroutines < 1 || s.HeapAlloc == 0 || s.Sys == 0 {
 		t.Fatalf("implausible snapshot %+v", s)
 	}
+	// The idle-memory check reads these two; idle and released are parts of the heap.
+	if s.HeapIdle == 0 || s.HeapReleased > s.HeapIdle {
+		t.Fatalf("heap idle %d released %d", s.HeapIdle, s.HeapReleased)
+	}
 }

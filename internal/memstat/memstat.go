@@ -23,14 +23,18 @@ type Proc struct {
 
 // Snapshot combines /proc values (zero off Linux) with Go runtime stats.
 type Snapshot struct {
-	Proc       Proc   `json:"proc"`
-	HeapAlloc  uint64 `json:"heap_alloc"`
-	HeapSys    uint64 `json:"heap_sys"`
-	HeapInuse  uint64 `json:"heap_inuse"`
-	StackInuse uint64 `json:"stack_inuse"`
-	Sys        uint64 `json:"sys"`
-	NumGC      uint32 `json:"num_gc"`
-	Goroutines int    `json:"goroutines"`
+	Proc      Proc   `json:"proc"`
+	HeapAlloc uint64 `json:"heap_alloc"`
+	HeapSys   uint64 `json:"heap_sys"`
+	HeapInuse uint64 `json:"heap_inuse"`
+	// HeapIdle minus HeapReleased is heap the runtime still holds but is not using
+	// (the idle-memory check reads it: growth that stops there is not a leak).
+	HeapIdle     uint64 `json:"heap_idle"`
+	HeapReleased uint64 `json:"heap_released"`
+	StackInuse   uint64 `json:"stack_inuse"`
+	Sys          uint64 `json:"sys"`
+	NumGC        uint32 `json:"num_gc"`
+	Goroutines   int    `json:"goroutines"`
 }
 
 // ParseStatus parses the contents of a /proc/<pid>/status file.
@@ -89,6 +93,7 @@ func Read() Snapshot {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	s.HeapAlloc, s.HeapSys, s.HeapInuse = m.HeapAlloc, m.HeapSys, m.HeapInuse
+	s.HeapIdle, s.HeapReleased = m.HeapIdle, m.HeapReleased
 	s.StackInuse, s.Sys, s.NumGC = m.StackInuse, m.Sys, m.NumGC
 	s.Goroutines = runtime.NumGoroutine()
 	return s
