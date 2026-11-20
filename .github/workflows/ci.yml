@@ -230,14 +230,14 @@ jobs:
   # skipped, cancelled or failed dependency can never read as a pass. (The
   # expanded "bench (...)" checks do not exist when the matrix is skipped, so
   # they cannot be required.)
-  # On a draft PR the gate is skipped on purpose: a draft cannot be merged, and a
-  # skipped gate is never "success", so the docs-only reuse rule
-  # (bench-needed.sh) can never reuse a draft run. Marking the PR ready
-  # (ready_for_review) runs the full bench against the whole PR diff.
+  # On a draft PR the bench is skipped and the gate FAILS on purpose ("the bench
+  # has not run on this code"). It must not be skipped: GitHub counts a skipped
+  # required check as passing, which would leave a green gate on the head SHA
+  # until the ready_for_review run replaces it. A draft cannot be merged, so the
+  # red gate costs nothing; marking the PR ready runs the full bench.
   bench-gate:
     needs: [changes, bench]
-    # never !cancelled(): a skipped gate counts as passing
-    if: always() && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
+    if: always() # never !cancelled(): a skipped gate counts as passing
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -246,8 +246,15 @@ jobs:
       BENCH_NEEDED: ${{ needs.changes.outputs.bench }}
       BENCH_RESULT: ${{ needs.bench.result }}
       REASON: ${{ needs.changes.outputs.reason }}
+      EVENT: ${{ github.event_name }}
+      DRAFT: ${{ github.event.pull_request.draft }}
     steps:
       - run: |
+          if [ "$EVENT" = pull_request ] && [ "$DRAFT" = true ]; then
+            echo "draft PR: the bench has not run on this code (it runs when the PR is marked ready)"
+            echo "bench: not run (draft PR)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           [ "$CHANGES_RESULT" = success ] || { echo "changes job did not succeed"; exit 1; }
           if [ "$BENCH_NEEDED" = true ] && [ "$BENCH_RESULT" != success ]; then
             echo "bench required but result is $BENCH_RESULT"; exit 1
