@@ -23,7 +23,8 @@ export class ApiError extends Error {
 		readonly code: string,
 		message: string,
 		readonly retryAfter?: number,
-		readonly triesLeft?: number
+		readonly triesLeft?: number,
+		readonly failuresLeft?: number
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -77,16 +78,18 @@ async function call<T>(method: string, path: string, opts: Options = {}): Promis
 		let code = 'error';
 		let message = res.statusText;
 		let triesLeft: number | undefined;
+		let failuresLeft: number | undefined;
 		try {
-			const env = (await res.json()) as { error?: { code?: string; message?: string }; tries_left?: number };
+			const env = (await res.json()) as { error?: { code?: string; message?: string }; tries_left?: number; failures_left?: number };
 			code = env.error?.code ?? code;
 			message = env.error?.message ?? message;
 			triesLeft = typeof env.tries_left === 'number' ? env.tries_left : undefined;
+			failuresLeft = typeof env.failures_left === 'number' ? env.failures_left : undefined;
 		} catch {
 			/* not JSON: keep the status text */
 		}
 		const ra = Number(res.headers.get('Retry-After'));
-		throw new ApiError(res.status, code, message, Number.isFinite(ra) && ra > 0 ? ra : undefined, triesLeft);
+		throw new ApiError(res.status, code, message, Number.isFinite(ra) && ra > 0 ? ra : undefined, triesLeft, failuresLeft);
 	}
 	return (await res.json()) as T;
 }
@@ -137,3 +140,53 @@ export async function twoFactor(body: { code: string } | { recovery_code: string
 	csrf = r.csrf;
 	return r;
 }
+
+// ---- the signed-in account (Settings > Security) ------------------------------
+
+export class Cancelled extends Error {
+	constructor() {
+		super('cancelled');
+		this.name = 'Cancelled';
+	}
+}
+
+let askStepUp: (() => Promise<boolean>) | undefined;
+/** The page registers the step-up dialog here; it resolves true once a fresh code was accepted. */
+export function setStepUpHandler(fn: (() => Promise<boolean>) | undefined) {
+	askStepUp = fn;
+}
+
+/** Runs fn; on 403 mfa_required asks for a fresh code and retries once. Throws Cancelled if declined. */
+export async function withStepUp<T>(fn: () => Promise<T>): Promise<T> {
+	try {
+		return await fn();
+	} catch (e) {
+		if (!(e instanceof ApiError) || !e.needsStepUp || !askStepUp) throw e;
+		if (!(await askStepUp())) throw new Cancelled();
+		return fn();
+	}
+}
+
+/** Step-up: a TOTP code extends the fresh-2FA window by 5 minutes. */
+export const reauth = (code: string) => call<{ mfa_fresh_until?: string }>('POST', '/api/v1/auth/reauth', { body: { code } });
+
+/** Signs out (always runs) and forgets the CSRF token. */
+export async function logout() {
+	try {
+		await call<unknown>('POST', '/api/v1/auth/logout');
+	} finally {
+		csrf = '';
+	}
+}
+
+export type SessionInfo = {
+	username: string;
+	public_id: string;
+	recovery_codes_left: number;
+	admin_created_at: string;
+	admin_created_from: string;
+};
+export type SessionRow = { public_id: string; created_at: string; last_seen_at: string; ip_key: string; user_agent: string; current: boolean };
+export type TokenRow = { id: number; name: string; prefix: string; scope: string; created_at: string; expires_at: string; last_used_at: string | null; revoked: boolean };
+export type PanelCert = { fingerprint: string; created: string; not_after: string; renew_soon: boolean };
+export type TokenCreated = { id: number; token: string; prefix: string; scope: string; expires_at: string };

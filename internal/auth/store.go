@@ -524,6 +524,21 @@ func (s *Store) RecoveryCodesLeft(ctx context.Context, userID int64) (int, error
 	return n, err
 }
 
+// AdminCreated returns where (the client address key) and when first-run setup
+// was completed for the user; empty and zero when not recorded.
+func (s *Store) AdminCreated(ctx context.Context, userID int64) (from string, at time.Time, err error) {
+	var ip sql.NullString
+	var unix sql.NullInt64
+	err = s.st.R.QueryRowContext(ctx, `SELECT setup_ip, setup_at FROM users WHERE id = ?`, userID).Scan(&ip, &unix)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if unix.Valid {
+		at = time.Unix(unix.Int64, 0)
+	}
+	return ip.String, at, nil
+}
+
 // TokenFile is where the setup token is written (the path is not secret).
 func (s *Store) TokenFile() string { return s.tokenFilePath() }
 

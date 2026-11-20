@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
-	import { signedOutReason } from '../../lib/api';
+	import { logout, signedOutReason } from '../../lib/api';
 	import { startStatusPolling, type Status } from '../../lib/status';
 
 	let { children } = $props();
@@ -34,6 +34,15 @@
 		e.preventDefault();
 		mainEl?.focus();
 		mainEl?.scrollIntoView();
+	}
+
+	async function signOut() {
+		try {
+			await logout();
+		} catch {
+			/* the server clears the cookie even when the audit log is down; go on */
+		}
+		await goto('/signed-out?reason=signed_out');
 	}
 
 	onMount(() => {
@@ -72,6 +81,7 @@
 			<li>
 				<a href="/settings/security" aria-current={onSettings ? 'page' : undefined} onclick={() => closeMenu(false)}>Settings</a>
 			</li>
+			<li><button type="button" class="signout" onclick={signOut}>Sign out</button></li>
 		</ul>
 	</nav>
 
@@ -138,7 +148,16 @@
 		color: var(--text);
 		text-decoration: none;
 	}
-	.nav a:hover {
+	.signout {
+		width: 100%;
+		text-align: left;
+		background: none;
+		border: 0;
+		padding: 0 0.75rem;
+		min-height: var(--target);
+	}
+	.nav a:hover,
+	.signout:hover {
 		text-decoration: underline;
 	}
 	.nav a[aria-current='page'] {

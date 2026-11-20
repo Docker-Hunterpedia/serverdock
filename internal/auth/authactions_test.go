@@ -370,6 +370,17 @@ func TestSessionInfoSessionsListAndRevoke(t *testing.T) {
 	if info.Username != "admin" || info.PublicID != a.public || info.RecoveryCodesLeft != 10 || info.AbsExpiresAt.IsZero() {
 		t.Fatalf("%+v", info)
 	}
+	// Where and when the admin was created comes from the setup columns.
+	if err := a.s.write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE users SET setup_ip = '203.0.113.9', setup_at = 1700000000 WHERE id = ?`, a.uid)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info = a.mustInv(a.user(), "auth.session_info", "").Out.(SessionInfoOut)
+	if info.AdminCreatedFrom != "203.0.113.9" || info.AdminCreatedAt.Unix() != 1700000000 {
+		t.Errorf("admin created: %q %v", info.AdminCreatedFrom, info.AdminCreatedAt)
+	}
 	// Two more sessions, one belonging to another user.
 	s2, _ := a.newSessionFor(a.uid)
 	a.user2()

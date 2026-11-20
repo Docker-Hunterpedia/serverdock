@@ -426,6 +426,9 @@ export interface components {
             /** Format: date-time */
             abs_expires_at: string;
             /** Format: date-time */
+            admin_created_at: string;
+            admin_created_from: string;
+            /** Format: date-time */
             idle_expires_at: string;
             /** Format: date-time */
             mfa_fresh_until: string;

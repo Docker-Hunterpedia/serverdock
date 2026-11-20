@@ -158,6 +158,11 @@ type SessionInfoOut struct {
 	AbsExpiresAt      time.Time `json:"abs_expires_at"`
 	Notice            Notice    `json:"notice"`
 	RecoveryCodesLeft int       `json:"recovery_codes_left"`
+	// AdminCreatedAt and AdminCreatedFrom say when and from where first-run setup
+	// was completed (docs/security.md G5). Zero and empty when unknown (a reset
+	// admin that was created before this was recorded).
+	AdminCreatedAt   time.Time `json:"admin_created_at"`
+	AdminCreatedFrom string    `json:"admin_created_from"`
 }
 
 // SessionRow is a listed session.
@@ -211,8 +216,9 @@ func RegisterAuthActions(r *actions.Registry, s *Store, d ActionDeps) {
 			}
 			name, _ := s.Username(ctx, uid)
 			left, _ := s.RecoveryCodesLeft(ctx, uid)
+			from, at, _ := s.AdminCreated(ctx, uid)
 			return SessionInfoOut{Username: name, PublicID: sess.PublicID, MFAFreshUntil: sess.MFAFreshUntil, IdleExpiresAt: sess.IdleExpiresAt,
-				AbsExpiresAt: sess.AbsExpiresAt, Notice: sess.Notice, RecoveryCodesLeft: left}, nil
+				AbsExpiresAt: sess.AbsExpiresAt, Notice: sess.Notice, RecoveryCodesLeft: left, AdminCreatedAt: at, AdminCreatedFrom: from}, nil
 		},
 	})
 

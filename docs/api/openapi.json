@@ -99,6 +99,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "admin_created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "admin_created_from": {
+            "type": "string"
+          },
           "idle_expires_at": {
             "format": "date-time",
             "type": "string"
@@ -139,7 +146,9 @@
           "idle_expires_at",
           "abs_expires_at",
           "notice",
-          "recovery_codes_left"
+          "recovery_codes_left",
+          "admin_created_at",
+          "admin_created_from"
         ],
         "type": "object"
       },

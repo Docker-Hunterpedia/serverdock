@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { beforeNavigate, goto } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { ApiError, NETWORK_MESSAGE, setupComplete, setupEnroll, type Enrollment, type SignedIn } from '../../../lib/api';
 	import { Countdown, humanDuration } from '../../../lib/countdown.svelte';
@@ -9,6 +9,7 @@
 	import Field from '../../../lib/Field.svelte';
 	import PageHeading from '../../../lib/PageHeading.svelte';
 	import Qr from '../../../lib/Qr.svelte';
+	import RecoveryCodes from '../../../lib/RecoveryCodes.svelte';
 
 	let { data } = $props();
 
@@ -21,7 +22,6 @@
 	let code = $state('');
 	let enrollment: Enrollment | undefined = $state();
 	let recovery: string[] = $state([]);
-	let saved = $state(false);
 	let signedIn: SignedIn | undefined;
 
 	let busy = $state(false);
@@ -196,42 +196,12 @@
 	async function copy(text: string, what: string) {
 		status = (await copyText(text)) ? `${what} copied.` : `Could not copy. Select the text and copy it yourself.`;
 	}
-	function download() {
-		const url = URL.createObjectURL(new Blob([recovery.join('\n') + '\n'], { type: 'text/plain' }));
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = 'serverdock-recovery-codes.txt';
-		a.click();
-		setTimeout(() => URL.revokeObjectURL(url), 1000); // not at once: the browser may still be reading it
-		status = 'Download started.';
-	}
-
-	// Until the codes are confirmed saved, in-app navigation is cancelled with a
-	// message (reloading or closing the tab is the beforeunload guard below).
-	beforeNavigate((nav) => {
-		if (stage === 'recovery' && !saved && nav.type !== 'leave') {
-			nav.cancel();
-			status = 'Tick "I have saved these codes" before you leave this page. They are not shown again.';
-		}
-	});
-
-	// Until the codes are confirmed saved, leaving the page asks first.
-	function guard(e: BeforeUnloadEvent) {
-		if (stage === 'recovery' && !saved) e.preventDefault();
-	}
-	async function finish(e: Event) {
-		e.preventDefault();
-		if (!saved) {
-			status = 'Tick the box to confirm you saved the codes first.';
-			return;
-		}
+	async function finish() {
 		flash.audit = signedIn?.audit;
 		recovery = [];
 		await goto('/');
 	}
 </script>
-
-<svelte:window onbeforeunload={guard} />
 
 <svelte:head>
 	<title>{title} · ServerDock</title>
@@ -314,46 +284,11 @@
 		</div>
 	</form>
 {:else if stage === 'recovery'}
-	<p>If you lose your authenticator, each of these codes signs you in once. Keep them somewhere safe and private. They are shown only now.</p>
-	<ol class="codes" aria-label="Recovery codes">
-		{#each recovery as c (c)}
-			<li><code>{c}</code></li>
-		{/each}
-	</ol>
-	<div class="actions">
-		<button type="button" onclick={() => copy(recovery.join('\n'), 'Codes')}>Copy all</button>
-		<button type="button" onclick={download}>Download as text</button>
-	</div>
-	<p class="hint">Clipboard history apps may keep a copy; Download is safer for recovery codes.</p>
-	<p class="hint">You can make new codes later in Settings › Security.</p>
-	<form onsubmit={finish}>
-		<p>
-			<label class="check"><input type="checkbox" bind:checked={saved} /> I have saved these codes</label>
-		</p>
-		<p id="why-disabled" class="hint">{saved ? '' : 'Tick the box to confirm you saved the codes.'}</p>
-		<div class="actions">
-			<button type="submit" class="primary" aria-disabled={!saved} aria-describedby="why-disabled">Continue</button>
-		</div>
-	</form>
+	<RecoveryCodes
+		codes={recovery}
+		lead="If you lose your authenticator, each of these codes signs you in once. Keep them somewhere safe and private. They are shown only now."
+		onstatus={(m) => (status = m)}
+		onfinish={finish}
+	/>
 {/if}
 
-<style>
-	.codes {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-		gap: 0.5rem;
-		padding-left: 2rem;
-		margin: 0 0 1rem;
-	}
-	.check {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.75rem;
-		min-height: var(--target);
-		font-weight: 600;
-	}
-	.check input {
-		width: 1.5rem;
-		height: 1.5rem;
-	}
-</style>
