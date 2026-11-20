@@ -778,7 +778,7 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
 - `logs` is the only op with `RemoteOK`.
 - `Session.open(name)` in the hub looks the op up in the table, refuses unknown names, and refuses non-`RemoteOK` ops unless `s.ID == LocalID`.
 - `LocalID` is reserved, and only `runServer` attaches it, over the in-memory pipe.
-- M3a and later add ops as `LocalOnly`. A test that iterates the spec table fails if an op not on the read-only allowlist is marked `RemoteOK`.
+- M3a and later add ops without `RemoteOK`, so they are local-only by default. A test that iterates the spec table fails if an op not on the read-only allowlist is marked `RemoteOK`.
 
 **Debug listener.**
 - **`--debug-allow-remote` is removed.** `--debug-listen ADDR` is replaced by **`--debug-socket PATH`**: a unix socket created with mode **0600** inside a **0700 directory**, owned by the service user, and off by default. There is no TCP debug listener anymore.
