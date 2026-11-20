@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -185,5 +186,43 @@ func TestProxyServesSPAWebSocketAndReload(t *testing.T) {
 	}
 	if got := body(t, "http://"+addr2+"/moved"); got != "SPA-TWO /moved" {
 		t.Fatalf("after listener move: %q", got)
+	}
+}
+
+// The remote agent's own Caddy config must not change when the server learns to
+// proxy to a unix socket: this golden was generated before that change (plan
+// 0003, M2 step 2; the S4 footprint depends on it).
+func TestAgentBuildConfigGolden(t *testing.T) {
+	b, err := BuildConfig(Config{DataDir: "/data", Listen: ":8080", Upstream: "sdbench-srv:80"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := json.Indent(&got, b, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	got.WriteByte('\n')
+	want, err := os.ReadFile("testdata/agent_config.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != string(want) {
+		t.Fatalf("agent proxy config changed:\n%s", got.String())
+	}
+}
+
+func TestUnixUpstreamConfig(t *testing.T) {
+	up := UnixUpstream("/var/lib/serverdock/run/cp.sock")
+	if up != "unix//var/lib/serverdock/run/cp.sock" {
+		t.Fatal(up)
+	}
+	b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: up})
+	if err != nil || !strings.Contains(string(b), `"dial":"unix//var/lib/serverdock/run/cp.sock"`) {
+		t.Fatalf("%s %v", b, err)
+	}
+	for _, bad := range []string{"unix/relative.sock", "unix/"} {
+		if _, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: bad}); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

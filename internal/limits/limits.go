@@ -6,8 +6,11 @@
 package limits
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -178,28 +181,75 @@ func AddrKey(a net.Addr) string {
 	return host
 }
 
-// ClientIP returns the limiting key for the request's client. It uses
-// RemoteAddr only, except when trustLoopbackProxy is set and the peer is a
-// loopback address (our own Caddy): then the last hop in X-Forwarded-For is
-// used. X-Forwarded-For from any other peer is ignored.
-func ClientIP(r *http.Request, trustLoopbackProxy bool) string {
+// proxyMark is the context key set on connections that arrive from our own
+// proxy. Only the control-plane unix socket sets it (api.WithTrustedProxy).
+type proxyMark struct{}
+
+// WithProxyMark returns ctx marked as belonging to a connection from our own
+// reverse proxy. Only a listener that is reachable by nothing but that proxy
+// (a unix socket in a 0700 directory) may mark its connections.
+func WithProxyMark(ctx context.Context) context.Context {
+	return context.WithValue(ctx, proxyMark{}, true)
+}
+
+// FromProxy reports whether ctx carries the mark set by WithProxyMark.
+func FromProxy(ctx context.Context) bool {
+	v, _ := ctx.Value(proxyMark{}).(bool)
+	return v
+}
+
+// ErrForwarded is returned by ParseForwarded for a missing, repeated or
+// malformed X-Forwarded-For.
+var ErrForwarded = errors.New("X-Forwarded-For must be exactly one header holding exactly one IP address")
+
+// ParseForwarded returns the client address from the single X-Forwarded-For
+// value our own Caddy sets. It requires exactly one header line holding exactly
+// one IP address: zero lines, several lines, a comma list or anything that does
+// not parse is an error (our proxy is misconfigured; there is no "last hop"
+// guessing). A zone is dropped.
+func ParseForwarded(h http.Header) (netip.Addr, error) {
+	vals := h.Values("X-Forwarded-For")
+	if len(vals) != 1 {
+		return netip.Addr{}, ErrForwarded
+	}
+	v := strings.TrimSpace(vals[0])
+	if v == "" {
+		return netip.Addr{}, ErrForwarded
+	}
+	for i := 0; i < len(v); i++ { // printable ASCII only: no comma list, no space, no control bytes
+		if c := v[i]; c <= ' ' || c > '~' || c == ',' {
+			return netip.Addr{}, ErrForwarded
+		}
+	}
+	ip, err := netip.ParseAddr(v)
+	if err != nil {
+		return netip.Addr{}, ErrForwarded
+	}
+	return ip.WithZone(""), nil
+}
+
+// ClientIP returns the limiting key for the request's client.
+//
+// X-Forwarded-For is read only when the connection carries the proxy mark
+// (WithProxyMark, set by api.WithTrustedProxy for the control-plane socket), and
+// then only through ParseForwarded. On every other listener the header is
+// ignored and the key is RemoteAddr. A loopback peer is trusted for nothing. If
+// a marked request has a bad header the caller's guard has already answered 400;
+// this function still never falls back to trusting it, and returns the peer key.
+func ClientIP(r *http.Request) string {
+	if FromProxy(r.Context()) {
+		if ip, err := ParseForwarded(r.Header); err == nil {
+			return Key(net.IP(ip.AsSlice()))
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	peer := net.ParseIP(host)
-	if peer == nil {
-		return host
+	if peer := net.ParseIP(host); peer != nil {
+		return Key(peer)
 	}
-	if trustLoopbackProxy && peer.IsLoopback() {
-		if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
-			parts := strings.Split(vals[len(vals)-1], ",")
-			if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
-				return Key(ip)
-			}
-		}
-	}
-	return Key(peer)
+	return host
 }
 
 // Listener caps concurrent connections: at most global in total (Accept waits

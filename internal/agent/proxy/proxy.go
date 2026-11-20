@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -30,9 +31,13 @@ type Config struct {
 	DataDir string
 	// Listen is the public listen address, for example ":80".
 	Listen string
-	// Upstream is the control plane's host:port.
+	// Upstream is where requests go: a host:port, or "unix//<absolute path>"
+	// (UnixUpstream) for the server's control-plane socket.
 	Upstream string
 }
+
+// UnixUpstream returns the Upstream value for a unix socket at the absolute path.
+func UnixUpstream(path string) string { return "unix/" + path }
 
 func (c Config) validate() error {
 	if c.DataDir == "" {
@@ -42,6 +47,12 @@ func (c Config) validate() error {
 		return fmt.Errorf("proxy: Listen %q: %w", c.Listen, err)
 	} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
 		return fmt.Errorf("proxy: Listen %q: bad port", c.Listen)
+	}
+	if sock, ok := strings.CutPrefix(c.Upstream, "unix/"); ok {
+		if !strings.HasPrefix(sock, "/") {
+			return fmt.Errorf("proxy: Upstream %q: a unix socket path must be absolute", c.Upstream)
+		}
+		return nil
 	}
 	if _, _, err := net.SplitHostPort(c.Upstream); err != nil {
 		return fmt.Errorf("proxy: Upstream %q: %w", c.Upstream, err)

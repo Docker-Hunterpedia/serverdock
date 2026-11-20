@@ -272,7 +272,7 @@ func TestAuditVerifyAsRootOnServiceOwnedData(t *testing.T) {
 	if err := os.Chown(data, svc, svc); err != nil {
 		t.Fatal(err)
 	}
-	p := testbin.Start(t, testbin.Options{Uid: svc, Args: []string{"server", "--data", data, "--internal", testbin.FreeAddr(t), "--proxy=false"}})
+	p := testbin.Start(t, testbin.Options{Uid: svc, Args: []string{"server", "--data", data, "--proxy=false"}})
 	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
@@ -37,17 +38,19 @@ const (
 	serverMemLimit = 64 << 20
 	shutdownGrace  = 10 * time.Second
 
-	internalMaxConns   = 256
+	controlMaxConns    = 256 // one Caddy in front: no per-IP cap, every connection is ours
 	agentMaxConns      = 128 // idle TLS connections are cheap; the per-IP cap does the real work
 	agentHeaderTimeout = 5 * time.Second
 	agentMaxConnsPerIP = 4
 )
 
 type serverConfig struct {
-	Data     string
-	Listen   string
-	Internal string
-	Proxy    bool
+	Data   string
+	Listen string
+	// ControlSocket is the control plane's unix socket (mode 0600 inside a 0700
+	// directory). Empty means DATA/run/cp.sock. There is no TCP listener.
+	ControlSocket string
+	Proxy         bool
 	// DebugSocket, if set, serves /debug/* on a unix socket (mode 0600 inside
 	// a 0700 directory). There is no TCP debug listener.
 	DebugSocket string
@@ -78,7 +81,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.Data, "data", "/var/lib/serverdock", "data directory")
 	fs.StringVar(&c.Listen, "listen", ":80", "public listen address (served by the embedded proxy)")
-	fs.StringVar(&c.Internal, "internal", "127.0.0.1:7070", "control-plane listen address (loopback)")
+	fs.StringVar(&c.ControlSocket, "control-socket", "", "control-plane unix socket (default DATA/run/cp.sock; 0600 inside a 0700 directory)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
 	fs.StringVar(&c.DebugSocket, "debug-socket", "", "serve /debug/* on this unix socket path (0600, inside a 0700 directory; off by default)")
 	fs.StringVar(&c.AgentListen, "agent-listen", "", "accept remote (read-only, experimental) agents over TLS on this address, e.g. :7443 (off by default)")
@@ -92,10 +95,27 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	c.AgentSANs = sans
+	if err := c.withDefaults(); err != nil {
+		return c, err
+	}
 	if c.AgentMaxSessions < 1 {
 		return c, errors.New("--agent-max-sessions must be at least 1")
 	}
 	return c, nil
+}
+
+// withDefaults fills in the control socket path: DATA/run/cp.sock, made absolute
+// (a socket path must be).
+func (c *serverConfig) withDefaults() error {
+	if c.ControlSocket != "" {
+		return nil
+	}
+	abs, err := filepath.Abs(c.Data)
+	if err != nil {
+		return fmt.Errorf("--data %q: %w", c.Data, err)
+	}
+	c.ControlSocket = filepath.Join(abs, "run", "cp.sock")
+	return nil
 }
 
 // applyMemLimit sets a soft memory limit unless GOMEMLIMIT is set.
@@ -130,10 +150,10 @@ func serverMain(args []string, stderr io.Writer) int {
 // serverAddrs are the bound addresses, reported through the ready callback so
 // tests can use random free ports.
 type serverAddrs struct {
-	Internal string
-	Debug    string // debug unix socket path; empty when off
-	Listen   string // public proxy address; empty when --proxy=false
-	Agent    string // agent TLS listener address; empty when off
+	Control string // control-plane unix socket path
+	Debug   string // debug unix socket path; empty when off
+	Listen  string // public proxy address; empty when --proxy=false
+	Agent   string // agent TLS listener address; empty when off
 	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
 	// agent listener is off.
 	CAFingerprint string
@@ -141,6 +161,9 @@ type serverAddrs struct {
 
 // validate checks the agent flags and the token before anything is started.
 func (c serverConfig) validate() error {
+	if c.ControlSocket != "" && c.DebugSocket != "" && filepath.Clean(c.ControlSocket) == filepath.Clean(c.DebugSocket) {
+		return errors.New("--control-socket and --debug-socket must be different paths")
+	}
 	if c.AgentListen == "" && len(c.AgentSANs) > 0 {
 		return errors.New("--agent-san requires --agent-listen")
 	}
@@ -163,6 +186,9 @@ func (c serverConfig) validate() error {
 // runServer runs the control plane until ctx is cancelled. Shutdown order:
 // the local agent (and with it Caddy) stops first, then the control plane.
 func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready func(serverAddrs)) (retErr error) {
+	if err := cfg.withDefaults(); err != nil {
+		return err
+	}
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -227,15 +253,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 	}()
 	addrs := serverAddrs{}
-	rawInternal, err := net.Listen("tcp", cfg.Internal)
+	rawControl, err := listenPrivateSocket(cfg.ControlSocket)
 	if err != nil {
-		return fmt.Errorf("listen internal: %w", err)
+		return fmt.Errorf("--control-socket: %w", err)
 	}
-	// 256 connections in total; no per-IP cap here, because every request from
-	// our own Caddy arrives from the same loopback address.
-	ln := limits.NewListener(rawInternal, internalMaxConns, 0, nil)
+	// 256 connections in total; no per-IP cap here, because every connection
+	// comes from our own Caddy.
+	ln := limits.NewListener(rawControl, controlMaxConns, 0, nil)
 	opened = append(opened, ln)
-	addrs.Internal = rawInternal.Addr().String()
+	addrs.Control = cfg.ControlSocket
 	var agentLn, debugLn net.Listener
 	if mgr != nil {
 		raw, err := net.Listen("tcp", cfg.AgentListen)
@@ -249,8 +275,8 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		addrs.Agent, addrs.CAFingerprint = raw.Addr().String(), mgr.CAFingerprint()
 	}
 	if cfg.DebugSocket != "" {
-		if debugLn, err = listenDebugSocket(cfg.DebugSocket); err != nil {
-			return err
+		if debugLn, err = listenPrivateSocket(cfg.DebugSocket); err != nil {
+			return fmt.Errorf("--debug-socket: %w", err)
 		}
 		opened = append(opened, debugLn)
 		addrs.Debug = cfg.DebugSocket
@@ -272,7 +298,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	started = true
 	cpErr := make(chan error, 3)
 	cpRunning := 1
-	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace) }()
+	// Only this listener is marked as "from our proxy": Caddy dials it, and its
+	// X-Forwarded-For (exactly one value) is the client address.
+	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace, api.WithTrustedProxy(log)) }()
 	if agentLn != nil {
 		// Only GET /agent/connect is served here; it is not behind Caddy, so a
 		// proxy reload cannot drop agents (ADR 0009).
@@ -291,7 +319,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		cpRunning++
 		go func() { cpErr <- api.Serve(cpCtx, debugLn, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
 	}
-	log.Info("control plane listening", "internal", addrs.Internal)
+	log.Info("control plane listening", "socket", addrs.Control)
 
 	// In-process local agent; it owns the embedded Caddy when --proxy is set.
 	if cfg.Proxy {
@@ -317,7 +345,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
-			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
+			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
 			if ready != nil {
 				ready(addrs)

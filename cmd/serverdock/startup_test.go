@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +48,8 @@ func dataFingerprint(t *testing.T, dir string) map[string]string {
 // first still answers.
 func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 	data := newData(t)
-	addrs, stop := startServer(t, serverConfig{Data: data, Internal: "127.0.0.1:0",
+	sock := shortSock(t)
+	addrs, stop := startServer(t, serverConfig{Data: data, ControlSocket: sock,
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}})
 	before := dataFingerprint(t, data)
 	for _, want := range []string{"agent.token", "pki/ca.key", "pki/hub.pem", "keys/master.key"} {
@@ -59,7 +59,8 @@ func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 	}
 
 	// A different SAN would make an unlocked second server rewrite pki/hub.pem.
-	err := runServer(context.Background(), serverConfig{Data: data, Internal: "127.0.0.1:0",
+	sockBefore, _ := os.Lstat(sock)
+	err := runServer(context.Background(), serverConfig{Data: data, ControlSocket: sock, // the SAME socket path
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.2", "other.example"}},
 		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil || !strings.Contains(err.Error(), "already using") {
@@ -75,7 +76,11 @@ func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 			t.Errorf("%s changed by the second server", k)
 		}
 	}
-	resp, err := http.Get("http://" + addrs.Internal + "/healthz")
+	// The second server did not replace the first one's control socket.
+	if sockAfter, err := os.Lstat(sock); err != nil || !os.SameFile(sockBefore, sockAfter) {
+		t.Fatalf("the first server's socket was replaced: %v", err)
+	}
+	resp, err := cpGet(addrs.Control, "/healthz")
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("first server stopped answering: %v %v", resp, err)
 	}
@@ -87,7 +92,7 @@ func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 
 func TestMasterKeyCreatedAtStartAndKept(t *testing.T) {
 	data := newData(t)
-	_, stop := startServer(t, serverConfig{Data: data, Internal: "127.0.0.1:0"})
+	_, stop := startServer(t, serverConfig{Data: data, ControlSocket: shortSock(t)})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +100,7 @@ func TestMasterKeyCreatedAtStartAndKept(t *testing.T) {
 	if err != nil || len(key) != 32 {
 		t.Fatalf("%v %d", err, len(key))
 	}
-	_, stop = startServer(t, serverConfig{Data: data, Internal: "127.0.0.1:0"})
+	_, stop = startServer(t, serverConfig{Data: data, ControlSocket: shortSock(t)})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +110,7 @@ func TestMasterKeyCreatedAtStartAndKept(t *testing.T) {
 	}
 	// A damaged key stops the server and is not replaced.
 	os.WriteFile(filepath.Join(data, "keys", "master.key"), key[:10], 0o600)
-	err = runServer(context.Background(), serverConfig{Data: data, Internal: "127.0.0.1:0"},
+	err = runServer(context.Background(), serverConfig{Data: data, ControlSocket: shortSock(t)},
 		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil || !strings.Contains(err.Error(), "wrong size") {
 		t.Fatalf("%v", err)
@@ -122,7 +127,7 @@ func TestUmaskKeepsNewFilesPrivate(t *testing.T) {
 		t.Skip("builds the binary")
 	}
 	data := filepath.Join(testbin.ShortDir(t), "data") // does not exist yet: Prepare creates it
-	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--internal", testbin.FreeAddr(t),
+	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--control-socket", filepath.Join(testbin.ShortDir(t), "c.sock"),
 		"--listen", testbin.FreeAddr(t), "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"}})
 	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)
@@ -169,7 +174,7 @@ func TestBinaryRefusesLooseDataDirWithoutTouchingIt(t *testing.T) {
 	data := filepath.Join(testbin.ShortDir(t), "data")
 	os.Mkdir(data, 0o755)
 	os.Chmod(data, 0o755)
-	res := testbin.Run(t, testbin.Options{Args: []string{"server", "--data", data, "--internal", testbin.FreeAddr(t), "--proxy=false"}})
+	res := testbin.Run(t, testbin.Options{Args: []string{"server", "--data", data, "--control-socket", filepath.Join(testbin.ShortDir(t), "c.sock"), "--proxy=false"}})
 	if res.Code != 1 || !strings.Contains(res.Stderr, "chmod 700 "+data) {
 		t.Fatalf("exit %d\n%s", res.Code, res.Stderr)
 	}

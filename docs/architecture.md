@@ -164,13 +164,13 @@ Full threat model: [security.md](security.md).
 
 ```
 cmd/serverdock/           * main: server | agent | version; + audit verify (cli later)
-internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers; + header/body limits, /agent/* answers 404
+internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers; + header/body limits, /agent/* answers 404, the "from our proxy" connection mark (`WithTrustedProxy`)
 internal/hub/             * server side of agent connections (WebSocket + yamux); + sessions cap, auth-failure limiter, stream caps, token rules
 internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`; + op-spec table (RemoteOK), ping guard
 internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)
 internal/agent/dockerapi/ * Docker Engine API client over the unix socket (logs; + per-call deadlines, API negotiation, Stop)
 internal/pki/             + the hub CA, the hub leaf with lazy renewal, the agent-side pin check (ADR 0009)
-internal/limits/          + keyed token buckets, client-IP keys, a connection-capping listener
+internal/limits/          + keyed token buckets, client-IP keys (X-Forwarded-For only from the marked control socket), a connection-capping listener
 internal/store/           * SQLite (WAL); + forward-only migrations (migrations/NNNN_name.sql), pre-migrate backup, one-server lock, read-only open, testdata/ fixtures
 internal/audit/           + hash-chained audit log, verify, denied-row rate limit, the intent/outcome flow
 internal/redact/          + removes secrets from audit rows, errors and logs

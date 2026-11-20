@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/memstat"
 )
 
@@ -120,6 +123,39 @@ func WithReadHeaderTimeout(d time.Duration) ServeOption {
 // listeners whose only request is a one-shot upgrade.
 func WithoutKeepAlives() ServeOption {
 	return func(s *http.Server) { s.SetKeepAlivesEnabled(false) }
+}
+
+// WithTrustedProxy marks every connection the server accepts as coming from our
+// own reverse proxy, so limits.ClientIP trusts its X-Forwarded-For. Use it ONLY
+// on a listener that nothing but that proxy can reach (the control-plane unix
+// socket in a 0700 directory). The mark is set per connection through
+// http.Server.ConnContext, never derived from the peer address.
+//
+// Our proxy always sets exactly one X-Forwarded-For value holding one IP (Caddy
+// replaces a client's value when no trusted_proxies are configured). A request
+// without exactly that is answered 400 here, before any handler, and logged once
+// a minute: it means the proxy is misconfigured or something else is talking to
+// the socket.
+func WithTrustedProxy(log *slog.Logger) ServeOption {
+	return func(s *http.Server) {
+		s.ConnContext = func(ctx context.Context, _ net.Conn) context.Context { return limits.WithProxyMark(ctx) }
+		next := s.Handler
+		var lastLog atomic.Int64 // unix nanoseconds of the last log line
+		s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := limits.ParseForwarded(r.Header); err != nil {
+				now := time.Now().UnixNano()
+				if last := lastLog.Load(); now-last >= int64(time.Minute) && lastLog.CompareAndSwap(last, now) && log != nil {
+					log.Warn("control plane: request without exactly one X-Forwarded-For value; is the proxy misconfigured?", "path", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":"invalid_forwarded_for","message":"the proxy must send exactly one X-Forwarded-For value"}}` + "\n"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // Serve serves h on ln until ctx is cancelled, then shuts down gracefully,

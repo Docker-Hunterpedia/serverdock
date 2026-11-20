@@ -16,7 +16,7 @@ import (
 type LocalOptions struct {
 	DataDir  string
 	Listen   string // public listen address served by Caddy
-	Upstream string // control-plane host:port
+	Upstream string // control plane: host:port, or proxy.UnixUpstream(socket)
 	Proxy    bool   // start the embedded Caddy
 }
 

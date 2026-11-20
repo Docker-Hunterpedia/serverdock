@@ -4,7 +4,8 @@
 #   bench/run.sh
 #
 # Scenarios (every container: --memory 1g --cpus 1, nonroot distroless image):
-#   1  (report only) server --proxy=false
+#   1  (report only) server --proxy=false; the control plane has only its unix socket, so
+#      readiness and the burst run in the curl helper container on the shared volume
 #   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB
 #   3  (report only until the Phase 2 slim agent) remote `agent` connected to a scenario-2 server
 #      through its proxy (measured: the agent)
@@ -111,7 +112,7 @@ start_server_stack() { # -> sets SRV_HTTP (host:port of the server's proxy) and 
   docker volume create --label sdbench=1 "$DBG_VOL" >/dev/null
   docker run -d --label sdbench=1 --name sdbench-srv --network "$NET" --memory 1g --cpus 1 \
     -e SD_AGENT_TOKEN="$TOKEN" -v "$DBG_VOL":/debug -p 127.0.0.1::80 "$IMAGE" \
-    server --data /data --proxy=true --listen :80 --internal 127.0.0.1:7070 \
+    server --data /data --proxy=true --listen :80 \
     --debug-socket /debug/sd.sock --agent-listen :7443 --agent-san sdbench-srv >/dev/null
   SRV_HTTP=$(docker port sdbench-srv 80/tcp | head -n1)
   wait_ready "http://$SRV_HTTP/healthz"
@@ -154,10 +155,31 @@ wait_ready() { # url
   log "service never became ready: $1"; return 1
 }
 
-burst() { # base_url
+# curl through the control socket, as our Caddy would reach it: from the helper container on
+# the shared volume, with the single X-Forwarded-For value the control plane requires.
+cp_curl() { # curl args...
+  docker run --rm --label sdbench=1 --user 65532:65532 -v "$DBG_VOL":/debug "$CURL" \
+    -sS --unix-socket /debug/cp.sock -H 'X-Forwarded-For: 127.0.0.1' "$@"
+}
+
+wait_ready_sock() { # waits for /healthz on the control socket
+  i=0
+  while [ "$i" -lt 60 ]; do
+    cp_curl -f -o /dev/null http://cp/healthz 2>/dev/null && return 0
+    i=$((i + 1)); sleep 0.5
+  done
+  log "control socket never became ready"; return 1
+}
+
+burst() { # base_url   (BURST_VIA=sock: through the control socket instead of the host's curl)
   half=$((BURST / 2)); rest=$((BURST - half))
-  ok=$(curl -s -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
-        "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -c '^200$' || true)
+  if [ "${BURST_VIA:-}" = sock ]; then
+    ok=$(cp_curl -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -c '^200$' || true)
+  else
+    ok=$(curl -s -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -c '^200$' || true)
+  fi
   log "burst: $ok/$BURST requests returned 200"
   [ "$ok" -eq "$BURST" ]
 }
@@ -168,15 +190,18 @@ for id in $SCENARIOS; do
     log "scenario $id run $r/$RUNS"
     ids=$(docker ps -aq --filter label=sdbench=1); [ -z "$ids" ] || docker rm -f $ids >/dev/null
     TARGET="sdbench-s$id-r$r"
+    BURST_VIA=""
     case "$id" in
       1)
-        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::7070 "$IMAGE" \
-          server --data /data --proxy=false --internal 0.0.0.0:7070 >/dev/null
-        base="http://$(docker port "$TARGET" 7070/tcp | head -n1)"
-        wait_ready "$base/healthz" ;;
+        # The socket sits in the shared volume's directory (0700, uid 65532).
+        docker volume create --label sdbench=1 "$DBG_VOL" >/dev/null
+        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -v "$DBG_VOL":/debug "$IMAGE" \
+          server --data /data --proxy=false --control-socket /debug/cp.sock >/dev/null
+        base="http://cp"; BURST_VIA=sock
+        wait_ready_sock ;;
       2)
         docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::80 "$IMAGE" \
-          server --data /data --proxy=true --listen :80 --internal 127.0.0.1:7070 >/dev/null
+          server --data /data --proxy=true --listen :80 >/dev/null
         base="http://$(docker port "$TARGET" 80/tcp | head -n1)"
         wait_ready "$base/healthz" ;;
       3|4)
