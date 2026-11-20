@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
@@ -93,8 +94,23 @@ func runAgent(ctx context.Context, cfg agentConfig, log *slog.Logger) error {
 	}
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
+	logDockerVersion(ctx, docker, log)
 	return agent.RunClient(ctx, agent.ClientConfig{
 		URL: cfg.Server, Token: cfg.Token, ID: cfg.ID, Log: log,
 		Logs: docker,
 	})
+}
+
+// logDockerVersion logs the engine and negotiated API once at startup. A
+// missing or old Docker is reported, not fatal: the daemon may start later and
+// negotiation is retried on the next call.
+func logDockerVersion(ctx context.Context, c *dockerapi.Client, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	engine, api, err := c.Info(ctx)
+	if err != nil {
+		log.Warn("docker not usable yet", "err", err)
+		return
+	}
+	log.Info("docker engine", "version", engine, "api", api)
 }

@@ -180,6 +180,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	var session sync.WaitGroup
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
+	logDockerVersion(ctx, docker, log)
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {

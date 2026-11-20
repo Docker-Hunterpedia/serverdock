@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -63,6 +68,43 @@ type fakeDocker struct {
 	holdOpen  bool
 	reqCancel chan struct{} // closed when a logs request's context is cancelled
 	logsPath  chan string
+
+	api          string        // API-Version reported by _ping (default "1.45")
+	pingFail     atomic.Int32  // number of pings to fail with 500 first
+	pings        atomic.Int32  // pings served
+	prefixes     chan string   // the /v<ver> prefix of each non-ping request
+	inspectDelay time.Duration // delay before answering inspect
+	stopDelay    time.Duration // delay before answering stop
+	stopQuery    chan string   // raw query of stop requests
+}
+
+// versioned serves /_ping and strips the /v<ver> prefix before next.
+func (fd *fakeDocker) versioned(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_ping" {
+			fd.pings.Add(1)
+			if fd.pingFail.Add(-1) >= 0 {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("API-Version", fd.api)
+			io.WriteString(w, "OK")
+			return
+		}
+		rest, ok := strings.CutPrefix(r.URL.Path, "/v")
+		ver, path, _ := strings.Cut(rest, "/")
+		if !ok {
+			http.Error(w, "unversioned", http.StatusBadRequest)
+			return
+		}
+		select {
+		case fd.prefixes <- "v" + ver:
+		default:
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/" + path
+		next.ServeHTTP(w, r2)
+	})
 }
 
 func startFakeDocker(t *testing.T, fd *fakeDocker) string {
@@ -79,8 +121,22 @@ func startFakeDocker(t *testing.T, fd *fakeDocker) string {
 	}
 	fd.reqCancel = make(chan struct{})
 	fd.logsPath = make(chan string, 4)
+	fd.prefixes = make(chan string, 16)
+	fd.stopQuery = make(chan string, 4)
+	if fd.api == "" {
+		fd.api = "1.45"
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"Version":"25.0.3","ApiVersion":"1.44"}`)
+	})
+	mux.HandleFunc("POST /containers/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+		fd.stopQuery <- r.URL.RawQuery
+		time.Sleep(fd.stopDelay)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(fd.inspectDelay)
 		if r.PathValue("id") == "missing" {
 			http.NotFound(w, r)
 			return
@@ -102,7 +158,7 @@ func startFakeDocker(t *testing.T, fd *fakeDocker) string {
 			close(fd.reqCancel)
 		}
 	})
-	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: mux}}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: fd.versioned(mux)}}
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return sock
@@ -201,5 +257,197 @@ func TestLogsContextCancelCancelsRequest(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("docker server never saw the request cancelled")
+	}
+}
+
+func TestNegotiationUsesMinOfServerAndMax(t *testing.T) {
+	for _, tc := range []struct{ server, want string }{
+		{"1.44", "v1.44"},
+		{"1.47", "v1.47"},
+		{"1.99", "v" + MaxAPIVersion},
+	} {
+		fd := &fakeDocker{api: tc.server}
+		c := New(startFakeDocker(t, fd))
+		t.Cleanup(c.Close)
+		if _, _, err := c.Info(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-fd.prefixes; got != tc.want {
+			t.Errorf("server %s: prefix %s, want %s", tc.server, got, tc.want)
+		}
+		if c.NegotiatedAPI() != strings.TrimPrefix(tc.want, "v") {
+			t.Errorf("NegotiatedAPI = %q", c.NegotiatedAPI())
+		}
+		// Cached: more calls do not ping again.
+		c.Info(context.Background())
+		if n := fd.pings.Load(); n != 1 {
+			t.Errorf("pings = %d, want 1", n)
+		}
+	}
+}
+
+func TestOldDaemonRefused(t *testing.T) {
+	for _, v := range []string{"1.43", "1.41", "0.9"} {
+		fd := &fakeDocker{api: v}
+		c := New(startFakeDocker(t, fd))
+		t.Cleanup(c.Close)
+		err := c.Logs(context.Background(), "web-1", 5, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "Docker Engine 25+") {
+			t.Errorf("API %s: err = %v", v, err)
+		}
+		select {
+		case p := <-fd.prefixes:
+			t.Errorf("API %s: a versioned request was sent (%s)", v, p)
+		default:
+		}
+	}
+	// A garbage version header is refused too.
+	fd := &fakeDocker{api: "banana"}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	if _, _, err := c.Info(context.Background()); err == nil {
+		t.Error("bad API-Version accepted")
+	}
+}
+
+func TestPingRetriedAfterFailure(t *testing.T) {
+	fd := &fakeDocker{}
+	fd.pingFail.Store(1)
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	if _, _, err := c.Info(context.Background()); err == nil {
+		t.Fatal("expected the first (failed) ping to error")
+	}
+	if c.NegotiatedAPI() != "" {
+		t.Fatal("failure was cached")
+	}
+	eng, api, err := c.Info(context.Background())
+	if err != nil || eng != "25.0.3" || api != "1.45" {
+		t.Fatalf("retry: %q %q %v", eng, api, err)
+	}
+	if n := fd.pings.Load(); n != 2 {
+		t.Errorf("pings = %d, want 2", n)
+	}
+}
+
+func TestInspectThatHangsFailsAtItsDeadline(t *testing.T) {
+	fd := &fakeDocker{inspectDelay: time.Second}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	c.short = 150 * time.Millisecond
+	t0 := time.Now()
+	err := c.Logs(context.Background(), "web-1", 5, io.Discard)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if d := time.Since(t0); d > time.Second {
+		t.Errorf("took %v", d)
+	}
+}
+
+func TestStopIsNotCutByTheShortDeadline(t *testing.T) {
+	fd := &fakeDocker{stopDelay: 500 * time.Millisecond}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	c.short = 100 * time.Millisecond // a short call would die at 100 ms
+	if err := c.Stop(context.Background(), "web-1", 2); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if q := <-fd.stopQuery; q != "t=2" {
+		t.Errorf("query %q", q)
+	}
+	if err := c.Stop(context.Background(), "../x", 2); err == nil {
+		t.Error("bad id accepted")
+	}
+	if err := c.Stop(context.Background(), "web-1", -1); err == nil {
+		t.Error("negative grace accepted")
+	}
+}
+
+func TestLogFollowOutlivesTheShortDeadline(t *testing.T) {
+	fd := &fakeDocker{logsBody: frame(1, "first\n"), holdOpen: true}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	c.short = 100 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var out syncBuf
+	go func() { done <- c.Logs(ctx, "slow", 5, &out) }()
+	time.Sleep(500 * time.Millisecond) // five short deadlines
+	select {
+	case err := <-done:
+		t.Fatalf("stream ended early: %v", err)
+	default:
+	}
+	if out.String() != "first\n" {
+		t.Errorf("out = %q", out.String())
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// Every exported Client method that talks to the daemon must go through call
+// or stream (no direct c.hc use), so no request escapes a deadline policy.
+func TestExportedMethodsUseTheHelpers(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "dockerapi.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helpers := map[string]bool{"call": true, "stream": true, "negotiate": true}
+	var checked int
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || fn.Body == nil {
+			continue
+		}
+		usesHelper, usesHC := false, false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "c" {
+					if helpers[sel.Sel.Name] {
+						usesHelper = true
+					}
+					if sel.Sel.Name == "hc" {
+						usesHC = true
+					}
+				}
+			}
+			return true
+		})
+		name := fn.Name.Name
+		switch {
+		case helpers[name]:
+		case name == "Close" || name == "NegotiatedAPI":
+			// do not issue requests
+			if usesHC && name != "Close" {
+				t.Errorf("%s uses c.hc", name)
+			}
+		case fn.Name.IsExported():
+			checked++
+			if !usesHelper || usesHC {
+				t.Errorf("exported method %s must use c.call/c.stream and not c.hc", name)
+			}
+		}
+	}
+	if checked < 3 { // Info, Stop, Logs
+		t.Errorf("only %d exported methods checked", checked)
+	}
+	// A transport-wide ResponseHeaderTimeout would cut stop?t=N.
+	src, _ := os.ReadFile("dockerapi.go")
+	for _, l := range strings.Split(string(src), "\n") {
+		if strings.Contains(l, "ResponseHeaderTimeout") && !strings.HasPrefix(strings.TrimSpace(l), "//") {
+			t.Errorf("code sets ResponseHeaderTimeout: %s", l)
+		}
 	}
 }
