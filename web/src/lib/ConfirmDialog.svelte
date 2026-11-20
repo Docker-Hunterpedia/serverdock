@@ -9,6 +9,8 @@
 	let dialog: HTMLDialogElement | undefined = $state();
 	let cancelButton: HTMLButtonElement | undefined = $state();
 	let spec: Spec = $state({ title: '', lines: [], confirm: '' });
+	// Unique ids: the shell and the Security page each have an instance.
+	const uid = Math.random().toString(36).slice(2, 8);
 	let opener: HTMLElement | null = null;
 	onMount(trackOpener);
 	let resolve: ((ok: boolean) => void) | undefined;
@@ -35,9 +37,9 @@
 	}
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="confirm-title" aria-describedby="confirm-body" oncancel={(e) => { e.preventDefault(); finish(false); }} onclose={() => finish(false)}>
-	<h2 id="confirm-title">{spec.title}</h2>
-	<div id="confirm-body">
+<dialog bind:this={dialog} aria-labelledby="confirm-title-{uid}" aria-describedby="confirm-body-{uid}" oncancel={(e) => { e.preventDefault(); finish(false); }} onclose={() => finish(false)}>
+	<h2 id="confirm-title-{uid}">{spec.title}</h2>
+	<div id="confirm-body-{uid}">
 		{#each spec.lines as line (line)}<p>{line}</p>{/each}
 	</div>
 	<div class="actions">

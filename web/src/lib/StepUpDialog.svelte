@@ -6,14 +6,26 @@
 	import { ApiError, NETWORK_MESSAGE, reauth, signedOutReason } from './api';
 	import { Countdown, humanDuration } from './countdown.svelte';
 	import { currentOpener, trackOpener } from './opener';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import Field from './Field.svelte';
 
 	let dialog: HTMLDialogElement | undefined = $state();
 	let code = $state('');
 	let error = $state('');
 	let busy = $state(false);
-	const countdown = new Countdown((m) => (error = m));
+	let status = $state('');
+	// Countdown steps go only to the status region (never into `error`); the red error
+	// goes away when the wait ends.
+	const countdown = new Countdown((m) => {
+		status = m;
+		if (m === 'You can try again now.') error = '';
+	});
+	/** Announces through the status region even when the same text was announced before. */
+	async function say(m: string) {
+		status = '';
+		await tick();
+		status = m;
+	}
 	let field: HTMLInputElement | undefined = $state();
 	let opener: HTMLElement | null = null;
 	onMount(trackOpener);
@@ -22,6 +34,7 @@
 	export function ask(): Promise<boolean> {
 		code = '';
 		error = '';
+		status = '';
 		opener = currentOpener();
 		dialog?.showModal();
 		field?.focus();
@@ -41,7 +54,7 @@
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
 		if (countdown.active) {
-			error = `Try again in ${humanDuration(countdown.remaining)}.`;
+			void say(`Try again in ${humanDuration(countdown.remaining)}.`);
 			return;
 		}
 		if (busy) return;
@@ -75,6 +88,8 @@
 			else if (err.code === 'network') error = NETWORK_MESSAGE;
 			else error = err.message;
 			field?.focus();
+			// Focus is already on the field, so also say the error where it is announced.
+			if (error) void say(error);
 		} finally {
 			busy = false;
 		}
@@ -86,6 +101,7 @@
 		<h2 id="stepup-title">Confirm it is you</h2>
 		<p id="stepup-body">This change needs a fresh code from your authenticator app.</p>
 		{#if countdown.active}<p class="banner">Try again in {countdown.text}</p>{/if}
+		<div role="status" class="sr">{status}</div>
 		<!-- One announcement path: the error is the field's own (aria-describedby, aria-invalid) and focus returns to the field, so it is read once. -->
 		<Field id="stepup-code" label="Code from your authenticator" bind:value={code} bind:el={field} inputmode="numeric" autocomplete="one-time-code" maxlength={7} {error} />
 		<div class="actions">

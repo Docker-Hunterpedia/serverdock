@@ -37,6 +37,7 @@
             "writeOnly": true
           },
           "keep_tokens": {
+            "description": "keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise",
             "type": "boolean"
           },
           "new_password": {
@@ -266,7 +267,7 @@
             "writeOnly": true
           },
           "keep_tokens": {
-            "description": "keep API tokens (only when rotating routinely, not after a suspected compromise)",
+            "description": "keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise",
             "type": "boolean"
           }
         },

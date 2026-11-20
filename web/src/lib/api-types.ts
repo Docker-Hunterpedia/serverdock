@@ -409,6 +409,7 @@ export interface components {
         AuthPasswordChangeInput: {
             /** Format: password */
             current_password: string;
+            /** @description keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise */
             keep_tokens?: boolean;
             /** Format: password */
             new_password: string;
@@ -472,7 +473,7 @@ export interface components {
             code: string;
             /** Format: password */
             enrollment_id: string;
-            /** @description keep API tokens (only when rotating routinely, not after a suspected compromise) */
+            /** @description keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise */
             keep_tokens?: boolean;
         };
         AuthTotpReenrollConfirmOutput: {

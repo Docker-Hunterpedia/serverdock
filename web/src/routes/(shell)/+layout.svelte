@@ -3,11 +3,13 @@
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { logout, signedOutReason } from '../../lib/api';
+	import ConfirmDialog from '../../lib/ConfirmDialog.svelte';
 	import { guard } from '../../lib/flow.svelte';
 	import { startStatusPolling, type Status } from '../../lib/status';
 
 	let { children } = $props();
 
+	let confirmDialog: ConfirmDialog | undefined = $state();
 	let menuOpen = $state(false);
 	let menuButton: HTMLButtonElement | undefined = $state();
 	let mainEl: HTMLElement | undefined = $state();
@@ -39,8 +41,15 @@
 
 	async function signOut() {
 		// Unsaved recovery codes are shown once: ask before ending the session, not after.
-		if (guard.unsavedCodes && !confirm('You have new recovery codes on screen that are not marked as saved. If you sign out now they are lost. Sign out anyway?')) return;
-		guard.unsavedCodes = false; // a deliberate choice: the recovery-code page lets this navigation through
+		if (guard.unsavedCodes) {
+			const ok = await confirmDialog?.ask({
+				title: 'Sign out and lose the recovery codes?',
+				lines: ['You have new recovery codes on screen that are not marked as saved. If you sign out now they are lost, and your old codes no longer work.'],
+				confirm: 'Sign out and lose codes'
+			});
+			if (!ok) return;
+			guard.unsavedCodes = false; // a deliberate choice: the recovery-code page lets this navigation through
+		}
 		try {
 			await logout();
 		} catch {
@@ -62,6 +71,8 @@
 <svelte:window onkeydown={onKeydown} />
 
 <a class="skip" href="#main" onclick={skip}>Skip to main content</a>
+
+<ConfirmDialog bind:this={confirmDialog} />
 
 <div class="shell">
 	<header class="bar">

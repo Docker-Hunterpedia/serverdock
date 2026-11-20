@@ -79,19 +79,14 @@
 			unrecorded = true;
 			void fail(AUDIT_WARNING);
 		});
-		// A token shown once does not stay on screen when you look away.
-		const onHidden = () => document.visibilityState === 'hidden' && (created = undefined);
-		document.addEventListener('visibilitychange', onHidden);
 		void load();
-		return () => document.removeEventListener('visibilitychange', onHidden);
 	});
 	onDestroy(() => {
 		setStepUpHandler(undefined);
 		setAuditHandler(undefined);
 	});
-	/** Starting any action clears the shown-once token and the previous message. */
+	/** Starting an action clears the previous message. The shown-once token stays until the user hides it or leaves: on a phone, switching apps to paste it must not destroy it. */
 	function begin() {
-		created = undefined;
 		error = null;
 		links = [];
 		unrecorded = false;

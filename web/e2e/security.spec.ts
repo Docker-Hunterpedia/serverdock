@@ -500,22 +500,28 @@ test.describe('step 13 review fixes', () => {
 		await expect(page.getByRole('button', { name: 'Replace authenticator…' })).toBeFocused();
 	});
 
-	test('a shown token disappears when the page is hidden or another action starts', async ({ page, server, admin }) => {
+	test('a shown token survives the page being hidden and another action, until it is explicitly hidden', async ({ page, server, admin }) => {
 		await signIn(page, server, admin);
 		await openSecurity(page, server);
 		const token = await createToken(page, 'one');
-		await page.evaluate(() => {
-			Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
-			document.dispatchEvent(new Event('visibilitychange'));
-		});
-		await expect(page.locator('body')).not.toContainText(token);
-		await page.evaluate(() => {
-			Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-		});
-		const second = await createToken(page, 'two');
+		const visibility = (v: 'hidden' | 'visible') =>
+			page.evaluate((state) => {
+				Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+				document.dispatchEvent(new Event('visibilitychange'));
+			}, v);
+		await visibility('hidden'); // switching apps to paste it must not destroy it
+		await visibility('visible');
+		await expect(page.locator('#new-token')).toHaveText(token);
+		// Another action: the first token is still there until the new one replaces it, never silently dropped.
+		await page.getByLabel('Name', { exact: true }).fill('two');
+		await page.getByRole('button', { name: 'Create token' }).click();
+		await expect(page.locator('#new-token')).not.toHaveText(token);
+		const second = ((await page.locator('#new-token').textContent()) ?? '').trim();
 		await page.getByRole('button', { name: /^Revoke token one/ }).click();
-		await expect(page.locator('body')).not.toContainText(second); // starting another action clears it
 		await dialog(page, 'Revoke this token?').getByRole('button', { name: 'Cancel' }).click();
+		await expect(page.locator('#new-token')).toHaveText(second);
+		await page.getByRole('button', { name: 'I have copied it, hide it' }).click(); // only this removes it
+		await expect(page.locator('body')).not.toContainText(second);
 	});
 
 	test('Sign out in the navigation asks first while recovery codes are unsaved', async ({ page, server, admin }) => {
@@ -525,14 +531,16 @@ test.describe('step 13 review fixes', () => {
 		await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
 		await expect(page.getByRole('list', { name: 'Recovery codes' })).toBeVisible();
 		if (isPhone(page)) await page.getByRole('button', { name: 'Menu' }).click();
-		const asked: string[] = [];
-		page.once('dialog', (d) => { asked.push(d.message()); void d.dismiss(); });
-		await page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Sign out' }).click();
-		await expect.poll(() => asked.length).toBe(1);
-		expect(asked[0]).toContain('not marked as saved');
+		const nav = page.getByRole('navigation', { name: 'Main' });
+		await nav.getByRole('button', { name: 'Sign out' }).click();
+		const d = dialog(page, 'Sign out and lose the recovery codes?');
+		await expect(d).toContainText('not marked as saved');
+		await expect(d.getByRole('button', { name: 'Cancel' })).toBeFocused();
+		await expectNoAxeViolations(page, 'sign out with unsaved codes');
+		await d.getByRole('button', { name: 'Cancel' }).click();
 		await expect(page.getByRole('list', { name: 'Recovery codes' })).toBeVisible(); // still signed in, codes still shown
-		page.once('dialog', (d) => void d.accept());
-		await page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Sign out' }).click();
+		await nav.getByRole('button', { name: 'Sign out' }).click();
+		await dialog(page, 'Sign out and lose the recovery codes?').getByRole('button', { name: 'Sign out and lose codes' }).click();
 		await expect(page).toHaveURL(/\/signed-out\?reason=signed_out$/);
 	});
 
@@ -556,5 +564,39 @@ test.describe('step 13 review fixes', () => {
 		await page.getByRole('button', { name: 'I have copied it, hide it' }).click();
 		await expect(page.locator('code', { hasText: /^sd_.{6,12}…$/ }).first()).toBeAttached();
 		expect(token.startsWith('sd_')).toBe(true);
+	});
+
+	test('step-up: the countdown goes to a status region only; code errors are the field\'s and are mirrored to the status', async ({ page, server, admin }) => {
+		await signIn(page, server, admin, 0);
+		await openSecurity(page, server);
+		server.sql('UPDATE sessions SET mfa_fresh_until = 1');
+		await page.clock.install();
+		await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+		await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
+		const step = dialog(page, 'Confirm it is you');
+		const field = step.getByLabel('Code from your authenticator');
+		const live = step.getByRole('status');
+		await expect(live).toHaveClass(/sr/); // visually hidden, still announced
+		// A repeated wrong code is announced again even though focus never left the field.
+		for (let i = 0; i < 2; i++) {
+			await field.fill('000000');
+			await step.getByRole('button', { name: 'Confirm' }).click();
+			await expect(live).toContainText('That code is wrong.');
+			await expect(field).toBeFocused();
+		}
+		// Rate limited: the steps are in the status region, never in the field's error.
+		await page.route('**/api/v1/auth/reauth', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '12' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
+		await field.fill('111111');
+		await step.getByRole('button', { name: 'Confirm' }).click();
+		await expect(live).toHaveText('Too many attempts. Try again in 12 seconds.');
+		await expect(step.locator('#stepup-code-error')).toHaveCount(0); // the wait is not a code error: nothing red, nothing in the field's description
+		await page.clock.runFor(2_000);
+		await expect(live).toHaveText('Try again in 10 seconds.');
+		await step.getByRole('button', { name: 'Confirm' }).click({ force: true });
+		await expect(live).toHaveText(/^Try again in \d+ seconds\.$/);
+		await page.clock.runFor(11_000);
+		await expect(live).toHaveText('You can try again now.');
+		await expect(step.locator('#stepup-code-error')).toHaveCount(0); // the red error goes when the wait ends
+		await expectNoAxeViolations(page, 'step-up after the countdown');
 	});
 });
