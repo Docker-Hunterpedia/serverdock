@@ -1,20 +1,26 @@
 // Package store opens the SQLite database (pure Go, WAL) as one writer pool
-// and one small reader pool. Pragmas are set through the DSN so that every
-// pooled connection gets them.
+// and one small reader pool, applies forward-only migrations, and offers a
+// read-only open for tools that must never write. Pragmas are set through the
+// DSN so that every pooled connection gets them.
 package store
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
+	"syscall"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 
 const (
 	fileName    = "serverdock.db"
+	lockName    = "serverdock.lock"
+	backupDir   = "backups"
 	readerConns = 2
 )
 
@@ -24,6 +30,10 @@ type Store struct {
 	W *sql.DB
 	// R is a small read-only pool.
 	R *sql.DB
+	// Dir is the data directory.
+	Dir string
+
+	lock *os.File // flock on DATA/serverdock.lock, held until Close
 }
 
 var commonPragmas = []string{
@@ -46,11 +56,30 @@ func dsn(path string, txImmediate bool, extra ...string) string {
 	return u.String()
 }
 
-// Open opens (creating if needed) DATA/serverdock.db and runs the migrations
-// stub. dir must exist.
+// Open opens (creating if needed) DATA/serverdock.db, takes the one-server
+// lock, wipes leftovers from a crashed run, and applies pending migrations
+// (see migrate.go). dir must exist.
 func Open(ctx context.Context, dir string) (*Store, error) {
+	return openWith(ctx, dir, Options{})
+}
+
+func openWith(ctx context.Context, dir string, opts Options) (*Store, error) {
+	opts.defaults()
 	path, err := filepath.Abs(filepath.Join(dir, fileName))
 	if err != nil {
+		return nil, err
+	}
+	lock, err := lockDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			unlock(lock)
+		}
+	}()
+	if err := wipeLeftovers(dir); err != nil {
 		return nil, err
 	}
 	w, err := sql.Open("sqlite", dsn(path, true))
@@ -58,7 +87,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		return nil, fmt.Errorf("store: open writer: %w", err)
 	}
 	w.SetMaxOpenConns(1)
-	if err := migrate(ctx, w); err != nil {
+	if err := migrate(ctx, w, dir, opts); err != nil {
 		w.Close()
 		return nil, err
 	}
@@ -73,33 +102,81 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		r.Close()
 		return nil, fmt.Errorf("store: ping reader: %w", err)
 	}
-	return &Store{W: w, R: r}, nil
+	ok = true
+	return &Store{W: w, R: r, Dir: dir, lock: lock}, nil
 }
 
-// Close closes both pools.
+// lockDir takes an exclusive, non-blocking flock on DATA/serverdock.lock. The
+// file is 0644 so a read-only tool running as another user can test whether a
+// server is running (see OpenReadOnly); it holds no data.
+func lockDir(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("store: lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("store: another ServerDock server is already using %s", dir)
+		}
+		return nil, fmt.Errorf("store: lock %s: %w", dir, err)
+	}
+	return f, nil
+}
+
+func unlock(f *os.File) {
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
+
+// wipeLeftovers removes what a crashed run can leave behind: half-written
+// backups (backups/*.tmp) and the scratch directory DATA/tmp.
+func wipeLeftovers(dir string) error {
+	tmps, err := filepath.Glob(filepath.Join(dir, backupDir, "*.tmp"))
+	if err != nil {
+		return err
+	}
+	for _, p := range tmps {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("store: wipe %s: %w", p, err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "tmp")); err != nil {
+		return fmt.Errorf("store: wipe tmp: %w", err)
+	}
+	return nil
+}
+
+// WriteTx runs fn in a BEGIN IMMEDIATE transaction on the single writer,
+// committing if fn returns nil and rolling back on an error or a panic.
+func (s *Store) WriteTx(ctx context.Context, fn func(*sql.Tx) error) (err error) {
+	tx, err := s.W.BeginTx(ctx, nil) // _txlock=immediate
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// Close closes both pools and releases the one-server lock.
 func (s *Store) Close() error {
 	rerr := s.R.Close()
-	if werr := s.W.Close(); werr != nil {
+	werr := s.W.Close()
+	if s.lock != nil {
+		unlock(s.lock)
+		s.lock = nil
+	}
+	if werr != nil {
 		return werr
 	}
 	return rerr
-}
-
-// migrate is a stub: it creates the meta table and records schema version 1.
-func migrate(ctx context.Context, db *sql.DB) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("store: migrate: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS meta (
-		key   TEXT PRIMARY KEY,
-		value TEXT NOT NULL
-	) STRICT`); err != nil {
-		return fmt.Errorf("store: migrate: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')`); err != nil {
-		return fmt.Errorf("store: migrate: %w", err)
-	}
-	return tx.Commit()
 }
