@@ -26,8 +26,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "server":
 		return serverMain(args[1:], stderr)
 	case "agent":
-		fmt.Fprintln(stderr, "serverdock: \"agent\" is not implemented yet")
-		return 1
+		return agentMain(args[1:], stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0

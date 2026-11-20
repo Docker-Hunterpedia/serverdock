@@ -76,7 +76,7 @@ jobs:
           fi
 
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
-  # reports only. Scenarios 3 and 4 are added with plan step 7.
+  # reports only. Scenario 4 is report only.
   bench:
     needs: [lint-test, changes]
     if: needs.changes.outputs.bench == 'true'
@@ -84,7 +84,7 @@ jobs:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
-        scenario: ["1", "2"]
+        scenario: ["1", "2", "3", "4"]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:

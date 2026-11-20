@@ -84,6 +84,8 @@ type Report struct {
 var scenarioNames = map[int]string{
 	1: "server, --proxy=false",
 	2: "single node: server + local agent + Caddy",
+	3: "remote agent (measured: the agent container)",
+	4: "remote agent + its own Caddy (report only)",
 }
 
 type limits struct {
@@ -94,7 +96,14 @@ type limits struct {
 var scenarioLimits = map[int]limits{
 	1: {40, 0.5},
 	2: {80, 1.0},
+	3: {20, 0.3},
 }
+
+// hardRSS is the absolute memory ceiling (no tolerance) for scenario 3.
+var hardRSS = map[int]float64{3: 25}
+
+// reportRSS is a target shown for report-only scenarios; it never fails the run.
+var reportRSS = map[int]float64{4: 50}
 
 const gzipLimitMB = 40
 
@@ -197,6 +206,14 @@ func scenario(id int, runs []RunStats) ScenarioResult {
 			{Name: "idle CPU", Value: r.CPUMedian, Limit: l.cpu + cpuTolerance, Unit: "%",
 				Pass: r.CPUMedian < l.cpu+cpuTolerance},
 		}
+		if h, ok := hardRSS[id]; ok {
+			r.Gates = append(r.Gates, Gate{Name: "VmRSS hard limit", Value: r.VmRSSMedian / mb, Limit: h, Unit: "MB",
+				Pass: r.VmRSSMedian <= h*mb})
+		}
+	}
+	if t, ok := reportRSS[id]; ok {
+		r.Gates = append(r.Gates, Gate{Name: "VmRSS target (report only)", Value: r.VmRSSMedian / mb, Limit: t, Unit: "MB",
+			Pass: r.VmRSSMedian <= t*mb, Report: true})
 	}
 	return r
 }
@@ -213,7 +230,7 @@ func (r *Report) evaluate() {
 	}
 	for _, s := range r.Scenarios {
 		for _, g := range s.Gates {
-			r.Pass = r.Pass && g.Pass
+			r.Pass = r.Pass && (g.Pass || g.Report)
 		}
 	}
 }
@@ -267,6 +284,9 @@ func writeGates(b *strings.Builder, gs []Gate) {
 		res := "pass"
 		if !g.Pass {
 			res = "FAIL"
+			if g.Report {
+				res = "above target (report only)"
+			}
 		}
 		fmt.Fprintf(b, "| %s | %.2f %s | %.2f %s | %s |\n", g.Name, g.Value, g.Unit, g.Limit, g.Unit, res)
 	}

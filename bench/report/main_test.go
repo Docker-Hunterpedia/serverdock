@@ -91,3 +91,25 @@ func TestReportLabelsAndVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestScenarios3And4(t *testing.T) {
+	run := func(rss float64) []RunStats { return []RunStats{{VmRSSMedian: rss * mb, IdleCPUPercent: 0.1}} }
+	if s := scenario(3, run(20.9)); !s.Gates[0].Pass || !s.Gates[2].Pass {
+		t.Errorf("20.9 MB should pass scenario 3: %+v", s.Gates)
+	}
+	if s := scenario(3, run(21.5)); s.Gates[0].Pass || !s.Gates[2].Pass {
+		t.Errorf("21.5 MB fails the tolerance gate but not the hard limit: %+v", s.Gates)
+	}
+	if s := scenario(3, run(25.5)); s.Gates[2].Pass {
+		t.Errorf("25.5 MB must fail the hard limit: %+v", s.Gates)
+	}
+	// Scenario 4 never fails the run.
+	r := Report{Scenarios: []ScenarioResult{scenario(4, run(70))}, Gates: binaryGates(10 * mb)}
+	r.evaluate()
+	if !r.Pass {
+		t.Error("report-only scenario must not fail the run")
+	}
+	if !strings.Contains(markdown(r), "report only") {
+		t.Error("markdown should flag report-only")
+	}
+}

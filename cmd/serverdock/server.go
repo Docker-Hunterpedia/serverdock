@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
@@ -38,6 +39,8 @@ type serverConfig struct {
 	// AgentToken is the shared spike token (SD_AGENT_TOKEN); empty disables
 	// remote agents. It is never logged.
 	AgentToken string
+	// DockerSocket is used by the in-process local agent for log streams.
+	DockerSocket string
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -49,6 +52,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.StringVar(&c.Internal, "internal", "127.0.0.1:7070", "control-plane listen address (loopback)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
 	fs.StringVar(&c.DebugListen, "debug-listen", "", "serve /debug/mem on this address (off by default)")
+	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
 	fs.BoolVar(&c.DebugAllowRemote, "debug-allow-remote", false, "allow --debug-listen on a non-loopback address (unauthenticated; bench networks only)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -176,7 +180,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		go func() {
-			_ = agent.ServeSession(agentCtx, pipeAgent, localLogs(), 0, log)
+			_ = agent.ServeSession(agentCtx, pipeAgent, localLogs(cfg.DockerSocket), 0, log)
 		}()
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
@@ -212,10 +216,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	return first
 }
 
+// noLogs is used where no Docker socket is wanted (tests).
 type noLogs struct{}
 
 func (noLogs) Logs(context.Context, string, int, io.Writer) error {
-	return errors.New("docker logs are not available yet")
+	return errors.New("docker logs are not available")
 }
 
-func localLogs() agent.LogSource { return noLogs{} }
+func localLogs(socket string) agent.LogSource { return dockerapi.New(socket) }
