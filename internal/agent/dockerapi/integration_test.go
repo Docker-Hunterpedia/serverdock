@@ -32,7 +32,9 @@ func TestRealDockerLogsBusybox(t *testing.T) {
 	defer cancel()
 	pr, pw := ioPipe()
 	done := make(chan error, 1)
-	go func() { done <- New(sock).Logs(ctx, name, 10, pw) }()
+	c := New(sock)
+	t.Cleanup(c.Close)
+	go func() { done <- c.Logs(ctx, name, 10, pw) }()
 	sc := bufio.NewScanner(pr)
 	var sawOut, sawErr bool
 	for sc.Scan() && !(sawOut && sawErr) {
@@ -48,6 +50,7 @@ func TestRealDockerLogsBusybox(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
+		pw.Close() // ends the drain goroutine
 		if time.Since(t0) > 2*time.Second {
 			t.Error("cancel took too long")
 		}
@@ -57,3 +60,31 @@ func TestRealDockerLogsBusybox(t *testing.T) {
 }
 
 func ioPipe() (*io.PipeReader, *io.PipeWriter) { return io.Pipe() }
+
+// stop?t=N against a real daemon, through the negotiated client.
+func TestRealDockerStopBusybox(t *testing.T) {
+	sock := os.Getenv("DOCKER_SOCK")
+	if sock == "" {
+		sock = DefaultSocket
+	}
+	name := "sd-itest-stop"
+	_ = exec.Command("docker", "rm", "-f", name).Run()
+	if out, err := exec.Command("docker", "run", "-d", "--name", name, "busybox:1", "sleep", "300").CombinedOutput(); err != nil {
+		t.Skipf("docker run failed: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	c := New(sock)
+	t.Cleanup(c.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := c.Stop(ctx, name, 2); err != nil {
+		t.Fatal(err)
+	}
+	if c.NegotiatedAPI() == "" {
+		t.Error("no API negotiated")
+	}
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "false" {
+		t.Errorf("container still running: %q %v", out, err)
+	}
+}

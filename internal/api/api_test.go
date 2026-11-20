@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -131,3 +132,127 @@ func TestServeGracefulShutdown(t *testing.T) {
 		t.Error("listener still accepting")
 	}
 }
+
+// Agents connect to the hub's own TLS listener; the control plane must answer
+// 404 for /agent/*, not the SPA fallback.
+func TestAgentPathsAre404(t *testing.T) {
+	srv := New(fstest.MapFS{"index.html": {Data: []byte("<html>spa</html>")}})
+	for _, p := range []string{"/agent/connect", "/agent/", "/agent/x/y"} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/some/route", nil))
+	if rec.Code != 200 {
+		t.Errorf("SPA fallback broken: %d", rec.Code)
+	}
+}
+
+// Serve refuses oversized headers (431) and bodies (reads fail past 1 MiB), and
+// sets no global read/write timeout (listeners carry upgrades and long streams).
+func TestServeLimits(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /echo", func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		fmt.Fprint(w, n)
+	})
+	mux.HandleFunc("GET /ok", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, ln, mux, time.Second) }()
+	defer func() { cancel(); <-done }()
+	base := "http://" + ln.Addr().String()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	post := func(n int) int {
+		resp, err := c.Post(base+"/echo", "application/octet-stream", io.LimitReader(zeros{}, int64(n)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := post(MaxBodyBytes); got != 200 {
+		t.Errorf("body at the cap: %d", got)
+	}
+	if got := post(MaxBodyBytes + 1); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("body over the cap: %d, want 413", got)
+	}
+
+	big, _ := http.NewRequest("GET", base+"/ok", nil)
+	big.Header.Set("X-Big", strings.Repeat("a", MaxHeaderBytes+8<<10))
+	resp, err := c.Do(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Errorf("oversized header: %d, want 431", resp.StatusCode)
+	}
+	small, _ := http.NewRequest("GET", base+"/ok", nil)
+	small.Header.Set("X-Big", strings.Repeat("a", 8<<10))
+	if resp, err := c.Do(small); err != nil || resp.StatusCode != 200 {
+		t.Errorf("an 8 KiB header was refused: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+}
+
+// The agent-listener options: no keep-alives, and a short header/handshake
+// timeout that drops a silent connection.
+func TestServeOptions(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ok", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ln, mux, time.Second, WithReadHeaderTimeout(300*time.Millisecond), WithoutKeepAlives())
+	}()
+	defer func() { cancel(); <-done }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !resp.Close {
+		t.Error("keep-alives are still on (response lacks Connection: close)")
+	}
+	// A client that connects and sends nothing is dropped near the timeout.
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	t0 := time.Now()
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, err = c.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("server answered a silent connection")
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("silent connection was not dropped by the header timeout")
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Errorf("dropped after %v, want about 300ms", d)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }

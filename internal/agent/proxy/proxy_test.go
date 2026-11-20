@@ -69,9 +69,16 @@ func TestBuildConfig(t *testing.T) {
 		t.Error("admin.config.persist must be false")
 	}
 	s := string(b)
-	for _, want := range []string{`"grace_period":"10s"`, `"stream_close_delay":"5m0s"`, `"automatic_https":{"disable":true}`, `/agent/connect`, `"dial":"127.0.0.1:7070"`} {
+	for _, want := range []string{`"grace_period":"10s"`, `"automatic_https":{"disable":true}`, `"read_header_timeout":"10s"`, `"idle_timeout":"2m"`, `"max_header_bytes":65536`, `"dial":"127.0.0.1:7070"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("config missing %s", want)
+		}
+	}
+	// The agent route and its stream_close_delay are gone: the hub serves
+	// /agent/connect on its own TLS listener (ADR 0009).
+	for _, gone := range []string{"/agent/connect", "stream_close_delay", "flush_interval"} {
+		if strings.Contains(s, gone) {
+			t.Errorf("config still contains %q", gone)
 		}
 	}
 }
@@ -145,7 +152,7 @@ func TestProxyServesSPAWebSocketAndReload(t *testing.T) {
 		t.Fatalf("SPA via proxy: %q", got)
 	}
 
-	// WebSocket upgrade passes through /agent/connect.
+	// A WebSocket upgrade passes through the proxy (future panel sockets).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, "ws://"+addr+"/agent/connect", nil)

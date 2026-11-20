@@ -16,12 +16,20 @@ func TestParseAgentFlags(t *testing.T) {
 	if err != nil || c.DockerSocket != "/var/run/docker.sock" || c.ID != "n1" {
 		t.Fatalf("%+v %v", c, err)
 	}
+	fp := "sha256:" + strings.Repeat("ab", 32)
+	c, err = parseAgentFlags([]string{"--server", "wss://hub.example:7443/agent/connect", "--ca-fingerprint", fp, "--id", "n1"}, &buf)
+	if err != nil || c.CAFingerprint != fp {
+		t.Fatalf("wss: %+v %v", c, err)
+	}
 	bad := [][]string{
 		{},
 		{"--server", "http://x/", "--id", "a"},
-		{"--server", "ws://x/agent/connect"},
-		{"--server", "ws://x/agent/connect", "--id", "a", "--proxy-listen", ":80"},
-		{"--server", "ws://x/agent/connect", "--id", "a", "extra"},
+		{"--server", "ws://127.0.0.1/agent/connect"},
+		{"--server", "ws://127.0.0.1/agent/connect", "--id", "a", "--proxy-listen", ":80"},
+		{"--server", "ws://127.0.0.1/agent/connect", "--id", "a", "extra"},
+		{"--server", "ws://hub.example/agent/connect", "--id", "a"},                           // cleartext to a remote host
+		{"--server", "wss://hub.example/agent/connect", "--id", "a"},                          // no fingerprint
+		{"--server", "wss://hub.example/agent/connect", "--id", "a", "--ca-fingerprint", "x"}, // bad fingerprint
 	}
 	for _, a := range bad {
 		if _, err := parseAgentFlags(a, &buf); err == nil {
@@ -35,6 +43,17 @@ func TestAgentRequiresToken(t *testing.T) {
 	var errb bytes.Buffer
 	if code := agentMain([]string{"--server", "ws://127.0.0.1:1/agent/connect", "--id", "a"}, &errb); code != 2 || !strings.Contains(errb.String(), "SD_AGENT_TOKEN") {
 		t.Fatalf("code %d %q", code, errb.String())
+	}
+}
+
+func TestAgentRefusesWeakToken(t *testing.T) {
+	t.Setenv("SD_AGENT_TOKEN", "too-short-to-be-safe")
+	var errb bytes.Buffer
+	if code := agentMain([]string{"--server", "ws://127.0.0.1:1/agent/connect", "--id", "a"}, &errb); code != 2 || !strings.Contains(errb.String(), "too short") {
+		t.Fatalf("code %d %q", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "too-short-to-be-safe") {
+		t.Error("token echoed")
 	}
 }
 

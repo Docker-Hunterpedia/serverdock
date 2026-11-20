@@ -127,11 +127,31 @@ These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM. T
 
 Extra containers ServerDock adds to a managed server: **zero** (agent and proxy in one process), or one if the user chooses the Caddy-container fallback.
 
+## Background work
+
+Every goroutine that wakes on a timer, and the goroutines that exist per session. Anything that adds a timer adds a row (`footprint` checks this table). Lazy work (done inside a request or a handshake, with no timer and no goroutine) is listed so nobody adds a timer for it later.
+
+| What | Where | Interval | When it runs |
+|---|---|---|---|
+| yamux keepalive, hub side | `internal/hub/hub.go` `attach` | 30 s | per **remote** agent session (off on the in-memory local pipe) |
+| yamux keepalive, agent side | `internal/agent/session.go` `ServeSession` | 30 s | per remote session, in the agent process |
+| Reconnect backoff | `internal/agent/client.go` `sleepCtx` | 1 s to 30 s, jittered | only while a remote agent is disconnected |
+
+Per-session goroutines (they exist because a session exists; none wakes on a timer of ours):
+- The hub's **drain goroutine** per agent session (`attach`): blocked in `AcceptStream`. Agents never open streams, so the first one ends the session. It exits with the session.
+- yamux's own send, receive and keepalive goroutines per session (the keepalive is the 30 s row above).
+- The agent side serves each accepted stream in its own goroutine, at most 32 at once.
+- The in-process local agent's two session goroutines in `runServer`, joined before it returns.
+
+Lazy, no timer and no goroutine: the hub certificate renewal and its 1 minute back-off (`internal/pki`, checked in the TLS handshake); the rate limiters' eviction (`internal/limits`); the audit log's denied-row "suppressed" summaries (written on the next denied attempt or at shutdown); the migration runner and its backup (startup only); the startup wait on the data-directory lock (at most about 1 s).
+
 ## Security model (summary)
 
 Full threat model: [security.md](security.md).
 
 - Agent socket access to Docker is root-equivalent, so the agent has **no listening ports**; only outbound to the control plane.
+- The hub's **agent listener** (`--agent-listen`, off by default) is the only inbound agent surface: its own TLS 1.3 listener (not behind Caddy), a private hub CA the agent pins by fingerprint, a shared token checked after a per-IP failure limiter, session and connection caps, and a yamux ping guard. Remote agents are read-only (`logs` only) until Phase 2. See [ADR 0009](decisions/0009-agent-channel-tls.md).
+- Every operation is a registered action with a risk tier, a per-actor policy and an audit trail (intent row first, outcome row after); the audit log is hash-chained and `serverdock audit verify` checks it read-only.
 - Panel binds to localhost behind the embedded proxy; first run needs the console setup token.
 - Secrets encrypted with a key kept outside the DB file; the key/data pair is shown to the user to back up.
 - Auth: sessions + scoped API tokens; TOTP/passkeys; fresh 2FA for terminal, secret reveal, destructive actions; sessions revoked on password/2FA change.
@@ -140,18 +160,22 @@ Full threat model: [security.md](security.md).
 
 ## Repository layout
 
-Phase 0 (plan 0001) creates the entries marked `*`; the rest are planned.
+`*` = existed after Phase 0; `+` = added in Phase 1 M1; the rest are planned.
 
 ```
-cmd/serverdock/           * main: server | agent | version (cli later)
-internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers (REST, WebSocket, auth, RBAC later)
-internal/hub/             * server side of agent connections (WebSocket + yamux)
-internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`
+cmd/serverdock/           * main: server | agent | version; + audit verify (cli later)
+internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers; + header/body limits, /agent/* answers 404
+internal/hub/             * server side of agent connections (WebSocket + yamux); + sessions cap, auth-failure limiter, stream caps, token rules
+internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`; + op-spec table (RemoteOK), ping guard
 internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)
-internal/agent/dockerapi/ * minimal Docker Engine API client over the unix socket (logs only in Phase 0)
-internal/store/           * SQLite (WAL) open + migrations stub
+internal/agent/dockerapi/ * Docker Engine API client over the unix socket (logs; + per-call deadlines, API negotiation, Stop)
+internal/pki/             + the hub CA, the hub leaf with lazy renewal, the agent-side pin check (ADR 0009)
+internal/limits/          + keyed token buckets, client-IP keys, a connection-capping listener
+internal/store/           * SQLite (WAL); + forward-only migrations (migrations/NNNN_name.sql), pre-migrate backup, one-server lock, read-only open, testdata/ fixtures
+internal/audit/           + hash-chained audit log, verify, denied-row rate limit, the intent/outcome flow
+internal/redact/          + removes secrets from audit rows, errors and logs
+internal/actions/         + action registry: risk tiers, policy, SystemInvoker, built-in read actions (shared by API, MCP, AI)
 internal/memstat/         * /proc/self/status + Go runtime stats (convenience only)
-internal/actions/         action registry (shared by API, MCP, AI)
 internal/mcp/             MCP server
 internal/ai/              assistant loop, redaction, approvals
 internal/deploy/          pipeline, health gate, rollback, reconciler
@@ -159,6 +183,6 @@ internal/build/           railpack/buildkit, builder selection
 web/                      SvelteKit SPA (embedded at build time); web/dist/index.html is a Phase 0 placeholder *
 bench/                    * Dockerfile, run.sh, measure.sh, results/
 templates/                one-click app catalog + CI tests
-.github/workflows/        * ci.yml
+.github/workflows/        * ci.yml; + .github/scripts/ (bench trigger), CODEOWNERS, dependabot.yml
 docs/                     vision, features, architecture, roadmap, research, plans, decisions
 ```

@@ -10,16 +10,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
+	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 )
 
 const agentMemLimit = 20 << 20
 
 type agentConfig struct {
 	Server        string
+	CAFingerprint string // sha256:<hex> of the hub CA; required for wss
 	ID            string
 	DockerSocket  string
 	Data          string
@@ -32,7 +35,8 @@ func parseAgentFlags(args []string, stderr io.Writer) (agentConfig, error) {
 	var c agentConfig
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&c.Server, "server", "", "control plane URL, ws://host[:port]/agent/connect")
+	fs.StringVar(&c.Server, "server", "", "hub URL, wss://host:7443/agent/connect (ws:// only for loopback)")
+	fs.StringVar(&c.CAFingerprint, "ca-fingerprint", "", "sha256:<hex> of the hub CA, printed by the server at startup (required for wss)")
 	fs.StringVar(&c.ID, "id", "", "agent id (letters, digits, _ . -)")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path")
 	fs.StringVar(&c.Data, "data", "/data", "data directory (Caddy storage when the proxy is enabled)")
@@ -44,7 +48,7 @@ func parseAgentFlags(args []string, stderr io.Writer) (agentConfig, error) {
 	if fs.NArg() != 0 {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
-	if err := agent.ValidateURL(c.Server); err != nil {
+	if err := (&agent.ClientConfig{URL: c.Server, CAFingerprint: c.CAFingerprint}).Validate(); err != nil {
 		return c, fmt.Errorf("--server: %w", err)
 	}
 	if c.ID == "" {
@@ -70,6 +74,10 @@ func agentMain(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "serverdock agent: SD_AGENT_TOKEN is required")
 		return 2
 	}
+	if err := hub.ValidateToken(cfg.Token); err != nil {
+		fmt.Fprintln(stderr, "serverdock agent: SD_AGENT_TOKEN:", err)
+		return 2
+	}
 	applyMemLimit(agentMemLimit)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -91,8 +99,25 @@ func runAgent(ctx context.Context, cfg agentConfig, log *slog.Logger) error {
 		}
 		defer proxy.Stop()
 	}
+	docker := dockerapi.New(cfg.DockerSocket)
+	defer docker.Close()
+	logDockerVersion(ctx, docker, log)
 	return agent.RunClient(ctx, agent.ClientConfig{
-		URL: cfg.Server, Token: cfg.Token, ID: cfg.ID, Log: log,
-		Logs: dockerapi.New(cfg.DockerSocket),
+		URL: cfg.Server, CAFingerprint: cfg.CAFingerprint, Token: cfg.Token, ID: cfg.ID, Log: log,
+		Logs: docker,
 	})
+}
+
+// logDockerVersion logs the engine and negotiated API once at startup. A
+// missing or old Docker is reported, not fatal: the daemon may start later and
+// negotiation is retried on the next call.
+func logDockerVersion(ctx context.Context, c *dockerapi.Client, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	engine, api, err := c.Info(ctx)
+	if err != nil {
+		log.Warn("docker not usable yet", "err", err)
+		return
+	}
+	log.Info("docker engine", "version", engine, "api", api)
 }

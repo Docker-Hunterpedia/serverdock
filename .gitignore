@@ -37,3 +37,4 @@ __pycache__/
 
 # Quick (local smoke) bench results are not committed
 bench/results/*-quick.*
+!internal/store/testdata/*.db

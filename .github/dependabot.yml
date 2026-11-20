@@ -1,0 +1,18 @@
+# Weekly, grouped update PRs for pinned Action SHAs and Go modules
+# (docs/security.md gap G14). Security updates still arrive immediately.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ["*"]

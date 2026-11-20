@@ -29,10 +29,14 @@ func TestServerCloseCancelsDockerRequest(t *testing.T) {
 	}
 	cancelled := make(chan time.Time, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /containers/{id}/json", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /_ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("API-Version", "1.44") // the client then uses /v1.44/...
+		io.WriteString(w, "OK")
+	})
+	mux.HandleFunc("GET /v1.44/containers/{id}/json", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, `{"Config":{"Tty":true}}`)
 	})
-	mux.HandleFunc("GET /containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1.44/containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "docker says hi\n")
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
@@ -43,7 +47,9 @@ func TestServerCloseCancelsDockerRequest(t *testing.T) {
 	defer ds.Close()
 
 	e := newEnv(t)
-	startAgent(t, e.wsURL(), "dk", dockerapi.New(sock), nil)
+	dc := dockerapi.New(sock)
+	t.Cleanup(dc.Close)
+	startAgent(t, e.wsURL(), "dk", dc, nil)
 	s := waitSession(t, e.hub, "dk", 0)
 	rc, err := s.Logs(context.Background(), "web-1", 10)
 	if err != nil {

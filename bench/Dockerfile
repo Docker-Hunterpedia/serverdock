@@ -9,12 +9,15 @@ ARG VERSION=bench
 # repeat builds fast.
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/serverdock ./cmd/serverdock \
- && mkdir -p /out/data
+ && mkdir -p /out/data /out/debug && chmod 700 /out/debug
 
 FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=build /out/serverdock /serverdock
 # Writable data dir for the nonroot user (distroless has no usable HOME).
 COPY --from=build --chown=65532:65532 /out/data /data
+# Mount point for the debug unix socket's directory (0700, nonroot-owned): a
+# named volume mounted here inherits these permissions.
+COPY --from=build --chown=65532:65532 --chmod=0700 /out/debug /debug
 USER 65532:65532
 ENTRYPOINT ["/serverdock"]
 CMD ["server", "--data", "/data"]

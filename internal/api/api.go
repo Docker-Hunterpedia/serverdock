@@ -27,6 +27,9 @@ func New(spa fs.FS) *Server {
 	s := &Server{mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", healthz)
 	s.mux.Handle("GET /", spaHandler(spa))
+	// Remote agents connect to the hub's own TLS listener, never here: without
+	// this the SPA fallback would answer 200 for /agent/connect.
+	s.mux.Handle("GET /agent/", http.NotFoundHandler())
 	return s
 }
 
@@ -82,8 +85,8 @@ func spaHandler(spa fs.FS) http.Handler {
 }
 
 // DebugHandler serves /debug/mem plus any extra routes (for example the hub's
-// /debug/agents). It is only started when --debug-listen is set (loopback unless
-// --debug-allow-remote) and exposes no secrets.
+// /debug/agents). It is only served on the --debug-socket unix socket (0600 in a
+// 0700 directory) and exposes no secrets.
 func DebugHandler(extra ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
 	for _, f := range extra {
@@ -96,13 +99,43 @@ func DebugHandler(extra ...func(*http.ServeMux)) http.Handler {
 	return mux
 }
 
+// HTTP server limits (plan 0002 M1 step 6).
+const (
+	// MaxHeaderBytes caps the request header size.
+	MaxHeaderBytes = 64 << 10
+	// MaxBodyBytes caps a request body (reads fail past it).
+	MaxBodyBytes = 1 << 20
+)
+
+// ServeOption adjusts the server Serve builds.
+type ServeOption func(*http.Server)
+
+// WithReadHeaderTimeout replaces the 10 s header timeout. On a TLS listener it
+// also bounds the TLS handshake (net/http uses it as the handshake deadline).
+func WithReadHeaderTimeout(d time.Duration) ServeOption {
+	return func(s *http.Server) { s.ReadHeaderTimeout = d }
+}
+
+// WithoutKeepAlives answers every request with Connection: close, for
+// listeners whose only request is a one-shot upgrade.
+func WithoutKeepAlives() ServeOption {
+	return func(s *http.Server) { s.SetKeepAlivesEnabled(false) }
+}
+
 // Serve serves h on ln until ctx is cancelled, then shuts down gracefully,
 // waiting up to grace for in-flight requests. It returns nil on a clean stop.
-func Serve(ctx context.Context, ln net.Listener, h http.Handler, grace time.Duration) error {
+func Serve(ctx context.Context, ln net.Listener, h http.Handler, grace time.Duration, opts ...ServeOption) error {
+	// No global ReadTimeout or WriteTimeout: listeners here carry upgraded
+	// WebSocket sessions and long log streams. Slow headers are bounded by
+	// ReadHeaderTimeout; idle keep-alives by IdleTimeout.
 	srv := &http.Server{
-		Handler:           h,
+		Handler:           http.MaxBytesHandler(h, MaxBodyBytes),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    MaxHeaderBytes,
+	}
+	for _, o := range opts {
+		o(srv)
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
