@@ -56,6 +56,9 @@ jobs:
           git diff --exit-code -- src/lib/api/types.ts || { echo "run 'make web-types' and commit"; exit 1; }
       - name: npm audit (runtime dependencies)
         run: npm audit --omit=dev
+      - name: npm audit (all dependencies, high and above)
+        # Dev dependencies (vite, the plugins) write the shipped bundle, so they count.
+        run: npm audit --audit-level=high
       - name: report sizes
         run: |
           js=$(find build -name '*.js' -exec gzip -9 -c {} + | wc -c)

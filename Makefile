@@ -7,6 +7,7 @@ GOVULNCHECK_VERSION := v1.10.0
 # it the binary has the placeholder page and `serverdock version` says ui=placeholder.
 build:
 	CGO_ENABLED=0 go build $(if $(wildcard web/build/index.html),-tags spa) -trimpath -ldflags "$(LDFLAGS)" -o bin/serverdock ./cmd/serverdock
+	@bin/serverdock version
 
 test:
 	go test -race ./...
