@@ -138,20 +138,27 @@ Full threat model: [security.md](security.md).
 - WebSocket/terminal/MCP routes use the same authz as REST; an RBAC route-matrix test runs in CI.
 - Signed releases; SBOM; private vulnerability reporting.
 
-## Repository layout (planned)
+## Repository layout
+
+Phase 0 (plan 0001) creates the entries marked `*`; the rest are planned.
 
 ```
-cmd/serverdock/        main: server | agent | cli subcommands
-internal/actions/      action registry (shared by API, MCP, AI)
-internal/agent/        agent runtime, docker ops, caddy, metrics, logs
-internal/hub/          agent connections, streams
-internal/api/          REST + WebSocket handlers, auth, RBAC
-internal/mcp/          MCP server
-internal/ai/           assistant loop, redaction, approvals
-internal/store/        SQLite, migrations, jobs
-internal/deploy/       pipeline, health gate, rollback, reconciler
-internal/build/        railpack/buildkit, builder selection
-web/                   SvelteKit SPA (embedded at build time)
-templates/             one-click app catalog + CI tests
-docs/                  vision, features, architecture, roadmap, research, plans, decisions
+cmd/serverdock/           * main: server | agent | version (cli later)
+internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers (REST, WebSocket, auth, RBAC later)
+internal/hub/             * server side of agent connections (WebSocket + yamux)
+internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`
+internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)
+internal/agent/dockerapi/ * minimal Docker Engine API client over the unix socket (logs only in Phase 0)
+internal/store/           * SQLite (WAL) open + migrations stub
+internal/memstat/         * /proc/self/status + Go runtime stats (convenience only)
+internal/actions/         action registry (shared by API, MCP, AI)
+internal/mcp/             MCP server
+internal/ai/              assistant loop, redaction, approvals
+internal/deploy/          pipeline, health gate, rollback, reconciler
+internal/build/           railpack/buildkit, builder selection
+web/                      SvelteKit SPA (embedded at build time); web/dist/index.html is a Phase 0 placeholder *
+bench/                    * Dockerfile, run.sh, measure.sh, results/
+templates/                one-click app catalog + CI tests
+.github/workflows/        * ci.yml
+docs/                     vision, features, architecture, roadmap, research, plans, decisions
 ```
