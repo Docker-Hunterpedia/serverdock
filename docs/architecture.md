@@ -1,6 +1,6 @@
 # ServerDock — Architecture
 
-*Draft 1, 2026-11-20. AI-written from [research/03-architecture-options.md](research/03-architecture-options.md); not yet confirmed by the maintainer. Decisions are recorded in [decisions/](decisions/) (0001–0006 accepted 2026-11-20).*
+*Draft 1, 2026-11-20. AI-written from [research/03-architecture-options.md](research/03-architecture-options.md); not yet confirmed by the maintainer. Decisions are recorded in [decisions/](decisions/) (0001–0007 accepted 2026-11-20).*
 
 ## Overview
 

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — Phone incident</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+.lbl{font-size:12px;color:#5c5c58}
+.btn{display:flex;align-items:center;justify-content:center;min-height:48px;padding:0 16px;border:1px solid #9a9a95;border-radius:8px;background:#fff;font:inherit;font-size:15px;color:#1f1f1f;box-sizing:border-box;width:100%}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.mono{font-family:'JetBrains Mono',monospace;font-size:12px}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:2px 8px;border-radius:99px;border:1px solid #1f1f1f;background:#1f1f1f;color:#fff}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #f4f4f2; display: flex; flex-direction: column">
+<header style="display: flex; align-items: center; justify-content: space-between; padding: 16px; background: #fff; border-bottom: 1px solid #d6d6d2">
+<button type="button" aria-label="Open menu" style="width: 44px; height: 44px; border: 1px solid #cfcfca; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1f1f1f" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+</button>
+<strong>Alerts</strong>
+<span class="lbl">1 open</span>
+</header>
+<div style="padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: auto; flex: 1">
+<div style="background: #fff; border: 2px solid #1f1f1f; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px">
+<span class="st">▲ Restart loop</span>
+<strong style="font-size: 17px">worker restarted 5 times in 10 min</strong>
+<dl style="margin: 0; display: grid; grid-template-columns: 84px 1fr; row-gap: 8px; column-gap: 10px; font-size: 14px">
+<dt class="lbl" style="align-self: center">Cause</dt><dd style="margin: 0">Out of memory (hit 512 MB limit)</dd>
+<dt class="lbl" style="align-self: center">Server</dt><dd style="margin: 0">vps-small · 390 MB free</dd>
+<dt class="lbl" style="align-self: center">Since</dt><dd style="margin: 0">02:14</dd>
+<dt class="lbl" style="align-self: center">Notified</dt><dd style="margin: 0">Telegram</dd>
+</dl>
+</div>
+<div style="background: #fff; border: 1px solid #cfcfca; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+<span class="lbl">Memory · last hour</span>
+<div style="height: 90px; border: 1px dashed #b4b4af; border-radius: 6px; background: repeating-linear-gradient(45deg,#ececea,#ececea 8px,#f6f6f4 8px,#f6f6f4 16px); display: flex; align-items: center; justify-content: center" class="lbl">Saw-tooth up to 512 MB limit</div>
+</div>
+<div style="background: #1f1f1f; color: #e9e9e6; border-radius: 10px; padding: 12px; white-space: pre; overflow-x: auto" class="mono">02:23:10 job import-orders start
+02:23:51 heap 498 MB
+02:23:52 Killed (exit 137)</div>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<button class="btn p" type="button">Raise limit to 768 MB &amp; restart</button>
+<button class="btn" type="button">Roll back worker to #31</button>
+<button class="btn" type="button">Mute 1 h</button>
+</div>
+<span class="lbl" style="text-align: center">Each action shows a confirm screen naming “worker on vps-small”.</span>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

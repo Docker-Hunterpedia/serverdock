@@ -12,7 +12,7 @@ Goal: decisions locked and a skeleton that proves the footprint.
 
 - [ ] Confirm vision, features, architecture (maintainer review of these docs)
 - [x] Accept ADRs 0001–0006 (AGPL-3.0, Go, outbound agent, embedded Caddy, SvelteKit, MCP-first AI) — accepted by the maintainer 2026-11-20
-- [ ] Decide ADR 0007 (no telemetry by default) — proposed
+- [x] ADR 0007 (no telemetry by default) — accepted by the maintainer 2026-11-20
 - [x] Research, feature list, wireframes (13 screens), phase chart
 - [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64)
 - [ ] `serverdock bench` harness + CI job on a 1 vCPU / 1 GB VM reporting idle RSS/CPU

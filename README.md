@@ -35,7 +35,7 @@ Details and exit checks: [docs/roadmap.md](docs/roadmap.md).
 | [Architecture](docs/architecture.md) | Design, key decisions, footprint budget |
 | [Roadmap](docs/roadmap.md) | Phases 0–5 with exit checks |
 | [Security](docs/security.md) | Threat model and rules |
-| [UI](docs/ui.md) | Screens and UI principles |
+| [UI](docs/ui.md) · [Wireframes](docs/wireframes/README.md) | Screens, 13 wireframe images, UI principles |
 | [Research](docs/research/) | Coolify & Dokploy, 10+ other tools, architecture options, final gap check |
 | [Decisions](docs/decisions/) | ADRs |
 

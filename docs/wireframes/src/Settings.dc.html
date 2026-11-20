@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.app{display:flex;flex-wrap:wrap;min-height:1000px}
+.side{flex:1 1 220px;max-width:240px;background:#fff;border-right:1px solid #d6d6d2;padding:20px 14px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.nav{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:6px;color:#3a3a37;text-decoration:none;font-size:14px}
+.nav.on{background:#e6e6e3;font-weight:600;color:#1f1f1f}
+.main{flex:999 1 560px;min-width:0;padding:28px 32px;display:flex;flex-direction:column;gap:20px;box-sizing:border-box}
+.box{background:#fff;border:1px solid #cfcfca;border-radius:8px;padding:20px;box-sizing:border-box}
+.lbl{font-size:12px;color:#5c5c58}
+.h2{margin:0;font-size:16px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box;cursor:pointer}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.t{width:100%;border-collapse:collapse;font-size:14px}
+.t th{text-align:left;font-size:12px;color:#5c5c58;font-weight:500;padding:8px;border-bottom:1px solid #d6d6d2;white-space:nowrap}
+.t td{padding:10px 8px;border-bottom:1px solid #ececea;white-space:nowrap}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.scroll{overflow-x:auto}
+.sub{display:flex;flex-direction:column;gap:2px;flex:0 1 210px}
+.subl{display:flex;align-items:center;min-height:44px;padding:0 12px;border-radius:6px;font:inherit;font-size:14px;color:#3a3a37;background:none;border:0;text-align:left;cursor:pointer}
+.subl.on{background:#fff;border:1px solid #cfcfca;font-weight:600;color:#1f1f1f}
+.row{display:grid;grid-template-columns:minmax(180px,260px) 1fr;gap:8px 24px;padding:14px 0;border-bottom:1px solid #ececea;align-items:center;font-size:14px}
+.row:last-child{border-bottom:0}
+.ctl{min-height:44px;padding:0 10px;border:1px solid #9a9a95;border-radius:6px;font:inherit;font-size:14px;background:#fff;max-width:360px;width:100%;box-sizing:border-box}
+@media (max-width:760px){.side{max-width:none}.main{padding:20px 16px}.row{grid-template-columns:1fr}}
+</style>
+</helmet>
+<div class="app">
+<nav class="side" aria-label="Main">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock</strong>
+</div>
+<a class="nav" href="Main.dc.html">Overview</a>
+<a class="nav" href="Service.dc.html">Projects &amp; services</a>
+<a class="nav" href="Servers.dc.html">Servers</a>
+<a class="nav" href="Domains.dc.html">Domains</a>
+<a class="nav" href="Backups.dc.html">Databases &amp; backups</a>
+<a class="nav" href="Logs.dc.html">Logs</a>
+<a class="nav" href="Main.dc.html">Alerts</a>
+<a class="nav" href="Updates.dc.html">Updates</a>
+<a class="nav" href="Approval.dc.html">AI &amp; MCP</a>
+<a class="nav" href="Main.dc.html">Audit log</a>
+<a class="nav on" href="Settings.dc.html">Settings</a>
+<div style="margin-top: auto; padding: 12px 10px; border-top: 1px solid #e0e0dc; display: flex; flex-direction: column; gap: 4px">
+<span class="lbl">ServerDock itself</span>
+<span class="mono">52 MB RAM · 0.3% CPU</span>
+<span class="lbl">v0.1.0 · <a href="Updates.dc.html">update available</a></span>
+</div>
+</nav>
+<main class="main">
+<h1 style="margin: 0; font-size: 24px">Settings</h1>
+<div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+<div class="sub" role="tablist" aria-label="Settings sections">
+<sc-for list="{{tabs}}" as="t" hint-placeholder-count="8">
+<button type="button" role="tab" class="{{t.cls}}" aria-selected="{{t.sel}}" onClick="{{t.pick}}">{{t.name}}</button>
+</sc-for>
+</div>
+
+<section class="box" style="flex: 1 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 4px" role="tabpanel">
+<sc-if value="{{general}}" hint-placeholder-val="{{true}}">
+<h2 class="h2">General</h2>
+<div class="row"><div><strong>Instance name</strong><div class="lbl">Shown in the title and notifications</div></div><input class="ctl" value="sam-prod"></div>
+<div class="row"><div><strong>Panel domain</strong><div class="lbl">HTTPS is automatic</div></div><input class="ctl" value="panel.example.com"></div>
+<div class="row"><div><strong>Timezone</strong><div class="lbl">Used for cron jobs, backups and update windows</div></div><select class="ctl"><option>Europe/Istanbul (UTC+3)</option></select></div>
+<div class="row"><div><strong>Where builds run</strong><div class="lbl">This server has 1 GB RAM</div></div><select class="ctl"><option>builder-1 (recommended)</option><option>GitHub Actions</option><option>This server, capped at 512 MB</option></select></div>
+<div class="row"><div><strong>Build concurrency</strong></div><select class="ctl"><option>1 at a time per builder</option><option>2</option></select></div>
+<div class="row"><div><strong>Build cache limit</strong><div class="lbl">Old cache is removed above this size</div></div><input class="ctl" value="5 GB"></div>
+</sc-if>
+
+<sc-if value="{{users}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px"><h2 class="h2">Users</h2><button type="button" class="btn p">Invite user</button></div>
+<div class="scroll">
+<table class="t">
+<thead><tr><th>User</th><th>Role</th><th>2FA</th><th>Last active</th><th></th></tr></thead>
+<tbody>
+<tr><td>sam@example.com</td><td>Admin</td><td>✓ TOTP</td><td>now</td><td class="lbl">you</td></tr>
+<tr><td>rami@example.com</td><td>Member</td><td>✓ passkey</td><td>2 days ago</td><td><button type="button" class="btn" style="min-height: 36px">Remove</button></td></tr>
+</tbody>
+</table>
+</div>
+<span class="lbl">Admin: everything. Member: deploy, logs, restart; no secrets reveal, terminal, or deletes. Full roles and per-project access come in Phase 4.</span>
+</sc-if>
+
+<sc-if value="{{security}}" hint-placeholder-val="{{false}}">
+<h2 class="h2">Security &amp; tokens</h2>
+<div class="row"><div><strong>Require 2FA for everyone</strong></div><label style="display: flex; gap: 8px; align-items: center; min-height: 44px"><input type="checkbox" checked> On</label></div>
+<div class="row"><div><strong>Host root terminal</strong><div class="lbl">Each use needs a fresh 2FA code and the server name typed</div></div><label style="display: flex; gap: 8px; align-items: center; min-height: 44px"><input type="checkbox"> Off</label></div>
+<div class="row"><div><strong>Sessions</strong></div><div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap"><span>3 active</span><button type="button" class="btn">Sign out everywhere</button></div></div>
+<div class="scroll" style="padding-top: 8px">
+<table class="t">
+<thead><tr><th>API / MCP token</th><th>Scope</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+<tbody>
+<tr><td>laptop-read-write</td><td>read + request changes</td><td>in 23 days</td><td>12 min ago</td><td><button type="button" class="btn" style="min-height: 36px">Revoke</button></td></tr>
+<tr><td>ci-deploy</td><td>deploy: shop/api</td><td>in 81 days</td><td>yesterday</td><td><button type="button" class="btn" style="min-height: 36px">Revoke</button></td></tr>
+<tr><td>old-script</td><td>read</td><td><strong>expired</strong></td><td>4 months ago</td><td><button type="button" class="btn" style="min-height: 36px">Delete</button></td></tr>
+</tbody>
+</table>
+</div>
+<div class="row"><div><strong>Encryption key</strong><div class="lbl">Back up this key together with your data. Without it, secrets can’t be recovered.</div></div><div style="display: flex; gap: 8px; flex-wrap: wrap"><button type="button" class="btn">Download key (2FA)</button><button type="button" class="btn">Rotate key…</button></div></div>
+</sc-if>
+
+<sc-if value="{{storage}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px"><h2 class="h2">Backup storage</h2><button type="button" class="btn p">Add target</button></div>
+<div class="scroll">
+<table class="t">
+<thead><tr><th>Target</th><th>Type</th><th>Status</th><th>Used by</th></tr></thead>
+<tbody>
+<tr><td>backups-eu</td><td>S3 (Hetzner Object Storage)</td><td>✓ reachable</td><td>postgres-main, ServerDock state</td></tr>
+<tr><td>blog-s3</td><td>S3 (AWS)</td><td><strong>▲ access denied</strong></td><td>mysql-blog</td></tr>
+<tr><td>nas-home</td><td>SFTP</td><td>✓ reachable</td><td>volumes (Phase 2)</td></tr>
+</tbody>
+</table>
+</div>
+</sc-if>
+
+<sc-if value="{{notif}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px"><h2 class="h2">Notifications</h2><button type="button" class="btn p">Add channel</button></div>
+<div class="row"><div><strong>Telegram</strong><div class="lbl">@sam · all alerts</div></div><button type="button" class="btn" style="justify-self: start">Send test</button></div>
+<div class="row"><div><strong>Email</strong><div class="lbl">sam@example.com · failures and backups only</div></div><button type="button" class="btn" style="justify-self: start">Send test</button></div>
+<div class="row"><div><strong>Webhook</strong><div class="lbl">https://hooks.example.com/sd · deploys</div></div><button type="button" class="btn" style="justify-self: start">Send test</button></div>
+</sc-if>
+
+<sc-if value="{{upd}}" hint-placeholder-val="{{false}}">
+<h2 class="h2">Updates</h2>
+<div class="row"><div><strong>ServerDock channel</strong></div><select class="ctl"><option>Stable (recommended)</option><option>Edge</option></select></div>
+<div class="row"><div><strong>Update ServerDock automatically</strong><div class="lbl">Only patch releases, inside the window</div></div><label style="display: flex; gap: 8px; align-items: center; min-height: 44px"><input type="checkbox"> Off</label></div>
+<div class="row"><div><strong>Default policy for apps</strong></div><select class="ctl"><option>Notify only</option><option>Auto-update patches</option><option>Auto-update patches + minor</option></select></div>
+<div class="row"><div><strong>Update window</strong></div><input class="ctl" value="Sun 03:00 – 05:00"></div>
+</sc-if>
+
+<sc-if value="{{privacy}}" hint-placeholder-val="{{false}}">
+<h2 class="h2">Privacy</h2>
+<div class="row"><div><strong>Telemetry</strong><div class="lbl">ServerDock sends no usage data. There is nothing to turn on.</div></div><span>None</span></div>
+<div class="row"><div><strong>Update checks</strong><div class="lbl">Fetches a version manifest; sends nothing about you</div></div><label style="display: flex; gap: 8px; align-items: center; min-height: 44px"><input type="checkbox" checked> On</label></div>
+<div class="row"><div><strong>App image checks</strong><div class="lbl">Asks registries for image digests 4× a day</div></div><label style="display: flex; gap: 8px; align-items: center; min-height: 44px"><input type="checkbox" checked> On</label></div>
+<div class="row"><div><strong>Support bundle</strong><div class="lbl">Redacted diagnostics you can attach to a bug report. Never sent automatically.</div></div><button type="button" class="btn" style="justify-self: start">Download bundle</button></div>
+</sc-if>
+
+<sc-if value="{{danger}}" hint-placeholder-val="{{false}}">
+<h2 class="h2">Danger zone</h2>
+<div class="row"><div><strong>Back up ServerDock now</strong><div class="lbl">State, deploy history, settings (encrypted)</div></div><button type="button" class="btn" style="justify-self: start">Back up</button></div>
+<div class="row"><div><strong>Restore ServerDock</strong><div class="lbl">Rehearse first without changing anything</div></div><button type="button" class="btn" style="justify-self: start">Restore…</button></div>
+<div class="row" style="border: 2px solid #1f1f1f; border-radius: 8px; padding: 14px"><div><strong>Uninstall ServerDock</strong><div class="lbl">Choose: keep your apps running and remove only ServerDock, or remove everything. You’ll see the full list first.</div></div><button type="button" class="btn" style="justify-self: start">Uninstall…</button></div>
+<div class="lbl" style="padding-top: 8px">Same from the CLI: <span class="mono">serverdock uninstall --dry-run</span></div>
+</sc-if>
+</section>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { tab: 'general' }; }
+  renderVals() {
+    const list = [
+      ['general', 'General'], ['users', 'Users'], ['security', 'Security & tokens'], ['storage', 'Backup storage'],
+      ['notif', 'Notifications'], ['upd', 'Updates'], ['privacy', 'Privacy'], ['danger', 'Danger zone']
+    ];
+    const tab = this.state.tab;
+    const v = {
+      tabs: list.map(([id, name]) => ({
+        name, sel: id === tab ? 'true' : 'false',
+        cls: id === tab ? 'subl on' : 'subl',
+        pick: () => this.setState({ tab: id })
+      }))
+    };
+    list.forEach(([id]) => { v[id] = id === tab; });
+    return v;
+  }
+}
+</script>
+</body>
+</html>

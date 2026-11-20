@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — First run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.lbl{font-size:12px;color:#5c5c58}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box;cursor:pointer}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:500}
+.field input,.field select{min-height:44px;padding:0 10px;border:1px solid #9a9a95;border-radius:6px;font:inherit;font-size:14px;font-weight:400;background:#fff}
+.code{background:#1f1f1f;color:#e9e9e6;border-radius:8px;padding:14px;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;overflow-x:auto;white-space:pre}
+.step{display:flex;gap:12px;align-items:center;min-height:44px;font-size:14px;color:#3a3a37}
+.dot{width:28px;height:28px;border-radius:50%;border:1px solid #9a9a95;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:none;background:#fff}
+.step.on{color:#1f1f1f;font-weight:600}
+.step.on .dot{border:2px solid #1f1f1f}
+.step.done .dot{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.chk{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #ececea;font-size:14px}
+</style>
+</helmet>
+<div style="min-height: 1000px; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 32px; padding: 56px 24px; box-sizing: border-box">
+<aside style="flex: 0 1 260px; display: flex; flex-direction: column; gap: 6px" aria-label="Setup progress">
+<div style="display: flex; align-items: center; gap: 10px; padding-bottom: 20px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock setup</strong>
+</div>
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="5">
+<div class="{{s.cls}}"><span class="dot">{{s.mark}}</span><span>{{s.name}}</span></div>
+</sc-for>
+<span class="lbl" style="padding-top: 16px">About 5 minutes. You can skip GitHub and deploy an image instead.</span>
+</aside>
+
+<main style="flex: 1 1 560px; max-width: 720px; background: #fff; border: 1px solid #cfcfca; border-radius: 10px; padding: 32px; display: flex; flex-direction: column; gap: 20px; box-sizing: border-box">
+<sc-if value="{{s1}}" hint-placeholder-val="{{true}}">
+<h1 style="margin: 0; font-size: 22px">Prove you own this server</h1>
+<p style="margin: 0; font-size: 14px; line-height: 1.6">The installer printed a one-time setup token. Until it is entered, nobody can set up this panel.</p>
+<div class="code">docker logs serverdock | grep "setup token"
+# or: serverdock setup-token</div>
+<label class="field">Setup token<input class="mono" placeholder="sd_setup_…"></label>
+</sc-if>
+<sc-if value="{{s2}}" hint-placeholder-val="{{false}}">
+<h1 style="margin: 0; font-size: 22px">Create the admin account</h1>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px">
+<label class="field">Email<input value="you@example.com"></label>
+<label class="field">Password<input type="password" value="xxxxxxxxxxxx"></label>
+</div>
+<div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center; border: 1px solid #cfcfca; border-radius: 8px; padding: 16px">
+<div style="width: 120px; height: 120px; border: 1px dashed #b4b4af; border-radius: 6px; display: flex; align-items: center; justify-content: center" class="lbl">QR code</div>
+<div style="flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px">
+<strong style="font-size: 14px">Two-factor authentication (required)</strong>
+<span class="lbl">Scan with an authenticator app. Needed again for the terminal, restores and revealing secrets.</span>
+<label class="field">6-digit code<input inputmode="numeric" style="width: 160px"></label>
+</div>
+</div>
+<span class="lbl">Save your recovery codes on the next screen. ServerDock can’t show them again.</span>
+</sc-if>
+<sc-if value="{{s3}}" hint-placeholder-val="{{false}}">
+<h1 style="margin: 0; font-size: 22px">Checking this server</h1>
+<div>
+<div class="chk"><strong>✓</strong><span>Docker 28.4 (supported range 25 – 29)</span></div>
+<div class="chk"><strong>✓</strong><span>cgroup v2 · IPv4 + IPv6</span></div>
+<div class="chk"><strong>✓</strong><span>Ports 80 and 443 free</span></div>
+<div class="chk"><strong>✓</strong><span>Disk: 31 GB free</span></div>
+<div class="chk"><strong>▲</strong><span>Only 1 GB RAM: builds here are capped at 512 MB so they can’t crash your apps. Builder servers arrive in Phase 2. <a href="Settings.dc.html">Change later</a></span></div>
+<div class="chk"><strong>–</strong><span>Panel domain: <span class="mono">panel.example.com</span> → points here ✓ · HTTPS issued ✓</span></div>
+</div>
+</sc-if>
+<sc-if value="{{s4}}" hint-placeholder-val="{{false}}">
+<h1 style="margin: 0; font-size: 22px">Connect your code (optional)</h1>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px">
+<button type="button" class="btn p" style="min-height: 64px">Connect GitHub</button>
+<button type="button" class="btn" style="min-height: 64px">GitLab</button>
+<button type="button" class="btn" style="min-height: 64px">Gitea</button>
+</div>
+<span class="lbl">Installs a GitHub App with access only to the repos you pick. Used for push-to-deploy, commit status and PR comments.</span>
+</sc-if>
+<sc-if value="{{s5}}" hint-placeholder-val="{{false}}">
+<h1 style="margin: 0; font-size: 22px">Deploy your first app</h1>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px">
+<label class="field">Repository<select><option>you/my-app (GitHub)</option></select></label>
+<label class="field">Domain<input value="app.example.com"></label>
+</div>
+<div style="border: 1px solid #cfcfca; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+<span class="lbl">Detected</span>
+<span style="font-size: 14px">Dockerfile found · exposes port 3000 · no Dockerfile? Auto-build with Railpack comes in Phase 2</span>
+</div>
+<span class="lbl">Or start with a one-click app, or deploy a Docker image. Your ServerDock is already using <span class="mono">48 MB</span> RAM.</span>
+</sc-if>
+
+<div style="display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; border-top: 1px solid #ececea; padding-top: 16px">
+<button type="button" class="btn" onClick="{{back}}">Back</button>
+<div style="display: flex; gap: 8px; flex-wrap: wrap">
+<sc-if value="{{canSkip}}" hint-placeholder-val="{{false}}"><button type="button" class="btn" onClick="{{next}}">Skip</button></sc-if>
+<sc-if value="{{notLast}}" hint-placeholder-val="{{true}}"><button type="button" class="btn p" onClick="{{next}}">Continue</button></sc-if>
+<sc-if value="{{isLast}}" hint-placeholder-val="{{false}}"><a class="btn p" href="Main.dc.html">Deploy &amp; open dashboard</a></sc-if>
+</div>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { i: 0 }; }
+  renderVals() {
+    const names = ['Setup token', 'Admin account + 2FA', 'Server checks', 'Connect GitHub', 'First deploy'];
+    const i = this.state.i;
+    return {
+      steps: names.map((n, k) => ({
+        name: n,
+        mark: k < i ? '✓' : String(k + 1),
+        cls: k < i ? 'step done' : (k === i ? 'step on' : 'step')
+      })),
+      s1: i === 0, s2: i === 1, s3: i === 2, s4: i === 3, s5: i === 4,
+      canSkip: i === 3, notLast: i < 4, isLast: i === 4,
+      next: () => this.setState({ i: Math.min(4, i + 1) }),
+      back: () => this.setState({ i: Math.max(0, i - 1) })
+    };
+  }
+}
+</script>
+</body>
+</html>
