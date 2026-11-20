@@ -168,7 +168,7 @@ Full step plan in **Part B**.
   - security and review fixes: `55b4807` (G1, G12, G3 part), `5b02b20` (nested redaction), `4c7b823` (backups, locks, denied rows), `04870af` (self-marshalling secrets), `5a6ebc3` (private lock file);
   - step 10 record and close: this commit (the `v2` fixture, `docs/security.md`, `docs/architecture.md`, `docs/roadmap.md`, Dependabot).
   - Deviations from this plan are listed in the commit messages and in `docs/security.md` "M1 close-out status": the yamux window stays at 256 KiB (streams capped instead), the `update.json` backup skip moved to M7b, and `Op.Validate` relies on the op table.
-  - CI bench numbers (S2, S4): _to be filled in after the push._
+  - CI bench numbers (S2, S4): [run 44749284417](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44749284417) at 0ad2602, amd64: S2 **47.6 MB** (allocation ≤ 49.0), S4 **44.2 MB** (≤ 45.0), idle CPU ≤ 0.01%, binary 18.9 MB gzip. All gates and `bench-gate` passed.
 - **Exit evidence:**
   - open items #1/#2/#4/#5/#6 resolved in `docs/security.md`, with links to the tests;
   - CI bench green (S2, S4);
