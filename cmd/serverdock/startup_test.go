@@ -134,7 +134,7 @@ func TestUmaskKeepsNewFilesPrivate(t *testing.T) {
 	}
 	data := filepath.Join(testbin.ShortDir(t), "data") // does not exist yet: Prepare creates it
 	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--control-socket", filepath.Join(testbin.ShortDir(t), "c.sock"),
-		"--listen", testbin.FreeAddr(t), "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"}})
+		"--listen", testbin.FreeAddr(t), "--https-listen", testbin.FreeAddr(t), "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"}})
 	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -189,5 +189,23 @@ func TestBinaryRefusesLooseDataDirWithoutTouchingIt(t *testing.T) {
 	}
 	if st, _ := os.Stat(data); st.Mode().Perm() != 0o755 {
 		t.Fatalf("the directory was tightened silently: %v", st.Mode())
+	}
+}
+
+// Tests must never depend on the privileged defaults (:80, :443): CI runs them
+// as a non-root user. Every test that starts a proxy names its own addresses.
+func TestNoTestRelyOnPrivilegedDefaultPorts(t *testing.T) {
+	files, _ := filepath.Glob("*_test.go")
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "Args: []string{\"server\"") && !strings.Contains(line, "--proxy=false") && !strings.Contains(line, "--internal") {
+				// the arguments may continue on the next line
+				block := line + "\n" + strings.Split(string(b), "\n")[min(i+1, len(strings.Split(string(b), "\n"))-1)]
+				if !strings.Contains(block, "--https-listen") || !strings.Contains(block, "--listen") {
+					t.Errorf("%s:%d starts the proxy without --listen and --https-listen", f, i+1)
+				}
+			}
+		}
 	}
 }
