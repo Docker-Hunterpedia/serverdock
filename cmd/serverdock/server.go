@@ -404,8 +404,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
-			Panel:   panelProxy(panel, cfg),
-			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
+			Panel: panelProxy(panel, cfg),
+			// Read by the secret-sentinel test only (not a flag, not in --help).
+			ProxyLogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
+			DataDir:       cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
 			if ready != nil {
 				ready(addrs)

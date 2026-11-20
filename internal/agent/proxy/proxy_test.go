@@ -312,3 +312,20 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+func TestProxyLogLevel(t *testing.T) {
+	level := func(l string) any {
+		b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: "127.0.0.1:1", LogLevel: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		json.Unmarshal(b, &cfg)
+		return cfg["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)["level"]
+	}
+	for in, want := range map[string]string{"": "WARN", "DEBUG": "DEBUG", "INFO": "INFO", "ERROR": "ERROR", "warn": "WARN", "TRACE": "WARN", "debug": "WARN"} {
+		if got := level(in); got != want {
+			t.Errorf("%q: %v, want %s", in, got, want)
+		}
+	}
+}

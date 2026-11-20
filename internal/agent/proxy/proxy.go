@@ -34,6 +34,10 @@ type Config struct {
 	// Upstream is where requests go: a host:port, or "unix//<absolute path>"
 	// (UnixUpstream) for the server's control-plane socket.
 	Upstream string
+	// LogLevel is Caddy's log level: WARN when empty or not one of DEBUG, INFO,
+	// WARN, ERROR. Only the secret-sentinel test sets it (through an environment
+	// variable the server reads for no other purpose), to see what Caddy logs.
+	LogLevel string
 	// Panel, if set (server mode only), serves the panel over HTTPS and turns the
 	// Listen address into a redirect-only HTTP server. The remote agent's proxy
 	// never sets it, so its config stays byte-identical.
@@ -127,12 +131,18 @@ func BuildConfig(c Config) ([]byte, error) {
 		return server
 	}
 	httpApp := m{"grace_period": GracePeriod.String()}
+	logDefault := m{"level": logLevel(c.LogLevel)}
+	if c.Panel != nil {
+		// Server mode only: never log the CSRF header (see redact.go).
+		registerRedactEncoder()
+		logDefault["encoder"] = m{"format": redactEncoderName}
+	}
 	cfg := m{
 		// Admin API off; persist=false so caddy.Load never writes autosave.json
 		// outside DataDir.
 		"admin":   m{"disabled": true, "config": m{"persist": false}},
 		"storage": m{"module": "file_system", "root": filepath.Join(c.DataDir, "caddy")},
-		"logging": m{"logs": m{"default": m{"level": "WARN"}}},
+		"logging": m{"logs": m{"default": logDefault}},
 		"apps":    m{"http": httpApp},
 	}
 	if c.Panel == nil {
@@ -200,3 +210,11 @@ func Load(c Config) error {
 
 // Stop shuts the embedded Caddy down.
 func Stop() error { return caddy.Stop() }
+
+func logLevel(l string) string {
+	switch l {
+	case "DEBUG", "INFO", "WARN", "ERROR":
+		return l
+	}
+	return "WARN"
+}
