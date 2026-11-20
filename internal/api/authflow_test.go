@@ -40,10 +40,15 @@ func (h *countingHasher) total() int32                              { return h.v
 // failingAudit is an audit sink whose writes fail on demand.
 type failingAudit struct {
 	*audit.Logger
-	fail atomic.Bool
+	fail  atomic.Bool
+	block atomic.Bool // writes hang until their context ends
 }
 
 func (f *failingAudit) Append(ctx context.Context, e audit.Entry) (int64, error) {
+	if f.block.Load() {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
 	if f.fail.Load() {
 		return 0, errors.New("disk full")
 	}
@@ -923,16 +928,97 @@ func TestAuthIntentFailureFailsClosed(t *testing.T) {
 	if f.count(`SELECT count(*) FROM sessions`) != before || two.cookies[SessionCookie] != "" {
 		t.Fatal("2fa minted a session without an audit intent")
 	}
-	// Logout: the session is NOT revoked when the intent cannot be written.
-	f.aud.fail.Store(false)
+	// The 503 says why and when to retry.
+	f.aud.fail.Store(true)
+	r503 := f.client("203.0.113.9").do("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": testPassword})
+	if r503.Header.Get("Retry-After") != "2" || !strings.Contains(r503.Raw, "busy or the audit log is not writable; nothing was done") {
+		t.Errorf("503 body/headers: %v %s", r503.Header, r503.Raw)
+	}
+}
+
+// Actions that only remove access always run: with the audit log down, logout
+// still revokes the session and clears the cookie, flags the gap, and logs an ERROR.
+func TestLogoutRunsWhenTheAuditLogIsDown(t *testing.T) {
+	f := newFlow(t)
+	f.setup()
 	lo, _ := f.signIn("203.0.113.8")
 	f.aud.fail.Store(true)
-	if r := lo.do("POST", "/api/v1/auth/logout", map[string]string{}); r.Code != 503 {
-		t.Fatalf("logout: %d", r.Code)
+	r := lo.do("POST", "/api/v1/auth/logout", map[string]string{})
+	if r.Code != 200 || r.Body["ok"] != true || r.Body["audit"] != "unrecorded" || lo.cookies[SessionCookie] != "" {
+		t.Fatalf("logout with the audit log down: %d %s", r.Code, r.Raw)
 	}
 	f.aud.fail.Store(false)
-	if r := lo.do("GET", "/api/v1/auth/session", nil); r.Code != 200 {
-		t.Errorf("the session was revoked although the logout was refused: %d", r.Code)
+	if g := lo.do("GET", "/api/v1/auth/session", nil); g.Code != 401 {
+		t.Errorf("the session survived the logout: %d", g.Code)
+	}
+	if out := f.logs.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "logout ran without an audit record") {
+		t.Errorf("the gap was not logged at ERROR: %s", out)
+	}
+}
+
+// A stuck audit writer holds a sign-in for about 2 s, not forever.
+func TestAuditIntentWaitIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes 2 s")
+	}
+	f := newFlow(t)
+	f.setup()
+	f.aud.block.Store(true)
+	t0 := time.Now()
+	r := f.client("203.0.113.6").do("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": testPassword})
+	d := time.Since(t0)
+	if r.Code != 503 || r.code() != "audit_unavailable" || r.Header.Get("Retry-After") != "2" {
+		t.Fatalf("%d %s", r.Code, r.Raw)
+	}
+	if d < 1900*time.Millisecond || d > 4*time.Second {
+		t.Errorf("answered after %v, want about 2 s", d)
+	}
+}
+
+// Known and accepted (ADR 0010 decision 8): every non-existent name shares one
+// account bucket, so a multi-IP attacker can tell whether a name exists. Saturate
+// "<unknown>" from many IPs; then a name that does not exist is refused (429) and a
+// name that does is still answered (401). A single client sees no difference. If
+// this test fails because the behaviour changed, change the ADR and the docs too.
+func TestUnknownBucketRevealsExistenceToAMultiIPAttacker(t *testing.T) {
+	f := newFlow(t)
+	f.setup()
+	for i := 0; i < 11; i++ { // 10 free failures, then the 11th starts the block
+		f.client(fmt.Sprintf("192.0.2.%d", i+1)).do("POST", "/api/v1/auth/login", map[string]string{"username": fmt.Sprintf("random%d", i), "password": "x"})
+	}
+	probe := func(name, ip string) int {
+		return f.client(ip).do("POST", "/api/v1/auth/login", map[string]string{"username": name, "password": "wrong password!!"}).Code
+	}
+	if got := probe("nobody-by-that-name", "198.51.100.1"); got != 429 {
+		t.Fatalf("a non-existent name after saturating <unknown>: %d, want 429", got)
+	}
+	if got := probe("admin", "198.51.100.2"); got != 401 {
+		t.Fatalf("an existing name after saturating <unknown>: %d, want 401", got)
+	}
+	// The same probes from ONE client, without the saturation, are identical.
+	g := newFlow(t)
+	g.setup()
+	a := g.client("198.51.100.3").do("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "wrong password!!"})
+	b := g.client("198.51.100.4").do("POST", "/api/v1/auth/login", map[string]string{"username": "nobody-by-that-name", "password": "wrong password!!"})
+	if a.Code != b.Code || a.code() != b.code() {
+		t.Errorf("a single client can tell: %d %s vs %d %s", a.Code, a.Raw, b.Code, b.Raw)
+	}
+}
+
+// A wrong setup code is recorded as a TOTP denial, not a setup-token one.
+func TestSetupWrongCodeIsADenialWithMethodTOTP(t *testing.T) {
+	f := newFlow(t)
+	c := f.client("203.0.113.5")
+	tok := f.token()
+	en := c.do("POST", "/api/v1/setup/enroll", map[string]string{"token": tok, "username": "admin"})
+	r := c.do("POST", "/api/v1/setup/complete", map[string]string{"token": tok, "enrollment_id": en.Body["enrollment_id"].(string),
+		"username": "admin", "password": testPassword, "code": "000000"})
+	if r.Code != 401 || r.code() != "invalid_code" {
+		t.Fatalf("%d %s", r.Code, r.Raw)
+	}
+	rows := f.auditRows("auth.setup", "denied")
+	if len(rows) != 1 || !strings.Contains(rows[0]["args"].(string), `"method":"totp"`) {
+		t.Fatalf("%v", rows)
 	}
 }
 

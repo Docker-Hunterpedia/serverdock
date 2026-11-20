@@ -674,3 +674,20 @@ func TestLastSeenWriteIsBoundedByATimeout(t *testing.T) {
 		t.Errorf("the lookup took %v with a stuck writer, want about 250 ms", d)
 	}
 }
+
+// PendingUser keys the back-off before the code is checked: it must not say a
+// used-up pending row is still good.
+func TestPendingUserRefusesAUsedUpRow(t *testing.T) {
+	e := newEnv(t)
+	e.user(1)
+	secret, _ := e.s.CreatePending(ctx, 1, "x")
+	if id, err := e.s.PendingUser(ctx, secret); err != nil || id != 1 {
+		t.Fatalf("%d %v", id, err)
+	}
+	for i := 0; i < PendingTries; i++ {
+		e.s.PendingAttempt(ctx, secret)
+	}
+	if _, err := e.s.PendingUser(ctx, secret); !errors.Is(err, ErrPendingInvalid) {
+		t.Fatalf("a row with no tries left: %v", err)
+	}
+}

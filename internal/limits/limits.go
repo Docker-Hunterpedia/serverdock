@@ -242,9 +242,20 @@ func ParseForwarded(h http.Header) (netip.Addr, error) {
 // a marked request has a bad header the caller's guard has already answered 400;
 // this function still never falls back to trusting it, and returns the peer key.
 func ClientIP(r *http.Request) string {
+	ip, raw := clientAddr(r)
+	if ip == nil {
+		return raw
+	}
+	return Key(ip)
+}
+
+// clientAddr is the one place that decides where the client address comes from:
+// the single X-Forwarded-For value on a marked connection, otherwise RemoteAddr.
+// ip is nil when the peer is not an IP (a unix socket peer): raw is then its text.
+func clientAddr(r *http.Request) (ip net.IP, raw string) {
 	if FromProxy(r.Context()) {
-		if ip, err := ParseForwarded(r.Header); err == nil {
-			return Key(net.IP(ip.AsSlice()))
+		if a, err := ParseForwarded(r.Header); err == nil {
+			return net.IP(a.AsSlice()), ""
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -252,29 +263,17 @@ func ClientIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	if peer := net.ParseIP(host); peer != nil {
-		return Key(peer)
+		return peer, ""
 	}
-	return host
+	return nil, host
 }
 
 // ClientIP48 is ClientIP's counterpart for the coarse per-/48 limiter: the same
-// source of the client address (X-Forwarded-For only on a marked connection),
-// keyed by Key48.
+// source of the client address, keyed by Key48.
 func ClientIP48(r *http.Request) string {
-	var ip net.IP
-	if FromProxy(r.Context()) {
-		if a, err := ParseForwarded(r.Header); err == nil {
-			ip = net.IP(a.AsSlice())
-		}
-	}
+	ip, raw := clientAddr(r)
 	if ip == nil {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
-		if ip = net.ParseIP(host); ip == nil {
-			return host
-		}
+		return raw
 	}
 	return Key48(ip)
 }

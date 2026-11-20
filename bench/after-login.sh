@@ -1,8 +1,11 @@
 #!/bin/sh
 # Report-only "S2 after one login" (plan 0003, M2 step 6b): the single-node server
-# (scenario 2's flags), first run and one full sign-in over HTTPS, then VmRSS
-# before, 10 s after and 60 s after. argon2 allocates ~19 MiB for a moment, so
-# this shows what the Go runtime gives back (expected: S2 + at most 1 MB).
+# (scenario 2's flags). First run is done FIRST (its argon2 hash and TLS state are
+# part of warm-up), then RssAnon and RssFile are sampled, then three sign-ins, each
+# followed by a sample 10 s later (and one more 60 s after the last).
+#
+# Expectation: one sign-in after warm-up costs at most +1 MB of RssAnon (argon2's
+# 19 MiB is returned to the OS by debug.FreeOSMemory); later sign-ins add nothing.
 #
 #   bench/after-login.sh            (needs docker, curl and python3)
 #
@@ -41,25 +44,34 @@ json() { python3 -I -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 post() { # path body -> response body (cookies kept in the jar)
   curl -sSk -b "$WORK/jar" -c "$WORK/jar" -H 'Content-Type: application/json' -H "Origin: https://$ADDR" -X POST "https://$ADDR$1" -d "$2"
 }
-rss() { # sample VmRSS (bytes) of the container, from outside
-  bench/measure.sh "$NAME" 0 1 "$WORK/rss.tsv" >/dev/null 2>&1 && awk 'NR==2{printf "%.1f", $2/1000000}' "$WORK/rss.tsv"
+rss() { # "<anon MB> <file MB>": RssAnon and RssFile of the container, sampled from outside
+  bench/measure.sh "$NAME" 0 1 "$WORK/rss.tsv" >/dev/null 2>&1 && awk 'NR==2{printf "%.1f %.1f", $4/1000000, $5/1000000}' "$WORK/rss.tsv"
 }
 
 log "warm-up 20 s"; sleep 20
-BEFORE=$(rss)
 docker cp "$NAME:/data/setup-token" "$WORK/token" >/dev/null
 TOKEN=$(tr -d '\n' <"$WORK/token")
 PASS='correct horse battery staple'
 EN=$(post /api/v1/setup/enroll "{\"token\":\"$TOKEN\",\"username\":\"admin\"}")
 SECRET=$(printf '%s' "$EN" | json "['secret']"); EID=$(printf '%s' "$EN" | json "['enrollment_id']")
 post /api/v1/setup/complete "{\"token\":\"$TOKEN\",\"enrollment_id\":\"$EID\",\"username\":\"admin\",\"password\":\"$PASS\",\"code\":\"$(totp "$SECRET")\"}" >/dev/null
-log "first run done; waiting for the next TOTP step, then one sign-in"
-sleep 31
-rm -f "$WORK/jar"
-post /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$PASS\"}" >/dev/null
-CODE=$(post /api/v1/auth/2fa "{\"code\":\"$(totp "$SECRET")\"}" | json "['username']")
-[ "$CODE" = admin ] || { log "sign-in failed"; exit 1; }
-log "signed in; sampling"
-sleep 10; AFTER10=$(rss)
-sleep 50; AFTER60=$(rss)
-echo "S2 after one login (VmRSS MB): before=$BEFORE  +10s=$AFTER10  +60s=$AFTER60  (report only)"
+log "first run done (part of warm-up); settling 20 s"
+sleep 20
+BEFORE=$(rss)
+signin() {
+  sleep 31 # the next TOTP step: a code is never accepted twice
+  rm -f "$WORK/jar"
+  post /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$PASS\"}" >/dev/null
+  R=$(post /api/v1/auth/2fa "{\"code\":\"$(totp "$SECRET")\"}" | json "['username']")
+  [ "$R" = admin ] || { log "sign-in failed"; exit 1; }
+}
+signin; sleep 10; A1=$(rss)
+signin; sleep 10; A2=$(rss)
+signin; sleep 10; A3=$(rss)
+sleep 50; A3b=$(rss)
+echo "S2 after sign-ins (RssAnon MB, RssFile MB), report only:"
+echo "  before (after first run + settle):  $BEFORE"
+echo "  login 1, +10 s:                      $A1"
+echo "  login 2, +10 s:                      $A2"
+echo "  login 3, +10 s:                      $A3"
+echo "  login 3, +60 s:                      $A3b"

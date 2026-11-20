@@ -120,7 +120,25 @@ func busy(w http.ResponseWriter) {
 }
 
 func (a *authAPI) auditDown(w http.ResponseWriter) {
-	WriteError(w, http.StatusServiceUnavailable, "audit_unavailable", "the audit log is not writable, so nothing was done")
+	w.Header().Set("Retry-After", "2")
+	WriteError(w, http.StatusServiceUnavailable, "audit_unavailable", "the server is busy or the audit log is not writable; nothing was done")
+}
+
+// intentWait bounds the audit intent write: a stuck writer must not hold a
+// sign-in request open.
+const intentWait = 2 * time.Second
+
+// boundedIntent gives only the intent write a deadline; outcome writes use the
+// caller's context as before.
+type boundedIntent struct{ audit.Appender }
+
+func (b boundedIntent) Append(ctx context.Context, e audit.Entry) (int64, error) {
+	if e.Phase == audit.PhaseIntent {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, intentWait)
+		defer cancel()
+	}
+	return b.Appender.Append(ctx, e)
 }
 
 // checkIP applies the per-IP back-offs; it answers 429 and returns false when
@@ -202,7 +220,7 @@ func (a *authAPI) denied(ctx context.Context, action, username string, r *http.R
 // execute runs fn between an intent row and an outcome row (intent first: if the
 // intent cannot be written, fn is not run).
 func execute[T any](ctx context.Context, a *authAPI, actorKind, actorID, action, target string, args map[string]any, fn func(context.Context) (T, error)) (audit.Outcome[T], error) {
-	return audit.Execute(ctx, a.Audit, a.Log, redact.New(), audit.Entry{
+	return audit.Execute(ctx, boundedIntent{a.Audit}, a.Log, redact.New(), audit.Entry{
 		ActorKind: actorKind, ActorID: actorID, Action: action, Target: target, Risk: "mutate",
 		ArgsJSON: argsJSON(args), RequestID: newRequestID(),
 	}, fn)
@@ -254,7 +272,7 @@ func (a *authAPI) setupError(w http.ResponseWriter, r *http.Request, err error, 
 		WriteError(w, http.StatusConflict, "enrollment_replaced", "This enrolment was replaced; scan the new code.")
 	case errors.Is(err, auth.ErrBadCode):
 		a.failIP(r, false)
-		a.denied(r.Context(), action, "", r, "setup-token")
+		a.denied(r.Context(), action, "", r, "totp")
 		WriteError(w, http.StatusUnauthorized, "invalid_code", "That code is wrong. Check your device's clock and try the next code.")
 	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrBadUsername):
 		WriteError(w, http.StatusBadRequest, "invalid_input", userMessage(err))
@@ -506,8 +524,7 @@ func (a *authAPI) twoFA(w http.ResponseWriter, r *http.Request) {
 			a.failIP(r, known)
 			a.Limits.Account2FA.Fail(acct, false)
 			a.denied(ctx, "auth.login", username, r, method)
-			WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"code": "invalid_code",
-				"message": "That code is wrong. Check your device's clock and try the next code.", "request_id": newRequestID()}, "tries_left": tries})
+			WriteErrorFields(w, http.StatusUnauthorized, "invalid_code", "That code is wrong. Check your device's clock and try the next code.", map[string]any{"tries_left": tries})
 		case errors.Is(err, auth.ErrCodeReused):
 			WriteError(w, http.StatusUnauthorized, "code_reused", "That code was already used. Wait for the next one.")
 		case errors.Is(err, auth.ErrPendingInvalid):
@@ -588,8 +605,7 @@ func (a *authAPI) reauth(w http.ResponseWriter, r *http.Request) {
 			a.failIP(r, false)
 			a.Limits.Account2FA.Fail(acct, false)
 			a.denied(ctx, "auth.reauth", username, r, "totp")
-			WriteJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"code": "invalid_code",
-				"message": "That code is wrong.", "request_id": newRequestID()}, "failures_left": re.FailuresLeft})
+			WriteErrorFields(w, http.StatusForbidden, "invalid_code", "That code is wrong.", map[string]any{"failures_left": re.FailuresLeft})
 		case errors.Is(err, auth.ErrCodeReused):
 			WriteError(w, http.StatusForbidden, "code_reused", "That code was already used. Wait for the next one.")
 		case errors.As(err, &se):
@@ -618,12 +634,22 @@ func (a *authAPI) logout(w http.ResponseWriter, r *http.Request) {
 		func(ctx context.Context) (struct{}, error) {
 			return struct{}{}, a.Auth.RevokeSession(ctx, p.SessionSecret)
 		})
+	resp := map[string]any{"ok": true}
 	if errors.Is(err, audit.ErrAuditUnavailable) {
-		a.auditDown(w)
+		// An action that only removes access always runs: refusing to sign someone
+		// out because the audit log is down would be worse than a gap in the log.
+		a.Log.Error("logout ran without an audit record: the audit intent could not be written", "user_id", p.Session.UserID)
+		if rerr := a.Auth.RevokeSession(r.Context(), p.SessionSecret); rerr != nil {
+			a.Log.Error("logout failed", "err", rerr.Error())
+			WriteError(w, http.StatusInternalServerError, "internal", "could not sign out")
+			return
+		}
+		ClearCookie(w, SessionCookie)
+		resp["audit"] = "unrecorded"
+		WriteJSON(w, http.StatusOK, resp)
 		return
 	}
 	ClearCookie(w, SessionCookie)
-	resp := map[string]any{"ok": true}
 	if errors.Is(err, audit.ErrAuditOutcome) {
 		resp["audit"] = "unrecorded"
 	} else if err != nil {

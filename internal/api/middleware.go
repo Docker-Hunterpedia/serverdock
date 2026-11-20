@@ -97,12 +97,22 @@ type errBody struct {
 
 // WriteError answers with the standard error envelope.
 func WriteError(w http.ResponseWriter, status int, code, msg string) {
+	WriteErrorFields(w, status, code, msg, nil)
+}
+
+// WriteErrorFields is WriteError with extra top-level fields next to "error"
+// (for example tries_left).
+func WriteErrorFields(w http.ResponseWriter, status int, code, msg string, extra map[string]any) {
 	var b errBody
 	b.Error.Code, b.Error.Message, b.Error.RequestID = code, msg, newRequestID()
+	out := map[string]any{"error": b.Error}
+	for k, v := range extra {
+		out[k] = v
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(b)
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // WriteJSON answers with status and v as JSON.

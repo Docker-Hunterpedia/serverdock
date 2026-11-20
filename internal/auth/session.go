@@ -258,7 +258,7 @@ func (s *Store) PendingUser(ctx context.Context, secret string) (int64, error) {
 		return 0, ErrPendingInvalid
 	}
 	var id int64
-	err := s.st.R.QueryRowContext(ctx, `SELECT user_id FROM auth_pending WHERE id_hash = ? AND expires_at > ?`, hashSecret(secret), s.now().Unix()).Scan(&id)
+	err := s.st.R.QueryRowContext(ctx, `SELECT user_id FROM auth_pending WHERE id_hash = ? AND expires_at > ? AND tries_left > 0`, hashSecret(secret), s.now().Unix()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrPendingInvalid
 	}

@@ -129,7 +129,7 @@ Extra containers ServerDock adds to a managed server: **zero** (agent and proxy 
 
 ## Control socket and local tools
 
-The control plane listens only on a unix socket (`--control-socket`, default `DATA/run/cp.sock`, 0600 in a 0700 directory). Every request on it must carry **exactly one `X-Forwarded-For` value holding one IP**, which only our Caddy sets; anything else gets 400. A local tool that talks to it directly (M7a's `doctor` and any container healthcheck) therefore cannot use it like a plain HTTP port. Local tools use the **debug socket** (`--debug-socket`) or read files and the database; they never need to forge a forwarded address.
+The control plane listens only on a unix socket (`--control-socket`, default `DATA/run/cp.sock`, 0600 in a 0700 directory). Every request on it must carry **exactly one `X-Forwarded-For` value holding one IP**, which only our Caddy sets; anything else gets 400. A local tool that talks to it directly (M7a's `doctor` and any container healthcheck) therefore cannot use it like a plain HTTP port. A local tool that does talk to the control socket must send `Host: 127.0.0.1` or `Host: localhost` (the Host allowlist answers 421 to anything else) and that one `X-Forwarded-For`. Local tools otherwise use the **debug socket** (`--debug-socket`) or read files and the database; they never need to forge a forwarded address.
 
 ## Background work
 
