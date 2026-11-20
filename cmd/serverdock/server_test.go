@@ -118,3 +118,31 @@ func TestServerWithProxy(t *testing.T) {
 		t.Error("proxy still listening after shutdown")
 	}
 }
+
+func TestCheckDebugAddr(t *testing.T) {
+	ok := []string{"", "127.0.0.1:7071", "localhost:7071", "[::1]:7071"}
+	for _, a := range ok {
+		if err := checkDebugAddr(a, false); err != nil {
+			t.Errorf("%q should be allowed: %v", a, err)
+		}
+	}
+	bad := []string{":7071", "0.0.0.0:7071", "10.1.2.3:7071", "example.com:7071", "[::]:7071", "nonsense"}
+	for _, a := range bad {
+		if err := checkDebugAddr(a, false); err == nil {
+			t.Errorf("%q should be refused", a)
+		}
+		if a != "nonsense" {
+			if err := checkDebugAddr(a, true); err != nil {
+				t.Errorf("%q with allow-remote: %v", a, err)
+			}
+		}
+	}
+}
+
+func TestServerRefusesRemoteDebug(t *testing.T) {
+	err := runServer(context.Background(), serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", DebugListen: "0.0.0.0:0"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+}

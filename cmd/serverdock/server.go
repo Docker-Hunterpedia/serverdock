@@ -31,6 +31,8 @@ type serverConfig struct {
 	Internal    string
 	Proxy       bool
 	DebugListen string
+	// DebugAllowRemote permits a non-loopback --debug-listen address.
+	DebugAllowRemote bool
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -42,6 +44,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.StringVar(&c.Internal, "internal", "127.0.0.1:7070", "control-plane listen address (loopback)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
 	fs.StringVar(&c.DebugListen, "debug-listen", "", "serve /debug/mem on this address (off by default)")
+	fs.BoolVar(&c.DebugAllowRemote, "debug-allow-remote", false, "allow --debug-listen on a non-loopback address (unauthenticated; bench networks only)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -86,8 +89,31 @@ type serverAddrs struct {
 	Listen   string // public proxy address; empty when --proxy=false
 }
 
-// runServer runs the control plane until ctx is cancelled.
+// checkDebugAddr refuses debug listeners that are not loopback unless the
+// operator explicitly allows remote access.
+func checkDebugAddr(addr string, allowRemote bool) error {
+	if addr == "" || allowRemote {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("debug-listen %q: %w", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("debug-listen %q is not a loopback address; pass --debug-allow-remote to expose it (bench networks only)", addr)
+}
+
+// runServer runs the control plane until ctx is cancelled. Shutdown order:
+// the local agent (and with it Caddy) stops first, then the control plane.
 func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready func(serverAddrs)) error {
+	if err := checkDebugAddr(cfg.DebugListen, cfg.DebugAllowRemote); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfg.Data, 0o750); err != nil {
 		return fmt.Errorf("data dir: %w", err)
 	}
@@ -97,8 +123,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	defer st.Close()
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// cpCtx bounds the control plane (HTTP servers); it outlives the agent.
+	cpCtx, cpCancel := context.WithCancel(context.Background())
+	defer cpCancel()
+	agentCtx, agentCancel := context.WithCancel(ctx)
+	defer agentCancel()
 
 	srv := api.New(web.FS())
 	ln, err := net.Listen("tcp", cfg.Internal)
@@ -106,21 +135,25 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return fmt.Errorf("listen internal: %w", err)
 	}
 	addrs := serverAddrs{Internal: ln.Addr().String()}
-	errc := make(chan error, 3)
-	running := 1
-	go func() { errc <- api.Serve(ctx, ln, srv.Handler(), shutdownGrace) }()
+	cpErr := make(chan error, 2)
+	cpRunning := 1
+	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace) }()
 
 	if cfg.DebugListen != "" {
 		dl, err := net.Listen("tcp", cfg.DebugListen)
 		if err != nil {
-			cancel()
-			<-errc
+			cpCancel()
+			<-cpErr
 			return fmt.Errorf("listen debug: %w", err)
 		}
 		addrs.Debug = dl.Addr().String()
-		log.Warn("debug listener enabled", "addr", addrs.Debug)
-		running++
-		go func() { errc <- api.Serve(ctx, dl, api.DebugHandler(), shutdownGrace) }()
+		if cfg.DebugAllowRemote {
+			log.Warn("DEBUG LISTENER ALLOWED ON A NON-LOOPBACK ADDRESS (--debug-allow-remote); it is unauthenticated", "addr", addrs.Debug)
+		} else {
+			log.Warn("debug listener enabled", "addr", addrs.Debug)
+		}
+		cpRunning++
+		go func() { cpErr <- api.Serve(cpCtx, dl, api.DebugHandler(), shutdownGrace) }()
 	}
 	log.Info("control plane listening", "internal", addrs.Internal)
 
@@ -128,9 +161,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen = cfg.Listen
 	}
-	running++
+	agentDone := make(chan error, 1)
 	go func() {
-		errc <- agent.RunLocal(ctx, agent.LocalOptions{
+		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
 		}, log, func() {
 			if ready != nil {
@@ -140,11 +173,26 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}()
 
 	var first error
-	for i := 0; i < running; i++ {
-		if err := <-errc; err != nil && first == nil {
+	agentExited := false
+	select {
+	case <-ctx.Done():
+	case err := <-agentDone:
+		agentExited, first = true, err
+	case err := <-cpErr:
+		cpRunning--
+		first = err
+	}
+	agentCancel()
+	if !agentExited {
+		if err := <-agentDone; err != nil && first == nil {
 			first = err
 		}
-		cancel()
+	}
+	cpCancel()
+	for ; cpRunning > 0; cpRunning-- {
+		if err := <-cpErr; err != nil && first == nil {
+			first = err
+		}
 	}
 	return first
 }

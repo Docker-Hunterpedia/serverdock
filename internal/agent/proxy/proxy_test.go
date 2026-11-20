@@ -8,10 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/coder/websocket"
 )
 
@@ -62,11 +64,30 @@ func TestBuildConfig(t *testing.T) {
 	if st["module"] != "file_system" || st["root"] != "/data/caddy" {
 		t.Errorf("storage: %v", st)
 	}
+	cfgAdmin := cfg["admin"].(map[string]any)
+	if cfgAdmin["config"].(map[string]any)["persist"] != false {
+		t.Error("admin.config.persist must be false")
+	}
 	s := string(b)
-	for _, want := range []string{`"automatic_https":{"disable":true}`, `/agent/connect`, `"dial":"127.0.0.1:7070"`} {
+	for _, want := range []string{`"grace_period":"10s"`, `"stream_close_delay":"5m0s"`, `"automatic_https":{"disable":true}`, `/agent/connect`, `"dial":"127.0.0.1:7070"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("config missing %s", want)
 		}
+	}
+}
+
+func TestLoadDoesNotAutosave(t *testing.T) {
+	before, beforeErr := os.Stat(caddy.ConfigAutosavePath)
+	addr := freeAddr(t)
+	up := httptest.NewServer(http.NotFoundHandler())
+	defer up.Close()
+	if err := Load(Config{DataDir: t.TempDir(), Listen: addr, Upstream: hostPort(up)}); err != nil {
+		t.Fatal(err)
+	}
+	defer Stop()
+	after, afterErr := os.Stat(caddy.ConfigAutosavePath)
+	if (beforeErr == nil) != (afterErr == nil) || (beforeErr == nil && !before.ModTime().Equal(after.ModTime())) {
+		t.Fatalf("autosave file touched at %s (before %v, after %v)", caddy.ConfigAutosavePath, beforeErr, afterErr)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -19,6 +20,14 @@ import (
 
 // AgentConnectPath is the WebSocket endpoint remote agents dial.
 const AgentConnectPath = "/agent/connect"
+
+// GracePeriod bounds how long Caddy waits for in-flight requests on shutdown
+// and reload; it matches the control plane's shutdown grace.
+const GracePeriod = 10 * time.Second
+
+// StreamCloseDelay keeps proxied WebSocket (agent) connections open for this
+// long after a config reload instead of dropping them immediately.
+const StreamCloseDelay = 5 * time.Minute
 
 // Config describes the Phase 0 proxy: one HTTP listener, everything proxied
 // to the control plane.
@@ -62,16 +71,18 @@ func BuildConfig(c Config) ([]byte, error) {
 		return nil, err
 	}
 	cfg := m{
-		"admin":   m{"disabled": true},
+		// Admin API off; persist=false so caddy.Load never writes autosave.json
+		// outside DataDir.
+		"admin":   m{"disabled": true, "config": m{"persist": false}},
 		"storage": m{"module": "file_system", "root": filepath.Join(c.DataDir, "caddy")},
 		"logging": m{"logs": m{"default": m{"level": "WARN"}}},
-		"apps": m{"http": m{"servers": m{"main": m{
+		"apps": m{"http": m{"grace_period": GracePeriod.String(), "servers": m{"main": m{
 			"listen":          []string{c.Listen},
 			"automatic_https": m{"disable": true},
 			"routes": []m{
 				{
 					"match":  []m{{"path": []string{AgentConnectPath}}},
-					"handle": []m{reverseProxy(c.Upstream, m{"flush_interval": -1})},
+					"handle": []m{reverseProxy(c.Upstream, m{"flush_interval": -1, "stream_close_delay": StreamCloseDelay.String()})},
 				},
 				{"handle": []m{reverseProxy(c.Upstream, nil)}},
 			},

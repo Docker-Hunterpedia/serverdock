@@ -43,14 +43,19 @@ fi
 [ $# -eq 4 ] || { echo "usage: $0 <container> <duration_s> <interval_s> <out.tsv>" >&2; exit 2; }
 container=$1; duration=$2; interval=$3; out=$4
 pid=$(docker inspect -f '{{.State.Pid}}' "$container")
+cid=$(docker inspect -f '{{.Id}}' "$container")
 [ "$pid" -gt 0 ] || { echo "measure: $container is not running" >&2; exit 2; }
 
-if [ "$(uname -s)" = Linux ] && [ -r "/proc/$pid/status" ] && [ -r "/proc/$pid/cgroup" ]; then
+# direct only when this host's /proc really is the container's host: the PID's
+# cgroup path must contain the full container ID. Otherwise (Docker Desktop, a
+# VM-backed daemon, a PID collision) use the helper; helper results are always
+# informational.
+if [ "$(uname -s)" = Linux ] && [ -r "/proc/$pid/status" ] && grep -q "$cid" "/proc/$pid/cgroup" 2>/dev/null; then
   echo direct >"$out.mode"
   sh "$0" --sample "$pid" "$duration" "$interval" >"$out"
 else
   echo helper >"$out.mode"
   self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-  docker run --rm --pid=host --cgroupns=host --privileged -v "$self:/measure.sh:ro" alpine:3 \
+  docker run --rm --pid=host --cgroupns=host --privileged -v "$self:/measure.sh:ro" alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf \
     sh /measure.sh --sample "$pid" "$duration" "$interval" >"$out"
 fi

@@ -51,10 +51,10 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestGates(t *testing.T) {
-	run := func(rssMiB, cpu float64) RunStats {
-		return RunStats{VmRSSMedian: rssMiB * mib, IdleCPUPercent: cpu}
+	run := func(rssMB, cpu float64) RunStats {
+		return RunStats{VmRSSMedian: rssMB * mb, IdleCPUPercent: cpu}
 	}
-	// Median of medians 41.9 MiB is inside 40 MiB +5% (42); one outlier run is ignored.
+	// Median of medians 41.9 MB is inside 40 MB +5% (42); one outlier run is ignored.
 	s := scenario(1, []RunStats{run(41.9, 0.1), run(60, 0.1), run(30, 0.1)})
 	if !s.Gates[0].Pass {
 		t.Errorf("rss gate: %+v", s.Gates[0])
@@ -71,18 +71,18 @@ func TestGates(t *testing.T) {
 	if !s.Gates[1].Pass {
 		t.Errorf("cpu gate should pass with tolerance: %+v", s.Gates[1])
 	}
-	if g := binaryGates(41 * mib); g[0].Pass {
-		t.Error("gzip gate should fail at 41 MiB")
+	if g := binaryGates(41 * mb); g[0].Pass {
+		t.Error("gzip gate should fail at 41 MB")
 	}
 }
 
 func TestReportLabelsAndVerdict(t *testing.T) {
 	r := Report{Date: "d", Arch: "a", Mode: "helper", Quick: true, Informational: true,
-		Label: label(true, true), Scenarios: []ScenarioResult{scenario(2, []RunStats{{VmRSSMedian: 90 * mib, IdleCPUPercent: 0.1}})},
-		Gates: binaryGates(10 * mib)}
+		Label: label(true, true), Scenarios: []ScenarioResult{scenario(2, []RunStats{{VmRSSMedian: 90 * mb, IdleCPUPercent: 0.1}})},
+		Gates: binaryGates(10 * mb)}
 	r.evaluate()
 	if r.Pass {
-		t.Error("90 MiB must fail scenario 2")
+		t.Error("90 MB must fail scenario 2")
 	}
 	md := markdown(r)
 	for _, want := range []string{"quick", "informational", "FAIL", "not enforced"} {

@@ -56,7 +56,9 @@ cleanup() {
   [ -n "$CURRENT" ] && docker rm -f "$CURRENT" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 log() { printf '[bench] %s\n' "$*" >&2; }
 

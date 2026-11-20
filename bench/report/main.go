@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-const mib = 1024 * 1024
+const mb = 1e6 // decimal megabytes, matching docs/architecture.md
 
 const (
 	memTolerance = 1.05
@@ -87,8 +87,8 @@ var scenarioNames = map[int]string{
 }
 
 type limits struct {
-	rssMiB float64
-	cpu    float64
+	rssMB float64
+	cpu   float64
 }
 
 var scenarioLimits = map[int]limits{
@@ -96,7 +96,7 @@ var scenarioLimits = map[int]limits{
 	2: {80, 1.0},
 }
 
-const gzipLimitMiB = 40
+const gzipLimitMB = 40
 
 func median(v []float64) float64 {
 	if len(v) == 0 {
@@ -192,8 +192,8 @@ func scenario(id int, runs []RunStats) ScenarioResult {
 	r.VmRSSMedian, r.CPUMedian, r.VmHWMMax = median(rss), median(cpu), max(hwm)
 	if l, ok := scenarioLimits[id]; ok {
 		r.Gates = []Gate{
-			{Name: "VmRSS median", Value: r.VmRSSMedian / mib, Limit: l.rssMiB * memTolerance, Unit: "MiB",
-				Pass: r.VmRSSMedian <= l.rssMiB*mib*memTolerance},
+			{Name: "VmRSS median", Value: r.VmRSSMedian / mb, Limit: l.rssMB * memTolerance, Unit: "MB",
+				Pass: r.VmRSSMedian <= l.rssMB*mb*memTolerance},
 			{Name: "idle CPU", Value: r.CPUMedian, Limit: l.cpu + cpuTolerance, Unit: "%",
 				Pass: r.CPUMedian < l.cpu+cpuTolerance},
 		}
@@ -202,8 +202,8 @@ func scenario(id int, runs []RunStats) ScenarioResult {
 }
 
 func binaryGates(gz int64) []Gate {
-	return []Gate{{Name: "server binary gzip -9", Value: float64(gz) / mib, Limit: gzipLimitMiB, Unit: "MiB",
-		Pass: float64(gz) <= gzipLimitMiB*mib}}
+	return []Gate{{Name: "server binary gzip -9", Value: float64(gz) / mb, Limit: gzipLimitMB, Unit: "MB",
+		Pass: float64(gz) <= gzipLimitMB*mb}}
 }
 
 func (r *Report) evaluate() {
@@ -241,16 +241,16 @@ func markdown(r Report) string {
 		verdict = "FAIL"
 	}
 	fmt.Fprintf(&b, "- Gates: **%s**%s\n", verdict, map[bool]string{true: " (not enforced: informational)", false: ""}[r.Informational])
-	fmt.Fprintf(&b, "- Binary: %.1f MiB raw, %.1f MiB gzip -9\n", float64(r.BinaryBytes)/mib, float64(r.BinaryGzip)/mib)
-	fmt.Fprintf(&b, "- Gates use the median of per-run medians; tolerance +5%% memory, +0.2 points CPU. 1 MiB = 1048576 bytes.\n\n")
+	fmt.Fprintf(&b, "- Binary: %.1f MB raw, %.1f MB gzip -9\n", float64(r.BinaryBytes)/mb, float64(r.BinaryGzip)/mb)
+	fmt.Fprintf(&b, "- Gates use the median of per-run medians; tolerance +5%% memory, +0.2 points CPU. 1 MB = 1,000,000 bytes.\n\n")
 	for _, s := range r.Scenarios {
 		fmt.Fprintf(&b, "## Scenario %d: %s\n\n", s.ID, s.Name)
-		fmt.Fprintf(&b, "| run | samples | VmRSS median MiB | VmRSS max MiB | VmHWM max MiB | RssAnon MiB | RssFile MiB | cgroup-inactive MiB | idle CPU %% |\n|---|---|---|---|---|---|---|---|---|\n")
+		fmt.Fprintf(&b, "| run | samples | VmRSS median MB | VmRSS max MB | VmHWM max MB | RssAnon MB | RssFile MB | cgroup-inactive MB | idle CPU %% |\n|---|---|---|---|---|---|---|---|---|\n")
 		for i, x := range s.Runs {
 			fmt.Fprintf(&b, "| %d | %d | %.1f | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f |\n", i+1, x.Samples,
-				x.VmRSSMedian/mib, x.VmRSSMax/mib, x.VmHWMMax/mib, x.RssAnonMedian/mib, x.RssFileMedian/mib, x.CgroupMedian/mib, x.IdleCPUPercent)
+				x.VmRSSMedian/mb, x.VmRSSMax/mb, x.VmHWMMax/mb, x.RssAnonMedian/mb, x.RssFileMedian/mb, x.CgroupMedian/mb, x.IdleCPUPercent)
 		}
-		fmt.Fprintf(&b, "\nMedian of medians: VmRSS **%.1f MiB**, idle CPU **%.2f%%**, VmHWM max %.1f MiB\n\n", s.VmRSSMedian/mib, s.CPUMedian, s.VmHWMMax/mib)
+		fmt.Fprintf(&b, "\nMedian of medians: VmRSS **%.1f MB**, idle CPU **%.2f%%**, VmHWM max %.1f MB\n\n", s.VmRSSMedian/mb, s.CPUMedian, s.VmHWMMax/mb)
 		writeGates(&b, s.Gates)
 	}
 	fmt.Fprintf(&b, "## Binary\n\n")
