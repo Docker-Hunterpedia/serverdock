@@ -165,6 +165,7 @@ func TestLogsValidationAndErrors(t *testing.T) {
 func TestLogsContextCancelCancelsRequest(t *testing.T) {
 	fd := &fakeDocker{logsBody: frame(1, "first\n"), holdOpen: true}
 	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan string, 1)
 	done := make(chan error, 1)
@@ -176,7 +177,9 @@ func TestLogsContextCancelCancelsRequest(t *testing.T) {
 			got <- string(b[:n])
 			io.Copy(io.Discard, pr)
 		}()
-		done <- c.Logs(ctx, "slow", 5, pw)
+		err := c.Logs(ctx, "slow", 5, pw)
+		pw.Close() // ends the reader goroutine
+		done <- err
 	}()
 	if g := <-got; g != "first\n" {
 		t.Fatalf("got %q", g)
