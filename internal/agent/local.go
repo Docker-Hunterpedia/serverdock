@@ -18,13 +18,15 @@ type LocalOptions struct {
 	Listen   string // public listen address served by Caddy
 	Upstream string // control plane: host:port, or proxy.UnixUpstream(socket)
 	Proxy    bool   // start the embedded Caddy
+	// Panel, if set, makes the proxy serve the HTTPS panel and redirect Listen to it.
+	Panel *proxy.Panel
 }
 
 // RunLocal runs the local agent until ctx is cancelled. started (optional) is
 // called once the proxy, if enabled, has been loaded.
 func RunLocal(ctx context.Context, opts LocalOptions, log *slog.Logger, started func()) error {
 	if opts.Proxy {
-		if err := proxy.Load(proxy.Config{DataDir: opts.DataDir, Listen: opts.Listen, Upstream: opts.Upstream}); err != nil {
+		if err := proxy.Load(proxy.Config{DataDir: opts.DataDir, Listen: opts.Listen, Upstream: opts.Upstream, Panel: opts.Panel}); err != nil {
 			return fmt.Errorf("local agent: start proxy: %w", err)
 		}
 		log.Info("proxy listening", "listen", opts.Listen, "upstream", opts.Upstream)

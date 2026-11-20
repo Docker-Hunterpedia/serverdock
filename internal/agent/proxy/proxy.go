@@ -34,6 +34,32 @@ type Config struct {
 	// Upstream is where requests go: a host:port, or "unix//<absolute path>"
 	// (UnixUpstream) for the server's control-plane socket.
 	Upstream string
+	// Panel, if set (server mode only), serves the panel over HTTPS and turns the
+	// Listen address into a redirect-only HTTP server. The remote agent's proxy
+	// never sets it, so its config stays byte-identical.
+	Panel *Panel
+}
+
+// Panel is the HTTPS panel part of the config (ADR 0010).
+type Panel struct {
+	// Listen is the HTTPS listen address, for example ":443".
+	Listen string
+	// CertFile is DATA/pki/panel.pem, used as both certificate and key.
+	CertFile string
+}
+
+// SNI is the server name both the default (no SNI) and the fallback (unknown
+// SNI) handshakes resolve to. The one panel leaf has it in its SANs, so it is
+// served for every handshake on the panel port, IP literals included.
+const SNI = "localhost"
+
+// redirectPort is ":<port>" for a port other than 443, else "".
+func (p Panel) redirectPort() string {
+	_, port, _ := net.SplitHostPort(p.Listen)
+	if port == "443" {
+		return ""
+	}
+	return ":" + port
 }
 
 // UnixUpstream returns the Upstream value for a unix socket at the absolute path.
@@ -47,6 +73,19 @@ func (c Config) validate() error {
 		return fmt.Errorf("proxy: Listen %q: %w", c.Listen, err)
 	} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
 		return fmt.Errorf("proxy: Listen %q: bad port", c.Listen)
+	}
+	if c.Panel != nil {
+		if _, port, err := net.SplitHostPort(c.Panel.Listen); err != nil {
+			return fmt.Errorf("proxy: Panel.Listen %q: %w", c.Panel.Listen, err)
+		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("proxy: Panel.Listen %q: bad port", c.Panel.Listen)
+		}
+		if !strings.HasPrefix(c.Panel.CertFile, "/") {
+			return fmt.Errorf("proxy: Panel.CertFile %q must be an absolute path", c.Panel.CertFile)
+		}
+		if c.Panel.Listen == c.Listen {
+			return fmt.Errorf("proxy: the HTTP and HTTPS listen addresses are the same (%q)", c.Listen)
+		}
 	}
 	if sock, ok := strings.CutPrefix(c.Upstream, "unix/"); ok {
 		if !strings.HasPrefix(sock, "/") {
@@ -75,23 +114,52 @@ func BuildConfig(c Config) ([]byte, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	limits := func(server m) m {
+		// Public-facing limits: slow headers, idle keep-alives and header size.
+		server["automatic_https"] = m{"disable": true}
+		server["read_header_timeout"] = "10s"
+		server["idle_timeout"] = "2m"
+		server["max_header_bytes"] = 64 << 10
+		return server
+	}
+	httpApp := m{"grace_period": GracePeriod.String()}
 	cfg := m{
 		// Admin API off; persist=false so caddy.Load never writes autosave.json
 		// outside DataDir.
 		"admin":   m{"disabled": true, "config": m{"persist": false}},
 		"storage": m{"module": "file_system", "root": filepath.Join(c.DataDir, "caddy")},
 		"logging": m{"logs": m{"default": m{"level": "WARN"}}},
-		"apps": m{"http": m{"grace_period": GracePeriod.String(), "servers": m{"main": m{
-			"listen":          []string{c.Listen},
-			"automatic_https": m{"disable": true},
-			// Public-facing limits: slow headers, idle keep-alives and header size.
-			"read_header_timeout": "10s",
-			"idle_timeout":        "2m",
-			"max_header_bytes":    64 << 10,
-			"routes": []m{
-				{"handle": []m{reverseProxy(c.Upstream, nil)}},
-			},
-		}}}},
+		"apps":    m{"http": httpApp},
+	}
+	if c.Panel == nil {
+		httpApp["servers"] = m{"main": limits(m{
+			"listen": []string{c.Listen},
+			"routes": []m{{"handle": []m{reverseProxy(c.Upstream, nil)}}},
+		})}
+	} else {
+		// :80 only redirects; nothing on it reaches the control plane. The port in
+		// Location is the one of --https-listen as seen inside this process.
+		redirect := m{"handler": "static_response", "status_code": 308,
+			"headers": m{"Location": []string{"https://{http.request.host}" + c.Panel.redirectPort() + "{http.request.uri}"}}}
+		httpApp["servers"] = m{
+			"main": limits(m{
+				"listen": []string{c.Listen},
+				"routes": []m{{"handle": []m{redirect}}},
+			}),
+			"panel": limits(m{
+				"listen": []string{c.Panel.Listen},
+				"routes": []m{{"handle": []m{reverseProxy(c.Upstream, nil)}}},
+				"tls_connection_policies": []m{{
+					"protocol_min": "tls1.2",
+					"default_sni":  SNI, // handshakes without SNI (IP literals)
+					"fallback_sni": SNI, // SNI that matches no loaded certificate
+				}},
+			}),
+		}
+		cfg["apps"].(m)["tls"] = m{
+			"certificates":          m{"load_files": []m{{"certificate": c.Panel.CertFile, "key": c.Panel.CertFile, "format": "pem"}}},
+			"disable_ocsp_stapling": true,
+		}
 	}
 	return json.Marshal(cfg)
 }

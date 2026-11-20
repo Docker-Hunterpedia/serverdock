@@ -47,6 +47,11 @@ const (
 type serverConfig struct {
 	Data   string
 	Listen string
+	// HTTPSListen is the panel's HTTPS address served by the embedded proxy;
+	// Listen then only redirects to it. PanelHosts are extra names the panel
+	// certificate carries (and, from M2 step 6a, the Host allowlist accepts).
+	HTTPSListen string
+	PanelHosts  []string
 	// ControlSocket is the control plane's unix socket (mode 0600 inside a 0700
 	// directory). Empty means DATA/run/cp.sock. There is no TCP listener.
 	ControlSocket string
@@ -81,6 +86,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.Data, "data", "/var/lib/serverdock", "data directory")
 	fs.StringVar(&c.Listen, "listen", ":80", "public listen address (served by the embedded proxy)")
+	var hosts stringList
+	fs.StringVar(&c.HTTPSListen, "https-listen", ":443", "panel HTTPS listen address (served by the embedded proxy). --listen only redirects to it, using this port as seen inside the process: behind Docker port mapping (for example -p 8443:443) the redirect points at 443")
+	fs.Var(&hosts, "panel-host", "extra DNS name or IP address of the panel, added to its certificate; repeatable")
 	fs.StringVar(&c.ControlSocket, "control-socket", "", "control-plane unix socket (default DATA/run/cp.sock; 0600 inside a 0700 directory)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
 	fs.StringVar(&c.DebugSocket, "debug-socket", "", "serve /debug/* on this unix socket path (0600, inside a 0700 directory; off by default)")
@@ -95,6 +103,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	c.AgentSANs = sans
+	c.PanelHosts = hosts
 	if err := c.withDefaults(); err != nil {
 		return c, err
 	}
@@ -107,6 +116,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 // withDefaults fills in the control socket path: DATA/run/cp.sock, made absolute
 // (a socket path must be).
 func (c *serverConfig) withDefaults() error {
+	if c.HTTPSListen == "" {
+		c.HTTPSListen = ":443"
+	}
 	if c.ControlSocket != "" {
 		return nil
 	}
@@ -152,7 +164,8 @@ func serverMain(args []string, stderr io.Writer) int {
 type serverAddrs struct {
 	Control string // control-plane unix socket path
 	Debug   string // debug unix socket path; empty when off
-	Listen  string // public proxy address; empty when --proxy=false
+	Listen  string // public HTTP (redirect-only) address; empty when --proxy=false
+	HTTPS   string // panel HTTPS address; empty when --proxy=false
 	Agent   string // agent TLS listener address; empty when off
 	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
 	// agent listener is off.
@@ -161,6 +174,14 @@ type serverAddrs struct {
 
 // validate checks the agent flags and the token before anything is started.
 func (c serverConfig) validate() error {
+	if c.HTTPSListen != "" {
+		if _, _, err := net.SplitHostPort(c.HTTPSListen); err != nil {
+			return fmt.Errorf("--https-listen %q: %w", c.HTTPSListen, err)
+		}
+		if c.Proxy && c.HTTPSListen == c.Listen {
+			return errors.New("--https-listen and --listen must be different addresses")
+		}
+	}
 	if c.ControlSocket != "" && c.DebugSocket != "" && filepath.Clean(c.ControlSocket) == filepath.Clean(c.DebugSocket) {
 		return errors.New("--control-socket and --debug-socket must be different paths")
 	}
@@ -214,6 +235,16 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	if keyCreated {
 		log.Info("master key created", "path", secretbox.KeyPath(cfg.Data))
+	}
+	// The panel leaf is only needed when the proxy serves the panel.
+	var panel *pki.Panel
+	if cfg.Proxy {
+		if panel, err = pki.EnsurePanelLeaf(pki.PanelOptions{Dir: filepath.Join(cfg.Data, "pki"), Hosts: cfg.PanelHosts, Log: log}); err != nil {
+			return err
+		}
+		// Logged at every start; browsers show the same value in the certificate
+		// details. It is never shown on an unauthenticated page.
+		log.Info("panel certificate", "sha256", panel.Fingerprint, "expires", panel.NotAfter.UTC().Format(time.DateOnly), "file", panel.CertFile)
 	}
 	token := cfg.AgentToken
 	var mgr *pki.Manager
@@ -323,7 +354,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 
 	// In-process local agent; it owns the embedded Caddy when --proxy is set.
 	if cfg.Proxy {
-		addrs.Listen = cfg.Listen
+		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
@@ -335,7 +366,14 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// The action registry: built-ins only, and no HTTP route reaches it in M1
 	// (M2 adds them). The SystemInvoker is deliberately not taken here.
 	reg := actions.New(auditLog, log)
-	actions.RegisterBuiltins(reg, actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R})
+	deps := actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R}
+	if panel != nil {
+		deps.PanelCert = func() actions.PanelCert {
+			return actions.PanelCert{Fingerprint: panel.Fingerprint, Created: panel.NotBefore, NotAfter: panel.NotAfter,
+				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
+		}
+	}
+	actions.RegisterBuiltins(reg, deps)
 	_ = reg
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
@@ -345,6 +383,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
+			Panel:   panelProxy(panel, cfg),
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
 			if ready != nil {
@@ -384,4 +423,12 @@ type noLogs struct{}
 
 func (noLogs) Logs(context.Context, string, int, io.Writer) error {
 	return errors.New("docker logs are not available")
+}
+
+// panelProxy is the proxy's HTTPS panel part, nil when there is no panel leaf.
+func panelProxy(p *pki.Panel, cfg serverConfig) *proxy.Panel {
+	if p == nil {
+		return nil
+	}
+	return &proxy.Panel{Listen: cfg.HTTPSListen, CertFile: p.CertFile}
 }

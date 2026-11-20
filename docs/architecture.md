@@ -140,6 +140,7 @@ Every goroutine that wakes on a timer, and the goroutines that exist per session
 | yamux keepalive, hub side | `internal/hub/hub.go` `attach` | 30 s | per **remote** agent session (off on the in-memory local pipe) |
 | yamux keepalive, agent side | `internal/agent/session.go` `ServeSession` | 30 s | per remote session, in the agent process |
 | Reconnect backoff | `internal/agent/client.go` `sleepCtx` | 1 s to 30 s, jittered | only while a remote agent is disconnected |
+| certmagic cache maintenance, `(*certmagic.Cache).maintainAssets` (and its storage lock-file refresher while a lock is held) | embedded Caddy (`caddyhttp` provisions the `tls` app) | 10 min renew check, 1 h OCSP check (certmagic defaults) | **running since M1**, whenever the proxy runs: in `server` mode (S2) and in `agent` mode with `--proxy-listen` (S4). Seen in a goroutine dump (M2 step 3). The panel leaf adds no timer: it is renewed only at start (`internal/pki`, `EnsurePanelLeaf`). |
 
 Per-session goroutines (they exist because a session exists; none wakes on a timer of ours):
 - The hub's **drain goroutine** per agent session (`attach`): blocked in `AcceptStream`. Agents never open streams, so the first one ends the session. It exits with the session.
@@ -147,7 +148,7 @@ Per-session goroutines (they exist because a session exists; none wakes on a tim
 - The agent side serves each accepted stream in its own goroutine, at most 32 at once.
 - The in-process local agent's two session goroutines in `runServer`, joined before it returns.
 
-Lazy, no timer and no goroutine: the hub certificate renewal and its 1 minute back-off (`internal/pki`, checked in the TLS handshake); the rate limiters' eviction (`internal/limits`); the audit log's denied-row "suppressed" summaries (written on the next denied attempt or at shutdown); the migration runner and its backup (startup only); the startup wait on the data-directory lock (at most about 1 s).
+Lazy, no timer and no goroutine: the panel certificate check (at start only) and the hub certificate renewal and its 1 minute back-off (`internal/pki`, checked in the TLS handshake); the rate limiters' eviction (`internal/limits`); the audit log's denied-row "suppressed" summaries (written on the next denied attempt or at shutdown); the migration runner and its backup (startup only); the startup wait on the data-directory lock (at most about 1 s).
 
 ## Security model (summary)
 

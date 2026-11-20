@@ -553,3 +553,21 @@ func newFuzzEnv(t *testing.T) *env {
 	})
 	return fuzzShared
 }
+
+func TestSystemPanelCertIsAPublicRead(t *testing.T) {
+	e := newEnv(t)
+	// Without a panel (--proxy=false) the action does not exist.
+	bare := New(e.log, quiet)
+	RegisterBuiltins(bare, Deps{DB: e.st.R})
+	if _, err := bare.Invoke(ctx, TokenActor("t", ScopeRead), "system.panel_cert", nil, Options{}); err == nil {
+		t.Error("system.panel_cert is registered without a panel")
+	}
+	reg := New(e.log, quiet)
+	RegisterBuiltins(reg, Deps{DB: e.st.R, PanelCert: func() PanelCert {
+		return PanelCert{Fingerprint: "AB:CD", Created: time.Unix(1, 0), NotAfter: time.Unix(2, 0), RenewSoon: true}
+	}})
+	res, err := reg.Invoke(ctx, TokenActor("t", ScopeRead), "system.panel_cert", nil, Options{})
+	if got, _ := res.Out.(PanelCert); err != nil || got.Fingerprint != "AB:CD" || !got.RenewSoon {
+		t.Fatalf("%+v %v", res.Out, err)
+	}
+}

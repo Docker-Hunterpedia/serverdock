@@ -226,3 +226,85 @@ func TestUnixUpstreamConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelConfig(t *testing.T) {
+	build := func(https string) map[string]any {
+		b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: UnixUpstream("/data/run/cp.sock"),
+			Panel: &Panel{Listen: https, CertFile: "/data/pki/panel.pem"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	cfg := build(":443")
+	apps := cfg["apps"].(map[string]any)
+	servers := apps["http"].(map[string]any)["servers"].(map[string]any)
+	panel, main := servers["panel"].(map[string]any), servers["main"].(map[string]any)
+
+	// :443: TLS policy with both SNI defaults, limits, automatic HTTPS off, proxied to the socket.
+	pol := panel["tls_connection_policies"].([]any)[0].(map[string]any)
+	if pol["default_sni"] != "localhost" || pol["fallback_sni"] != "localhost" || pol["protocol_min"] != "tls1.2" {
+		t.Errorf("policy %v", pol)
+	}
+	if panel["listen"].([]any)[0] != ":443" || panel["read_header_timeout"] != "10s" || panel["idle_timeout"] != "2m" || panel["max_header_bytes"] != float64(64<<10) {
+		t.Errorf("panel server %v", panel)
+	}
+	if panel["automatic_https"].(map[string]any)["disable"] != true {
+		t.Error("automatic https is on")
+	}
+	h := panel["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if h["handler"] != "reverse_proxy" || h["upstreams"].([]any)[0].(map[string]any)["dial"] != "unix//data/run/cp.sock" {
+		t.Errorf("panel handler %v", h)
+	}
+	tls := apps["tls"].(map[string]any)
+	lf := tls["certificates"].(map[string]any)["load_files"].([]any)[0].(map[string]any)
+	if lf["certificate"] != "/data/pki/panel.pem" || lf["key"] != "/data/pki/panel.pem" || tls["disable_ocsp_stapling"] != true {
+		t.Errorf("tls app %v", tls)
+	}
+
+	// :80: one redirect route, never a reverse proxy; Caddy logs at WARN.
+	routes := main["routes"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("main routes %v", routes)
+	}
+	r := routes[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	loc := r["headers"].(map[string]any)["Location"].([]any)[0]
+	if r["handler"] != "static_response" || r["status_code"] != float64(308) || loc != "https://{http.request.host}{http.request.uri}" {
+		t.Errorf("redirect %v", r)
+	}
+	if strings.Contains(string(mustJSON(t, main)), "reverse_proxy") {
+		t.Error(":80 reaches the control plane")
+	}
+	if cfg["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)["level"] != "WARN" {
+		t.Error("Caddy is not at WARN")
+	}
+
+	// A non-443 HTTPS port is part of Location.
+	r = build("127.0.0.1:8443")["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["main"].(map[string]any)["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if loc := r["headers"].(map[string]any)["Location"].([]any)[0]; loc != "https://{http.request.host}:8443{http.request.uri}" {
+		t.Errorf("Location %v", loc)
+	}
+
+	for _, bad := range []Config{
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: "nope", CertFile: "/x"}},
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: ":443", CertFile: "relative.pem"}},
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: ":80", CertFile: "/x"}},
+	} {
+		if _, err := BuildConfig(bad); err == nil {
+			t.Errorf("%+v accepted", bad.Panel)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

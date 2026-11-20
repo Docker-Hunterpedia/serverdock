@@ -264,9 +264,9 @@ func TestNoTCPControlListener(t *testing.T) {
 	}
 	p.Stop()
 
-	// With the proxy: only Caddy's public listener.
-	listen := testbin.FreeAddr(t)
-	p2 := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--listen", listen}})
+	// With the proxy: only Caddy's two public listeners (the :80 redirect and the panel).
+	listen, httpsListen := testbin.FreeAddr(t), testbin.FreeAddr(t)
+	p2 := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--listen", listen, "--https-listen", httpsListen}})
 	if err := p2.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +274,14 @@ func TestNoTCPControlListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ports, ok := listeningTCPPorts(p2.Cmd.Process.Pid); ok {
-		_, want, _ := net.SplitHostPort(listen)
-		if len(ports) != 1 || ports[0] != atoiOr0(want) {
-			t.Errorf("listening TCP ports %v, want only the proxy's %s", ports, want)
+		_, p80, _ := net.SplitHostPort(listen)
+		_, p443, _ := net.SplitHostPort(httpsListen)
+		got := map[int]bool{}
+		for _, p := range ports {
+			got[p] = true
+		}
+		if len(got) != 2 || !got[atoiOr0(p80)] || !got[atoiOr0(p443)] {
+			t.Errorf("listening TCP ports %v, want only the proxy's %s and %s", ports, p80, p443)
 		}
 	}
 	p2.Stop()

@@ -8,7 +8,9 @@
 #      readiness and the burst run in the curl helper container on the shared volume
 #      (every request is a `docker run` curl, with its own unix-socket connect). From M2 step 2
 #      on, S1 is therefore NOT comparable with M1's S1 (a TCP listener and the host's curl).
-#   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB
+#   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB.
+#      From M2 step 3 the burst goes over HTTPS on :443 (curl -k, self-signed panel leaf), so its
+#      TLS handshakes are part of the measurement: not like-for-like with earlier S2 numbers.
 #   3  (report only until the Phase 2 slim agent) remote `agent` connected to a scenario-2 server
 #      through its proxy (measured: the agent)
 #   4  GATE  remote `agent` plus its own embedded Caddy (--proxy-listen), remote node <= 50 MB
@@ -109,15 +111,15 @@ dbg_get() { # path [curl args...]
 # the bench network (SAN sdbench-srv) and serves a debug socket on a shared volume
 # so a helper can open one log stream; the socket is used only during the burst,
 # never in the idle window.
-start_server_stack() { # -> sets SRV_HTTP (host:port of the server's proxy) and FP (hub CA fingerprint)
+start_server_stack() { # -> sets SRV_HTTP (host:port of the server's HTTPS panel) and FP (hub CA fingerprint)
   docker network create "$NET" >/dev/null 2>&1 || true
   docker volume create --label sdbench=1 "$DBG_VOL" >/dev/null
   docker run -d --label sdbench=1 --name sdbench-srv --network "$NET" --memory 1g --cpus 1 \
-    -e SD_AGENT_TOKEN="$TOKEN" -v "$DBG_VOL":/debug -p 127.0.0.1::80 "$IMAGE" \
+    -e SD_AGENT_TOKEN="$TOKEN" -v "$DBG_VOL":/debug -p 127.0.0.1::443 "$IMAGE" \
     server --data /data --proxy=true --listen :80 \
     --debug-socket /debug/sd.sock --agent-listen :7443 --agent-san sdbench-srv >/dev/null
-  SRV_HTTP=$(docker port sdbench-srv 80/tcp | head -n1)
-  wait_ready "http://$SRV_HTTP/healthz"
+  SRV_HTTP=$(docker port sdbench-srv 443/tcp | head -n1) # the panel's HTTPS port; :80 only redirects
+  wait_ready "https://$SRV_HTTP/healthz"
   # The CA fingerprint is public; read it from the server's data dir.
   docker cp sdbench-srv:/data/pki/ca.fingerprint "$WORK/ca.fp" >/dev/null
   FP=$(tr -d '\n' <"$WORK/ca.fp")
@@ -151,7 +153,7 @@ socket_gid() {
 wait_ready() { # url
   i=0
   while [ "$i" -lt 60 ]; do
-    curl -fsS -o /dev/null "$1" 2>/dev/null && return 0
+    curl -fsSk -o /dev/null "$1" 2>/dev/null && return 0
     i=$((i + 1)); sleep 0.5
   done
   log "service never became ready: $1"; return 1
@@ -173,16 +175,20 @@ wait_ready_sock() { # waits for /healthz on the control socket
   log "control socket never became ready"; return 1
 }
 
-burst() { # base_url   (BURST_VIA=sock: through the control socket instead of the host's curl)
+# burst base_url [accepted status codes, default 200]. curl never follows redirects (no -L), so
+# a 308 is counted as a 308. https URLs use -k: the panel's certificate is self-signed.
+# BURST_VIA=sock sends it through the control socket instead of the host's curl.
+burst() {
+  accept=${2:-200}
   half=$((BURST / 2)); rest=$((BURST - half))
   if [ "${BURST_VIA:-}" = sock ]; then
     ok=$(cp_curl -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
-          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -c '^200$' || true)
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -Ec "^($accept)$" || true)
   else
-    ok=$(curl -s -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
-          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -c '^200$' || true)
+    ok=$(curl -sk -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -Ec "^($accept)$" || true)
   fi
-  log "burst: $ok/$BURST requests returned 200"
+  log "burst: $ok/$BURST requests returned $accept"
   [ "$ok" -eq "$BURST" ]
 }
 
@@ -202,13 +208,13 @@ for id in $SCENARIOS; do
         base="http://cp"; BURST_VIA=sock
         wait_ready_sock ;;
       2)
-        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::80 "$IMAGE" \
+        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::443 "$IMAGE" \
           server --data /data --proxy=true --listen :80 >/dev/null
-        base="http://$(docker port "$TARGET" 80/tcp | head -n1)"
+        base="https://$(docker port "$TARGET" 443/tcp | head -n1)"
         wait_ready "$base/healthz" ;;
       3|4)
         start_server_stack
-        extra=""; base="http://$SRV_HTTP"
+        extra=""; base="https://$SRV_HTTP"
         if [ "$id" = 4 ]; then extra="--proxy-listen :8080 --proxy-upstream sdbench-srv:80"; fi
         # shellcheck disable=SC2086
         docker run -d --label sdbench=1 --name "$TARGET" --network "$NET" --memory 1g --cpus 1 \
@@ -223,7 +229,9 @@ for id in $SCENARIOS; do
       *) echo "unknown scenario $id" >&2; exit 2 ;;
     esac
     log "warm-up ${WARMUP}s"; sleep "$WARMUP"
-    burst "$base"
+    # S4's burst goes through the agent's own Caddy to the server's :80, which now only
+    # redirects: the agent's proxy does the same work, so 200 or 308 both count.
+    if [ "$id" = 4 ]; then burst "$base" "200|308"; else burst "$base"; fi
     case "$id" in 3|4) log_stream ;; esac
     log "idle window ${IDLE}s (sampling every ${INTERVAL}s)"
     bench/measure.sh "$TARGET" "$IDLE" "$INTERVAL" "$WORK/s$id-r$r.tsv"

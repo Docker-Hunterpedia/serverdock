@@ -48,7 +48,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    | Hub cert renewal back-off | `internal/pki` | ≥ 1 min | only after a failed renewal; checked lazily on handshake, no goroutine | M1 |
    | Job scheduler "next due" timer | `internal/jobs` | next due time | one timer for all scheduled work | M3a |
    | Docker events reconnect backoff | `internal/agent/dockerapi` | 1 s → 30 s | only while the events stream is down | M3a |
-   | Caddy/certmagic maintenance and events | embedded Caddy | measured in plan 0006 | whenever the proxy runs; certificate expiry alerts use these, not our own timer | M4 |
+   | Caddy/certmagic maintenance (`(*certmagic.Cache).maintainAssets`) and events | embedded Caddy | 10 min renew check, 1 h OCSP check (certmagic defaults) | whenever the proxy runs, in **server and agent mode** (`caddyhttp` provisions the `tls` app); certificate expiry alerts use these, not our own timer | running since M1 (S2 and S4); confirmed by a goroutine dump in M2 step 3 |
    | BuildKit idle stop | `internal/build` | 5 min | only while the BuildKit container runs | M5 |
    | Webhook replay-cache expiry | `internal/api` | none (lazy on insert) | no timer | M5 |
    | Daily housekeeping job (cleanup, retention pruning, update check, image digest check, scheduled state backup) | on the scheduler timer | daily | one recurring job | M6 (job), tasks added in M7b/M8 |

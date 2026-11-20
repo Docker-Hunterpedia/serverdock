@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
@@ -199,29 +200,44 @@ func TestDebugSocketDirRules(t *testing.T) {
 }
 
 func TestServerWithProxy(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	listen, httpsAddr := testbinFree(t), testbinFree(t)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), Listen: listen, HTTPSListen: httpsAddr, Proxy: true})
+	if addrs.Listen != listen || addrs.HTTPS != httpsAddr {
+		t.Fatalf("addrs = %+v", addrs)
 	}
-	listen := ln.Addr().String()
-	ln.Close()
-	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), Listen: listen, Proxy: true})
-	if addrs.Listen != listen {
-		t.Fatalf("Listen = %q", addrs.Listen)
-	}
+	c := insecureClient()
 	for _, p := range []string{"/", "/healthz"} {
-		resp, err := http.Get("http://" + listen + p)
+		resp, err := c.Get("https://" + httpsAddr + p)
 		if err != nil || resp.StatusCode != 200 {
-			t.Fatalf("GET %s via proxy: %v %v", p, resp, err)
+			t.Fatalf("GET %s via the HTTPS panel: %v %v", p, resp, err)
 		}
 		resp.Body.Close()
 	}
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := http.Get("http://" + listen + "/"); err == nil {
+	if _, err := c.Get("https://" + httpsAddr + "/"); err == nil {
 		t.Error("proxy still listening after shutdown")
 	}
+	c.CloseIdleConnections()
+}
+
+// insecureClient talks HTTPS to the self-signed panel and never follows a redirect.
+func insecureClient() *http.Client {
+	return &http.Client{
+		Transport:     &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func testbinFree(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
 }
 
 var testToken = "Zq7-Xw2_Lm9KpR4tVb8NcY1HdJ5sFg3AeUo6iTxWz0QyB" // 45 distinct-rich base64url characters
@@ -301,14 +317,12 @@ func TestServerHubLocalAndRemoteAgentsOverTLS(t *testing.T) {
 // /agent/connect is not served on the control-plane listener (and so not by
 // Caddy on :80): it answers 404, not the SPA fallback.
 func TestAgentConnectIs404OnControlPlaneAndProxy(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	listen := ln.Addr().String()
-	ln.Close()
-	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), Listen: listen, Proxy: true,
+	listen, httpsAddr := testbinFree(t), testbinFree(t)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), Listen: listen, HTTPSListen: httpsAddr, Proxy: true,
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
 	get := map[string]func(string) (*http.Response, error){
 		"control socket": func(p string) (*http.Response, error) { return cpGet(addrs.Control, p) },
-		"proxy :80":      func(p string) (*http.Response, error) { return http.Get("http://" + listen + p) },
+		"proxy :443":     func(p string) (*http.Response, error) { return insecureClient().Get("https://" + httpsAddr + p) },
 	}
 	for name, do := range get {
 		for _, p := range []string{"/agent/connect", "/agent/", "/agent/anything"} {
