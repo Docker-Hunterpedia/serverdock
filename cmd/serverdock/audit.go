@@ -18,6 +18,30 @@ import (
 // and creates no files). Exit codes: 0 chain valid, 1 chain broken, 2 could not
 // check.
 func auditMain(args []string, stdout, stderr io.Writer) int {
+	return auditVerifyCmd(args, stdout, stderr, store.OpenReadOnly)
+}
+
+type openRO func(dir string, opts store.ReadOnlyOptions) (*store.ReadOnly, error)
+
+// checkOnce opens the database and walks the chain.
+func checkOnce(dir string, open openRO) (res audit.VerifyResult, autoImmutable bool, err error) {
+	ro, err := open(dir, store.ReadOnlyOptions{})
+	if err != nil {
+		return res, false, err
+	}
+	defer ro.Close()
+	var n int
+	if qerr := ro.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='audit_log'`).Scan(&n); qerr != nil || n == 0 {
+		if qerr == nil || errors.Is(qerr, sql.ErrNoRows) {
+			qerr = fmt.Errorf("no audit log in this database yet (schema %s); start the server once to migrate it", ro.Schema)
+		}
+		return res, false, qerr
+	}
+	res, err = audit.Verify(context.Background(), ro.DB)
+	return res, ro.AutoImmutable, err
+}
+
+func auditVerifyCmd(args []string, stdout, stderr io.Writer, open openRO) int {
 	if len(args) == 0 || args[0] != "verify" {
 		fmt.Fprintln(stderr, "usage: serverdock audit verify [--data DIR]")
 		return 2
@@ -35,21 +59,13 @@ func auditMain(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "serverdock audit verify: unexpected arguments: %v\n", fs.Args())
 		return 2
 	}
-	ro, err := store.OpenReadOnly(*data, store.ReadOnlyOptions{})
-	if err != nil {
-		fmt.Fprintln(stderr, "serverdock audit verify:", err)
-		return 2
+	res, auto, err := checkOnce(*data, open)
+	if err == nil && !res.OK && auto {
+		// The database was opened immutable because no server was running; one may
+		// have started (and written) between that check and the read, which can
+		// look like corruption. Look once more before reporting a broken chain.
+		res, _, err = checkOnce(*data, open)
 	}
-	defer ro.Close()
-	var n int
-	if err := ro.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='audit_log'`).Scan(&n); err != nil || n == 0 {
-		if err == nil || errors.Is(err, sql.ErrNoRows) {
-			err = fmt.Errorf("no audit log in this database yet (schema %s); start the server once to migrate it", ro.Schema)
-		}
-		fmt.Fprintln(stderr, "serverdock audit verify:", err)
-		return 2
-	}
-	res, err := audit.Verify(context.Background(), ro.DB)
 	if err != nil {
 		fmt.Fprintln(stderr, "serverdock audit verify:", err)
 		return 2

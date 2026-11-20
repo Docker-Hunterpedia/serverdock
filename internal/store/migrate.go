@@ -7,7 +7,6 @@ import (
 	"database/sql/driver"
 	"embed"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -163,6 +162,10 @@ func verifyApplied(ms []Migration, rows []applied) (max int, err error) {
 		}
 		max = max2(max, a.version)
 	}
+	// Versions are distinct and all >= 1, so len(rows) == max means exactly 1..max.
+	if len(rows) != max {
+		return 0, fmt.Errorf("store: the migration history has gaps (%d rows recorded, highest version %d); refusing to start", len(rows), max)
+	}
 	return max, nil
 }
 
@@ -299,9 +302,6 @@ func applyOne(ctx context.Context, conn *sql.Conn, m Migration, now time.Time) (
 const backupMargin = 64 << 20
 
 func backupBeforeMigrating(ctx context.Context, conn *sql.Conn, dir string, from, to int, opts Options) error {
-	if stateBackupTaken(dir) {
-		return nil
-	}
 	size := fileSize(filepath.Join(dir, fileName)) + fileSize(filepath.Join(dir, fileName+"-wal"))
 	need := uint64(float64(size)*2.2) + backupMargin
 	free, err := opts.FreeSpace(dir)
@@ -318,7 +318,10 @@ func backupBeforeMigrating(ctx context.Context, conn *sql.Conn, dir string, from
 	if err := os.Chmod(bdir, 0o700); err != nil {
 		return err
 	}
-	name := fmt.Sprintf("pre-migrate-%d-%d-%s.db", from, to, opts.Now().UTC().Format("20060102T150405.000Z"))
+	// The timestamp comes first and the versions are zero-padded, so names sort
+	// by time: pruning keeps the newest even after a restore sends `from`
+	// backwards, or once versions pass 9.
+	name := fmt.Sprintf("pre-migrate-%s-v%04d-v%04d.db", opts.Now().UTC().Format("20060102T150405.000Z"), from, to)
 	final := filepath.Join(bdir, name)
 	tmp := final + ".tmp"
 	_ = os.Remove(tmp)
@@ -364,7 +367,8 @@ func quickCheck(ctx context.Context, path string) error {
 	return nil
 }
 
-// pruneBackups keeps the newest `keep` pre-migrate backups (names sort by time).
+// pruneBackups keeps the newest `keep` pre-migrate backups (the timestamp is
+// the first part of the name, so a name sort is a time sort).
 func pruneBackups(bdir string, keep int) error {
 	files, err := filepath.Glob(filepath.Join(bdir, "pre-migrate-*.db"))
 	if err != nil {
@@ -378,20 +382,6 @@ func pruneBackups(bdir string, keep int) error {
 		files = files[1:]
 	}
 	return nil
-}
-
-// stateBackupTaken reports whether DATA/update.json says the self-update already
-// took a full state backup (then a second one here would be redundant). The file
-// is written by M7b; until then it does not exist.
-func stateBackupTaken(dir string) bool {
-	b, err := os.ReadFile(filepath.Join(dir, "update.json"))
-	if err != nil {
-		return false
-	}
-	var u struct {
-		StateBackup bool `json:"state_backup"`
-	}
-	return json.Unmarshal(b, &u) == nil && u.StateBackup
 }
 
 func fileSize(p string) uint64 {

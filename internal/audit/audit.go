@@ -264,15 +264,15 @@ func (h Head) HashHex() string {
 // Head returns the head hash and row count.
 func (l *Logger) Head(ctx context.Context) (Head, error) { return head(ctx, l.st.R) }
 
+// head reads the last row in one indexed statement. Rows are only ever appended
+// with ids 1, 2, 3, ..., so the last id is the row count (no count(*) scan; a
+// tampered log that broke this is exactly what Verify reports).
 func head(ctx context.Context, db *sql.DB) (Head, error) {
 	var h Head
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM audit_log`).Scan(&h.Count); err != nil {
-		return h, err
+	err := db.QueryRowContext(ctx, `SELECT id, hash FROM audit_log ORDER BY id DESC LIMIT 1`).Scan(&h.Count, &h.Hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Head{}, nil
 	}
-	if h.Count == 0 {
-		return h, nil
-	}
-	err := db.QueryRowContext(ctx, `SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1`).Scan(&h.Hash)
 	return h, err
 }
 

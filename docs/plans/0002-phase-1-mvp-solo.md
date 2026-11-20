@@ -520,7 +520,7 @@ Full step plan in **Part B**.
 
      **Safe to repeat:** "snapshot file gone + `phase == rolling_back`" means the rename already happened, so the restore is complete and the binary moves on to writing `rolled_back`.
   7. **Rollback audit row.** The **old binary**, on its first start that finds `phase: "rolled_back"`, appends one `system` audit row recording the discarded window: from/to version, start and end times, and the trial's last audit head hash. The row is idempotent, keyed by the update's `started_at`. The old binary then archives the file. Because the row is written by the binary whose schema matches the restored DB, no cross-version write is needed.
-  8. **The update's rollback snapshot replaces the migration runner's own pre-migrate backup.** The runner skips its own `VACUUM INTO` **only when `phase == "trial"` and `to` is its own version**. A stale or terminal `update.json` never suppresses a pre-migrate backup.
+  8. **The update's rollback snapshot replaces the migration runner's own pre-migrate backup.** The runner skips its own `VACUUM INTO` **only when `phase == "trial"` and `to` is its own version**. A stale or terminal `update.json` never suppresses a pre-migrate backup. **M1's runner has no such skip; M7b adds it together with the code that writes `update.json`, and the skip applies only when `phase == "trial"` and `to` equals the running version.**
 
   Release notes are shown first; config is never overwritten; the daily update check is a housekeeping task and can be disabled (ADR 0007). The earlier systemd `OnFailure=` unit is dropped: the self-check, the attempt counter being the first action, and `Type=notify` cover the realistic failure cases without a root rollback unit.
 - **Rehearse restore:** extract into `DATA/tmp/` (0700) after a space check; open the copy with `immutable=1` through `OpenReadOnly`; run `audit verify` and `PRAGMA integrity_check`; run migrations on a scratch copy; report. **`DATA/tmp/` is wiped on boot.**
@@ -829,7 +829,7 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
   6. `PRAGMA foreign_keys=ON`.
 
   The `ON` step runs in a `defer`, so the pooled connection never goes back with FK checks off.
-- **Pre-migrate backup** (only for a DB that has data, and skipped when `DATA/update.json` shows the update already took a state backup):
+- **Pre-migrate backup** (only for a DB that has data; **M1 has no skip**: M7b adds the `update.json` skip in the same change that writes the file):
   1. **free space ≥ 2.2 × DB size + 64 MiB** on the `DATA` filesystem; otherwise refuse to migrate, with a clear error;
   2. `VACUUM INTO DATA/backups/pre-migrate-<from>-<to>-<utc>.db.tmp`, fsync the file, rename to `.db`, fsync the directory;
   3. **`PRAGMA quick_check` on the backup**; if it fails, refuse to migrate;

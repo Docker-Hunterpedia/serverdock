@@ -24,6 +24,11 @@ type ReadOnly struct {
 	// Schema is "v<N>", or "v1 (unadopted)" for a Phase 0 database that has
 	// not been through a migrating start yet.
 	Schema string
+	// AutoImmutable is true when OpenReadOnly chose immutable=1 itself (no -wal,
+	// or an empty one, and no server) rather than being told to. A server may
+	// start between that check and the read, so a caller that reports corruption
+	// should re-open once before believing it.
+	AutoImmutable bool
 }
 
 // Close closes the handle.
@@ -84,11 +89,12 @@ func openReadOnly(dir string, opts ReadOnlyOptions, ms []Migration) (*ReadOnly, 
 		return nil, fmt.Errorf("store: %w", err)
 	}
 	immutable := opts.Immutable
+	auto := false
 	if !immutable {
 		wal, werr := os.Stat(path + "-wal")
 		switch {
 		case errors.Is(werr, os.ErrNotExist):
-			immutable = true
+			immutable, auto = true, true
 		case werr != nil:
 			return nil, fmt.Errorf("store: %w", werr)
 		default:
@@ -99,13 +105,18 @@ func openReadOnly(dir string, opts ReadOnlyOptions, ms []Migration) (*ReadOnly, 
 			switch {
 			case running:
 			case wal.Size() == 0:
-				immutable = true
+				immutable, auto = true, true
 			default:
 				return nil, errors.New("store: the database has an unmerged write-ahead log and no server is running; start the server once, or copy the database to a scratch directory and open that")
 			}
 		}
 	}
-	db, err := sql.Open("sqlite", roDSN(path, immutable)+"&_pragma=query_only(1)")
+	dsnRO := roDSN(path, immutable) + "&_pragma=query_only(1)"
+	if !immutable {
+		// A live server owns the -shm; never try to initialise or write it.
+		dsnRO += "&readonly_shm=1"
+	}
+	db, err := sql.Open("sqlite", dsnRO)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read-only: %w", err)
 	}
@@ -115,7 +126,7 @@ func openReadOnly(dir string, opts ReadOnlyOptions, ms []Migration) (*ReadOnly, 
 		db.Close()
 		return nil, err
 	}
-	return &ReadOnly{DB: db, Schema: schema}, nil
+	return &ReadOnly{DB: db, Schema: schema, AutoImmutable: auto}, nil
 }
 
 func roSchema(ctx context.Context, db *sql.DB, ms []Migration) (string, error) {

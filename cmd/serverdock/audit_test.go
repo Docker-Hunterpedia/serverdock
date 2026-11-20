@@ -173,3 +173,74 @@ func TestAuditVerifyHelper(t *testing.T) {
 	}
 	os.Stdout.WriteString("VERIFY-OK " + out.String())
 }
+
+// An immutable open (chosen because no server was running) that sees a broken
+// chain is repeated once before exit 1: a server starting in between can look
+// like corruption. A normal open is not repeated.
+func TestAuditVerifyRechecksAnAutomaticImmutableOpen(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := liveStoreWithAudit(t, dir, 3)
+	st.Close() // a quiet database: OpenReadOnly will choose immutable on its own
+
+	// A tampered copy, standing in for a half-written view of the live database.
+	bad := t.TempDir()
+	copyDB(t, dir, bad)
+	tamper := mustOpenStore(t, bad)
+	tamper.W.Exec(`DROP TRIGGER audit_log_no_update`)
+	tamper.W.Exec(`UPDATE audit_log SET args_json='{"x":1}' WHERE id=2`)
+	tamper.Close()
+
+	opens := 0
+	open := func(auto bool, dirs ...string) openRO {
+		return func(_ string, o store.ReadOnlyOptions) (*store.ReadOnly, error) {
+			d := dirs[min(opens, len(dirs)-1)]
+			opens++
+			ro, err := store.OpenReadOnly(d, o)
+			if ro != nil {
+				ro.AutoImmutable = auto
+			}
+			return ro, err
+		}
+	}
+	run := func(o openRO) (int, string) {
+		var out, errb bytes.Buffer
+		code := auditVerifyCmd([]string{"verify", "--data", dir}, &out, &errb, o)
+		return code, out.String() + errb.String()
+	}
+
+	// First read looks broken, the second is clean: exit 0, opened twice.
+	opens = 0
+	if code, out := run(open(true, bad, dir)); code != 0 || opens != 2 || !strings.Contains(out, "ok: 3 rows") {
+		t.Fatalf("recheck: code %d opens %d: %s", code, opens, out)
+	}
+	// Broken both times: exit 1 after exactly one repeat.
+	opens = 0
+	if code, out := run(open(true, bad)); code != 1 || opens != 2 || !strings.Contains(out, "BROKEN") {
+		t.Fatalf("still broken: code %d opens %d: %s", code, opens, out)
+	}
+	// Not an automatic immutable open (a live server): no repeat.
+	opens = 0
+	if code, _ := run(open(false, bad)); code != 1 || opens != 1 {
+		t.Fatalf("live open: code %d opens %d, want 1 and 1", code, opens)
+	}
+}
+
+func mustOpenStore(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	st, err := store.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func copyDB(t *testing.T, from, to string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(from, "serverdock.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(to, "serverdock.db"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

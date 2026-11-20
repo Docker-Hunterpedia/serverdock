@@ -3,15 +3,19 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
 var ctx = context.Background()
+
+func init() { lockWait = 100 * time.Millisecond } // keep "second server refused" tests quick
 
 func list(extra ...Migration) []Migration { return append([]Migration{builtin[0]}, extra...) }
 
@@ -190,7 +194,7 @@ func TestPhase0AdoptionNeverTouchesMetaSchemaVersion(t *testing.T) {
 	if n != 3 {
 		t.Errorf("rows after adoption: %d", n)
 	}
-	if bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-1-3-*.db")); len(bs) != 1 {
+	if bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*-v0001-v0003.db")); len(bs) != 1 {
 		t.Errorf("backups: %v", bs)
 	}
 }
@@ -379,7 +383,7 @@ func TestBackupIsAtomicVerifiedAndPrivate(t *testing.T) {
 		t.Errorf("at verification the backup should be renamed into place (final=%v tmp=%v)", sawFinal, sawTmp)
 	}
 	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "*"))
-	if len(bs) != 1 || !strings.HasSuffix(bs[0], ".db") || !strings.Contains(filepath.Base(bs[0]), "pre-migrate-1-2-") {
+	if len(bs) != 1 || !strings.HasSuffix(bs[0], ".db") || !strings.Contains(filepath.Base(bs[0]), "-v0001-v0002.db") {
 		t.Fatalf("backups: %v", bs)
 	}
 	if st, _ := os.Stat(bs[0]); st.Mode().Perm() != 0o600 {
@@ -449,20 +453,8 @@ func TestOnlyTheLastThreeBackupsAreKept(t *testing.T) {
 		t.Fatalf("kept %d backups: %v", len(bs), bs)
 	}
 	sort.Strings(bs)
-	if !strings.Contains(bs[0], "pre-migrate-3-4-") || !strings.Contains(bs[2], "pre-migrate-5-6-") {
+	if !strings.Contains(bs[0], "-v0003-v0004.db") || !strings.Contains(bs[2], "-v0005-v0006.db") {
 		t.Errorf("wrong backups kept: %v", bs)
-	}
-}
-
-func TestStateBackupFromUpdateSkipsTheMigrationBackup(t *testing.T) {
-	dir := t.TempDir()
-	makePhase0(t, dir, 1)
-	os.WriteFile(filepath.Join(dir, "update.json"), []byte(`{"state_backup": true}`), 0o600)
-	if _, err := openWithT(t, dir, Options{Migrations: list(mParentChild)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, backupDir)); err == nil {
-		t.Error("a second backup was taken although the update already took one")
 	}
 }
 
@@ -535,4 +527,117 @@ func TestWriteTx(t *testing.T) {
 	if _, err := s.W.Exec(`INSERT INTO meta VALUES ('after','1')`); err != nil {
 		t.Errorf("writer stuck after a panic: %v", err)
 	}
+}
+
+func stepList(n int) []Migration {
+	ms := list()
+	for i := 2; i <= n; i++ {
+		ms = append(ms, Migration{i, fmt.Sprintf("%04d_step", i), fmt.Sprintf("CREATE TABLE s%d (x INTEGER) STRICT;", i)})
+	}
+	return ms
+}
+
+// Backups sort by time, not by name: once versions have two digits
+// "pre-migrate-10-11" must not sort before "7-8", and a restore that sends
+// `from` backwards must not make the newest backup the first to be pruned.
+func TestPruneKeepsTheNewestBackupsAcrossTwoDigitVersionsAndRestores(t *testing.T) {
+	dir := t.TempDir()
+	makePhase0(t, dir, 1)
+	clk := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	step := func(upTo int) {
+		t.Helper()
+		clk = clk.Add(time.Minute)
+		now := clk
+		s, err := openWithT(t, dir, Options{Migrations: stepList(upTo), Now: func() time.Time { return now }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+	backups := func() []string {
+		bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*.db"))
+		sort.Strings(bs)
+		var names []string
+		for _, b := range bs {
+			names = append(names, filepath.Base(b)[strings.Index(filepath.Base(b), "Z-v")+1:])
+		}
+		return names
+	}
+	for _, to := range []int{3, 5, 7, 9, 11} {
+		step(to)
+	}
+	got := backups()
+	want := []string{"-v0005-v0007.db", "-v0007-v0009.db", "-v0009-v0011.db"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("after 1->3->5->7->9->11 kept %v, want %v (the newest, 9->11, must survive)", got, want)
+	}
+	// Restore the 7->9 backup (a database at version 7), then migrate again: `from` goes
+	// backwards (7) after the last recorded backup's 9, and the new backup is the newest.
+	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "*-v0007-v0009.db"))
+	b, err := os.ReadFile(bs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{fileName + "-wal", fileName + "-shm"} {
+		os.Remove(filepath.Join(dir, f))
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileName), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	step(12)
+	got = backups()
+	want = []string{"-v0007-v0009.db", "-v0009-v0011.db", "-v0007-v0012.db"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("after the restore and re-migrate kept %v, want %v", got, want)
+	}
+}
+
+func TestGapsInTheMigrationHistoryAreRefused(t *testing.T) {
+	dir := t.TempDir()
+	s, err := openWithT(t, dir, Options{Migrations: list(mParentChild, mRebuild)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.W.Exec(`DELETE FROM schema_migrations WHERE version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if _, err := openWith(ctx, dir, Options{Migrations: list(mParentChild, mRebuild)}); err == nil || !strings.Contains(err.Error(), "gaps") {
+		t.Fatalf("gap in the history: %v", err)
+	}
+	if _, err := OpenReadOnly(dir, ReadOnlyOptions{Immutable: true}); err == nil {
+		t.Error("the read-only open accepted a history with a gap")
+	}
+}
+
+// A read-only probe (audit verify from cron) holds a shared lock for a moment;
+// a starting server waits it out instead of failing.
+func TestStartingServerWaitsOutAReadOnlyProbe(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := openWithT(t, dir, Options{})
+	s.Close()
+	probe, err := os.Open(filepath.Join(dir, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		syscall.Flock(int(probe.Fd()), syscall.LOCK_UN)
+		probe.Close()
+	}()
+	old := lockWait
+	lockWait = 3 * time.Second
+	defer func() { lockWait = old }()
+	t0 := time.Now()
+	s2, err := openWithT(t, dir, Options{})
+	if err != nil {
+		t.Fatalf("a probe made the server fail to start: %v", err)
+	}
+	if d := time.Since(t0); d < 250*time.Millisecond {
+		t.Errorf("returned after %v without waiting for the probe", d)
+	}
+	s2.Close()
 }

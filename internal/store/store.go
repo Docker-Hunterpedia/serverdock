@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
@@ -114,15 +115,28 @@ func lockDir(dir string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: lock file: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+	// A read-only probe (audit verify from cron) holds a shared lock for a moment;
+	// wait it out instead of failing a starting server.
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, fmt.Errorf("store: lock %s: %w", dir, err)
+		}
+		if !time.Now().Before(deadline) {
+			f.Close()
 			return nil, fmt.Errorf("store: another ServerDock server is already using %s", dir)
 		}
-		return nil, fmt.Errorf("store: lock %s: %w", dir, err)
+		time.Sleep(25 * time.Millisecond)
 	}
-	return f, nil
 }
+
+// lockWait is how long lockDir waits on a contended lock (a variable for tests).
+var lockWait = time.Second
 
 func unlock(f *os.File) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

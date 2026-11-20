@@ -39,8 +39,6 @@ func YamuxConfig(keepAlive time.Duration) *yamux.Config {
 	cfg.AcceptBacklog = 8
 	cfg.StreamOpenTimeout = 10 * time.Second
 	cfg.StreamCloseTimeout = 10 * time.Second
-	// Each answered ping holds a goroutine for up to this long (see GuardPings).
-	cfg.ConnectionWriteTimeout = 5 * time.Second
 	cfg.EnableKeepAlive = keepAlive > 0
 	if keepAlive > 0 {
 		cfg.KeepAliveInterval = keepAlive

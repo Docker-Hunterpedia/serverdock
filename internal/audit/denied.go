@@ -18,9 +18,10 @@ const (
 // attempts suppressed" row when the window rolls over (lazily, on the next
 // denied attempt for that key, or on Flush). No timer.
 type deniedLimiter struct {
-	l  *Logger
-	mu sync.Mutex
-	m  map[string]*deniedWindowState
+	l       *Logger
+	maxKeys int
+	mu      sync.Mutex
+	m       map[string]*deniedWindowState
 }
 
 type deniedWindowState struct {
@@ -30,7 +31,9 @@ type deniedWindowState struct {
 	proto      Entry // the last suppressed attempt, for the summary row
 }
 
-func (d *deniedLimiter) init(l *Logger) { d.l, d.m = l, map[string]*deniedWindowState{} }
+func (d *deniedLimiter) init(l *Logger) {
+	d.l, d.maxKeys, d.m = l, deniedMaxKeys, map[string]*deniedWindowState{}
+}
 
 // Denied records a denied attempt (phase denied), subject to the per-actor,
 // per-action rate limit. It returns whether a row was written for this attempt.
@@ -72,18 +75,17 @@ func (d *deniedLimiter) record(ctx context.Context, e Entry) (bool, error) {
 	now := d.l.now()
 	d.mu.Lock()
 	s := d.m[key]
-	var flush *Entry
+	var flush []Entry
 	if s != nil && now.Sub(s.start) >= deniedWindow {
 		if s.suppressed > 0 {
-			sum := s.summary()
-			flush = &sum
+			flush = append(flush, s.summary())
 		}
 		delete(d.m, key)
 		s = nil
 	}
 	if s == nil {
-		if len(d.m) >= deniedMaxKeys {
-			d.evictLocked(now)
+		if len(d.m) >= d.maxKeys {
+			flush = append(flush, d.evictLocked(now)...)
 		}
 		s = &deniedWindowState{start: now}
 		d.m[key] = s
@@ -96,8 +98,8 @@ func (d *deniedLimiter) record(ctx context.Context, e Entry) (bool, error) {
 		s.proto = e
 	}
 	d.mu.Unlock()
-	if flush != nil {
-		if _, err := d.l.Append(ctx, *flush); err != nil {
+	for _, sum := range flush { // summaries of finished windows, written outside the lock
+		if _, err := d.l.Append(ctx, sum); err != nil {
 			return false, err
 		}
 	}
@@ -108,20 +110,27 @@ func (d *deniedLimiter) record(ctx context.Context, e Entry) (bool, error) {
 	return err == nil, err
 }
 
-// evictLocked makes room in a full table: expired windows go first, then
-// arbitrary ones. A dropped window loses its suppressed count; that needs
-// thousands of distinct actor+action pairs being denied inside one minute, which
-// authenticated actors do not produce.
-func (d *deniedLimiter) evictLocked(now time.Time) {
+// evictLocked makes room in a full table. Windows that have ended are removed
+// and their "N denied attempts suppressed" summaries are returned for the caller
+// to write (a finished window's count must not be lost). Only if the table is
+// still full are windows that are still in progress dropped, silently: that
+// needs thousands of distinct actor+action pairs being denied inside one
+// minute, which authenticated actors do not produce.
+func (d *deniedLimiter) evictLocked(now time.Time) []Entry {
+	var sums []Entry
 	for k, s := range d.m {
 		if now.Sub(s.start) >= deniedWindow {
+			if s.suppressed > 0 {
+				sums = append(sums, s.summary())
+			}
 			delete(d.m, k)
 		}
 	}
 	for k := range d.m {
-		if len(d.m) < deniedMaxKeys {
+		if len(d.m) < d.maxKeys {
 			break
 		}
 		delete(d.m, k)
 	}
+	return sums
 }

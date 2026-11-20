@@ -428,3 +428,74 @@ func TestDeniedRowsAreRateLimitedWithASuppressedSummary(t *testing.T) {
 		t.Errorf("chain: %+v", r)
 	}
 }
+
+// When the denied-window table is full, the windows that have ended give up their
+// "N suppressed" summaries (written to the log) before they are dropped; only
+// windows still in progress are dropped silently.
+func TestDeniedEvictionWritesTheSummariesOfFinishedWindows(t *testing.T) {
+	st := newStore(t)
+	clk := &clock{t: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
+	l := newLogger(t, st, WithClock(clk.Now))
+	l.denied.maxKeys = 3
+	deny := func(action string, times int) {
+		for i := 0; i < times; i++ {
+			e := entry(action)
+			e.Phase = PhaseDenied
+			if _, err := l.Denied(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	deny("a.one", 12)  // 2 suppressed
+	deny("a.two", 11)  // 1 suppressed
+	deny("a.three", 1) // nothing suppressed
+	clk.Add(61 * time.Second)
+	deny("a.four", 1) // table full: the three finished windows are evicted, summaries first
+	rows, err := st.R.Query(`SELECT action, error FROM audit_log WHERE error LIKE '%suppressed%' ORDER BY action`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var a, e string
+		rows.Scan(&a, &e)
+		got = append(got, a+": "+e)
+	}
+	want := []string{"a.one: 2 denied attempts suppressed", "a.two: 1 denied attempts suppressed"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("summaries %v, want %v", got, want)
+	}
+	if len(l.denied.m) != 1 {
+		t.Errorf("table holds %d windows, want only the new one", len(l.denied.m))
+	}
+	// Windows still in progress are the only ones dropped silently.
+	clk.Add(time.Second)
+	deny("b.one", 12)
+	deny("b.two", 12)
+	if len(l.denied.m) > 3 {
+		t.Errorf("table grew past its cap: %d", len(l.denied.m))
+	}
+	deny("b.three", 12)
+	deny("b.four", 1) // full of in-progress windows: one is dropped without a summary
+	if len(l.denied.m) > 3 {
+		t.Errorf("table grew past its cap: %d", len(l.denied.m))
+	}
+	if r := verify(t, st); !r.OK {
+		t.Errorf("chain: %+v", r)
+	}
+}
+
+func TestHeadIsOneStatementAndEmptyLogIsZero(t *testing.T) {
+	st := newStore(t)
+	l := newLogger(t, st)
+	if h, err := l.Head(ctx); err != nil || h.Count != 0 || len(h.Hash) != 0 || h.HashHex() != "" {
+		t.Fatalf("empty: %+v %v", h, err)
+	}
+	seed(t, l, 5)
+	h, err := l.Head(ctx)
+	r := verify(t, st)
+	if err != nil || h.Count != 5 || !bytes.Equal(h.Hash, r.Head) {
+		t.Fatalf("head %+v %v verify %+v", h, err, r)
+	}
+}
