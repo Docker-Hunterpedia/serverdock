@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-30 -30 1640 1230" width="1640" height="1230" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+<rect x="-30" y="-30" width="1640" height="1230" fill="#ffffff"/>
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1e1e1e"/></marker></defs>
+<text x="790" y="34" font-size="36" font-weight="700" text-anchor="middle" fill="#1e1e1e">ServerDock Roadmap: Phases 0-5</text>
+<text x="790" y="74" font-size="18" text-anchor="middle" fill="#555555">[x] done   [ ] to do   ·   Amber = in progress   ·   others = not started   ·   updated 2026-11-20</text>
+<rect x="0" y="110" width="500" height="80" rx="14" fill="#ffd8a8" stroke="#f59e0b" stroke-width="2"/>
+<text x="250.0" y="145" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 0 · Foundations</text>
+<text x="250.0" y="173" font-size="18" text-anchor="middle" fill="#1e1e1e">IN PROGRESS</text>
+<rect x="0" y="210" width="500" height="440" rx="14" fill="#fff3bf" stroke="#f59e0b" stroke-width="1"/>
+<text x="20" y="250" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] Research: 10+ tools, final gap check</text>
+<text x="20" y="275" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] Vision, features, architecture docs</text>
+<text x="20" y="300" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] Roadmap + threat model draft</text>
+<text x="20" y="325" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] ADRs 0001-0006 accepted</text>
+<text x="20" y="350" font-size="18" fill="#1e1e1e" xml:space="preserve">    (AGPL, Go, outbound agent, Caddy,</text>
+<text x="20" y="375" font-size="18" fill="#1e1e1e" xml:space="preserve">     SvelteKit, MCP-first AI)</text>
+<text x="20" y="400" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] 13 wireframe screens</text>
+<text x="20" y="425" font-size="18" fill="#1e1e1e" xml:space="preserve">[x] Agent team (10 agents)</text>
+<text x="20" y="450" font-size="18" fill="#1e1e1e" xml:space="preserve">[ ] Repo skeleton + CI</text>
+<text x="20" y="475" font-size="18" fill="#1e1e1e" xml:space="preserve">[ ] Footprint bench on a 1 GB VM</text>
+<text x="20" y="500" font-size="18" fill="#1e1e1e" xml:space="preserve">[ ] Spike 1: Go + Caddy + SQLite binary</text>
+<text x="20" y="525" font-size="18" fill="#1e1e1e" xml:space="preserve">[ ] Spike 2: outbound agent + logs</text>
+<text x="20" y="550" font-size="18" fill="#1e1e1e" xml:space="preserve">[ ] Threat model review</text>
+<text x="20" y="575" font-size="18" fill="#1e1e1e" xml:space="preserve"></text>
+<text x="20" y="600" font-size="18" fill="#1e1e1e" xml:space="preserve" font-weight="600">Exit: &lt;= 80 MB idle, measured</text>
+<rect x="540" y="110" width="500" height="80" rx="14" fill="#a5d8ff" stroke="#4a9eed" stroke-width="2"/>
+<text x="790.0" y="145" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 1 · MVP: Solo on one server</text>
+<text x="790.0" y="173" font-size="18" text-anchor="middle" fill="#1e1e1e">Not started</text>
+<rect x="540" y="210" width="500" height="440" rx="14" fill="#e7f5ff" stroke="#4a9eed" stroke-width="1"/>
+<text x="560" y="250" font-size="18" fill="#1e1e1e" xml:space="preserve">- Install, setup token, admin + 2FA, onboarding</text>
+<text x="560" y="275" font-size="18" fill="#1e1e1e" xml:space="preserve">- Action registry + audit log</text>
+<text x="560" y="300" font-size="18" fill="#1e1e1e" xml:space="preserve">- Deploy: image, Dockerfile, Compose</text>
+<text x="560" y="325" font-size="18" fill="#1e1e1e" xml:space="preserve">- GitHub push-to-deploy</text>
+<text x="560" y="350" font-size="18" fill="#1e1e1e" xml:space="preserve">- Blue-green, health gate, auto-rollback</text>
+<text x="560" y="375" font-size="18" fill="#1e1e1e" xml:space="preserve">- Stop-first for stateful apps</text>
+<text x="560" y="400" font-size="18" fill="#1e1e1e" xml:space="preserve">- Domains, auto HTTPS, diagnostics, IPv6</text>
+<text x="560" y="425" font-size="18" fill="#1e1e1e" xml:space="preserve">- Secrets, registry logins, volumes, network</text>
+<text x="560" y="450" font-size="18" fill="#1e1e1e" xml:space="preserve">- Postgres/MySQL/Redis + S3 backups</text>
+<text x="560" y="475" font-size="18" fill="#1e1e1e" xml:space="preserve">- Metrics, logs per deploy, alerts</text>
+<text x="560" y="500" font-size="18" fill="#1e1e1e" xml:space="preserve">- Per-app CPU/RAM limits, disk cleanup</text>
+<text x="560" y="525" font-size="18" fill="#1e1e1e" xml:space="preserve">- Self-update, update notices, uninstall</text>
+<text x="560" y="550" font-size="18" fill="#1e1e1e" xml:space="preserve">- REST API + read-only MCP</text>
+<text x="560" y="575" font-size="18" fill="#1e1e1e" xml:space="preserve"></text>
+<text x="560" y="600" font-size="18" fill="#1e1e1e" xml:space="preserve" font-weight="600">Exit: first app on HTTPS &lt; 5 min</text>
+<rect x="1080" y="110" width="500" height="80" rx="14" fill="#d0bfff" stroke="#8b5cf6" stroke-width="2"/>
+<text x="1330.0" y="145" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 2 · Multi-server &amp; builds</text>
+<text x="1330.0" y="173" font-size="18" text-anchor="middle" fill="#1e1e1e">Not started</text>
+<rect x="1080" y="210" width="500" height="440" rx="14" fill="#f3f0ff" stroke="#8b5cf6" stroke-width="1"/>
+<text x="1100" y="250" font-size="18" fill="#1e1e1e" xml:space="preserve">- Remote agents (NAT ok), builder servers</text>
+<text x="1100" y="275" font-size="18" fill="#1e1e1e" xml:space="preserve">- Railpack; GitLab, Gitea, Bitbucket</text>
+<text x="1100" y="300" font-size="18" fill="#1e1e1e" xml:space="preserve">- PR previews, environments, promote</text>
+<text x="1100" y="325" font-size="18" fill="#1e1e1e" xml:space="preserve">- Web terminal; Docker resources view</text>
+<text x="1100" y="350" font-size="18" fill="#1e1e1e" xml:space="preserve">- CI-tested templates + auto-update policies</text>
+<text x="1100" y="375" font-size="18" fill="#1e1e1e" xml:space="preserve">- Static sites, TCP/UDP, Cloudflare Tunnel</text>
+<text x="1100" y="400" font-size="18" fill="#1e1e1e" xml:space="preserve">- One-off run, release phase, cron</text>
+<text x="1100" y="425" font-size="18" fill="#1e1e1e" xml:space="preserve">- MongoDB, ClickHouse, DB upgrades</text>
+<text x="1100" y="450" font-size="18" fill="#1e1e1e" xml:space="preserve">- Minimal multi-user; serverdock.toml</text>
+<text x="1100" y="475" font-size="18" fill="#1e1e1e" xml:space="preserve">- Adopt existing stacks; move apps</text>
+<text x="1100" y="500" font-size="18" fill="#1e1e1e" xml:space="preserve">- CLI; MCP write actions + approval</text>
+<text x="1100" y="525" font-size="18" fill="#1e1e1e" xml:space="preserve"></text>
+<text x="1100" y="550" font-size="18" fill="#1e1e1e" xml:space="preserve" font-weight="600">Exit: 3 servers (1 behind NAT),</text>
+<text x="1100" y="575" font-size="18" fill="#1e1e1e" xml:space="preserve">remote agent &lt;= 50 MB</text>
+<rect x="0" y="730" width="500" height="80" rx="14" fill="#eebefa" stroke="#ec4899" stroke-width="2"/>
+<text x="250.0" y="765" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 3 · Light built-in AI + ops</text>
+<text x="250.0" y="793" font-size="18" text-anchor="middle" fill="#1e1e1e">Not started</text>
+<rect x="0" y="830" width="500" height="340" rx="14" fill="#fff0f6" stroke="#ec4899" stroke-width="1"/>
+<text x="20" y="870" font-size="18" fill="#1e1e1e" xml:space="preserve">- BYO Claude key, model per job</text>
+<text x="20" y="895" font-size="18" fill="#1e1e1e" xml:space="preserve">- Auto explanations: alerts, failed deploys</text>
+<text x="20" y="920" font-size="18" fill="#1e1e1e" xml:space="preserve">- &quot;Explain this&quot; button + in-panel chat</text>
+<text x="20" y="945" font-size="18" fill="#1e1e1e" xml:space="preserve">- Vulnerability scan, security checks</text>
+<text x="20" y="970" font-size="18" fill="#1e1e1e" xml:space="preserve">- Project export / import</text>
+<text x="20" y="995" font-size="18" fill="#1e1e1e" xml:space="preserve">- Scale-to-zero, usage &amp; cost view</text>
+<text x="20" y="1020" font-size="18" fill="#1e1e1e" xml:space="preserve">- Postgres PITR, DB password rotation</text>
+<text x="20" y="1045" font-size="18" fill="#1e1e1e" xml:space="preserve"></text>
+<text x="20" y="1070" font-size="18" fill="#1e1e1e" xml:space="preserve" font-weight="600">Exit: AI red-team review passed</text>
+<rect x="540" y="730" width="500" height="80" rx="14" fill="#c3fae8" stroke="#06b6d4" stroke-width="2"/>
+<text x="790.0" y="765" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 4 · Teams</text>
+<text x="790.0" y="793" font-size="18" text-anchor="middle" fill="#1e1e1e">Not started</text>
+<rect x="540" y="830" width="500" height="340" rx="14" fill="#e6fcf5" stroke="#06b6d4" stroke-width="1"/>
+<text x="560" y="870" font-size="18" fill="#1e1e1e" xml:space="preserve">- Orgs, projects, roles (free, no paywall)</text>
+<text x="560" y="895" font-size="18" fill="#1e1e1e" xml:space="preserve">- OIDC / SAML SSO, audit export</text>
+<text x="560" y="920" font-size="18" fill="#1e1e1e" xml:space="preserve">- GitOps state file + drift detection</text>
+<text x="560" y="945" font-size="18" fill="#1e1e1e" xml:space="preserve">- External secret managers</text>
+<text x="560" y="970" font-size="18" fill="#1e1e1e" xml:space="preserve">- Second-person approval for prod deploys</text>
+<text x="560" y="995" font-size="18" fill="#1e1e1e" xml:space="preserve">- Terraform / Pulumi provider</text>
+<text x="560" y="1020" font-size="18" fill="#1e1e1e" xml:space="preserve"></text>
+<text x="560" y="1045" font-size="18" fill="#1e1e1e" xml:space="preserve" font-weight="600">Exit: RBAC test covers 100% of routes</text>
+<rect x="1080" y="730" width="500" height="80" rx="14" fill="#b2f2bb" stroke="#22c55e" stroke-width="2"/>
+<text x="1330.0" y="765" font-size="22" font-weight="600" text-anchor="middle" fill="#1e1e1e">Phase 5 · Company &amp; scale</text>
+<text x="1330.0" y="793" font-size="18" text-anchor="middle" fill="#1e1e1e">Not started</text>
+<rect x="1080" y="830" width="500" height="340" rx="14" fill="#ebfbee" stroke="#22c55e" stroke-width="1"/>
+<text x="1100" y="870" font-size="18" fill="#1e1e1e" xml:space="preserve">- Optional Postgres / HA control plane</text>
+<text x="1100" y="895" font-size="18" fill="#1e1e1e" xml:space="preserve">- WireGuard mesh, registry-less push</text>
+<text x="1100" y="920" font-size="18" fill="#1e1e1e" xml:space="preserve">- Proxy security: rate limits, SSO</text>
+<text x="1100" y="945" font-size="18" fill="#1e1e1e" xml:space="preserve">- Importers, Hetzner provisioning</text>
+<text x="1100" y="970" font-size="18" fill="#1e1e1e" xml:space="preserve">- One app on many servers + load balancing</text>
+<text x="1100" y="995" font-size="18" fill="#1e1e1e" xml:space="preserve">- Status pages, plugins, procedures</text>
+<text x="1100" y="1020" font-size="18" fill="#1e1e1e" xml:space="preserve">- Rootless/Podman, GPU, air-gapped</text>
+<text x="1100" y="1045" font-size="18" fill="#1e1e1e" xml:space="preserve">- Desktop control-plane mode</text>
+<line x1="500" y1="150" x2="538" y2="150" stroke="#1e1e1e" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="1040" y1="150" x2="1078" y2="150" stroke="#1e1e1e" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="500" y1="770" x2="538" y2="770" stroke="#1e1e1e" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="1040" y1="770" x2="1078" y2="770" stroke="#1e1e1e" stroke-width="2" marker-end="url(#ah)"/>
+<polyline points="1330,650 1330,690 250,690 250,728" fill="none" stroke="#1e1e1e" stroke-width="2" marker-end="url(#ah)"/>
+</svg>

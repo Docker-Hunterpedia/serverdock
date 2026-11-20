@@ -1,0 +1,36 @@
+# OS / editors
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Frontend
+node_modules/
+web/build/
+web/.svelte-kit/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Claude Code local settings (shared agents in .claude/agents are committed)
+.claude/settings.local.json
+
+# Python cache (diagram scripts)
+__pycache__/

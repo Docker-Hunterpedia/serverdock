@@ -1,0 +1,36 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "**Security issue?** Don't file it here. Use Security → Report a vulnerability."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ServerDock version
+      placeholder: "v0.1.0"
+  - type: input
+    id: env
+    attributes:
+      label: Server OS, CPU arch, Docker version, RAM
+      placeholder: "Ubuntu 24.04, arm64, Docker 28.4, 1 GB"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / support bundle
+      description: "Output of `serverdock doctor --bundle` (secrets are removed) or relevant log lines."
+      render: text
