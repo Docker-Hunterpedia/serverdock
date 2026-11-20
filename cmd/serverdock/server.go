@@ -34,7 +34,8 @@ const (
 	shutdownGrace  = 10 * time.Second
 
 	internalMaxConns   = 256
-	agentMaxConns      = 64
+	agentMaxConns      = 128 // idle TLS connections are cheap; the per-IP cap does the real work
+	agentHeaderTimeout = 5 * time.Second
 	agentMaxConnsPerIP = 4
 )
 
@@ -250,7 +251,12 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		mux := http.NewServeMux()
 		mux.Handle("GET "+agent.ConnectPath, h)
 		cpRunning++
-		go func() { cpErr <- api.Serve(cpCtx, agentLn, mux, shutdownGrace) }()
+		// The only request is one upgrade: no keep-alives, and 5 s for the TLS
+		// handshake plus headers (an idle or slow handshake is dropped quickly).
+		go func() {
+			cpErr <- api.Serve(cpCtx, agentLn, mux, shutdownGrace,
+				api.WithReadHeaderTimeout(agentHeaderTimeout), api.WithoutKeepAlives())
+		}()
 		log.Info("agent listener (TLS 1.3, experimental, logs only)", "addr", addrs.Agent)
 	}
 	if debugLn != nil {

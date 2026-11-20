@@ -209,6 +209,50 @@ func TestServeLimits(t *testing.T) {
 	}
 }
 
+// The agent-listener options: no keep-alives, and a short header/handshake
+// timeout that drops a silent connection.
+func TestServeOptions(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ok", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ln, mux, time.Second, WithReadHeaderTimeout(300*time.Millisecond), WithoutKeepAlives())
+	}()
+	defer func() { cancel(); <-done }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !resp.Close {
+		t.Error("keep-alives are still on (response lacks Connection: close)")
+	}
+	// A client that connects and sends nothing is dropped near the timeout.
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	t0 := time.Now()
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, err = c.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("server answered a silent connection")
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("silent connection was not dropped by the header timeout")
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Errorf("dropped after %v, want about 300ms", d)
+	}
+}
+
 type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
