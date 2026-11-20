@@ -430,6 +430,68 @@ func TestSentinelSecretNeverReachesTheDatabaseBytes(t *testing.T) {
 	}
 }
 
+type envVar struct {
+	Key   string `json:"key"`
+	Value string `json:"value" sd:"secret"`
+}
+
+type embeddedSecrets struct {
+	Token string `json:"token" sd:"secret"`
+}
+
+type nestedIn struct {
+	Name   string            `json:"name"`
+	Vars   []envVar          `json:"vars"`
+	ByName map[string]envVar `json:"by_name" sd:"audit"`
+	Ptr    *envVar           `json:"ptr"`
+	embeddedSecrets
+}
+
+func (n nestedIn) Validate() error { return nil }
+
+// Secrets in a slice, in a map value, behind a pointer and inside an unexported
+// embedded struct never reach the args column, the error column or the logs.
+func TestNestedSentinelSecretsNeverReachTheDatabaseBytes(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	lg := slog.New(slog.NewTextHandler(&logs, nil))
+	al, _ := audit.New(st, lg)
+	reg := New(al, lg)
+	sentinels := []string{"SLICE-SENTINEL-77", "MAP-SENTINEL-77", "PTR-SENTINEL-77", "EMBEDDED-SENTINEL-77"}
+	Register(reg, Def[nestedIn, string]{Name: "t.nested", Summary: "x", Risk: RiskMutate, Scope: ScopeWrite,
+		Target: func(n nestedIn) string { return "app:" + n.Name },
+		Execute: func(_ context.Context, _ Call, n nestedIn) (string, error) {
+			return "", fmt.Errorf("failed with %s %s %s %s", n.Vars[0].Value, n.ByName["k"].Value, n.Ptr.Value, n.Token)
+		}})
+	body := `{"name":"db","vars":[{"key":"A","value":"SLICE-SENTINEL-77"}],"by_name":{"k":{"key":"K","value":"MAP-SENTINEL-77"}},
+		"ptr":{"key":"P","value":"PTR-SENTINEL-77"},"token":"EMBEDDED-SENTINEL-77"}`
+	if _, err := reg.Invoke(ctx, UserActor("u", ScopeWrite, time.Now().Add(time.Hour)), "t.nested", json.RawMessage(body), Options{}); err == nil {
+		t.Fatal("expected the action to fail")
+	}
+	st.Close()
+	var all []byte
+	files, _ := filepath.Glob(filepath.Join(dir, "serverdock.db*"))
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		all = append(all, b...)
+	}
+	for _, s := range sentinels {
+		if strings.Contains(string(all), s) {
+			t.Errorf("%s is in the database bytes", s)
+		}
+		if strings.Contains(logs.String(), s) {
+			t.Errorf("%s is in the logs", s)
+		}
+	}
+	if !strings.Contains(string(all), `"key":"A"`) || !strings.Contains(string(all), "[redacted]") {
+		t.Error("the non-secret parts of the arguments should still be recorded")
+	}
+}
+
 func TestBuiltinsAndSystemInfoReturnsTheAuditHead(t *testing.T) {
 	e := newEnv(t)
 	reg := New(e.log, quiet)

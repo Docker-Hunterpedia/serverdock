@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type in struct {
@@ -82,4 +83,98 @@ func TestLongestSecretFirst(t *testing.T) {
 	if got := New("").String("keep"); got != "keep" {
 		t.Error("empty secret must be ignored")
 	}
+}
+
+type EnvVar struct {
+	Key   string `json:"key"`
+	Value string `json:"value" sd:"secret"`
+}
+
+type hidden struct {
+	Token string `json:"token" sd:"secret"`
+	Label string `json:"label"`
+}
+
+type deep struct {
+	Vars    []EnvVar          `json:"vars"`
+	ByName  map[string]EnvVar `json:"by_name"`
+	Ptr     *EnvVar           `json:"ptr"`
+	Arr     [2]EnvVar         `json:"arr"`
+	PtrS    []*EnvVar         `json:"ptr_s"`
+	Any     any               `json:"any" sd:"audit"`
+	hidden                    // an unexported embedded struct: encoding/json still emits its exported fields
+	Created time.Time         `json:"created"`
+}
+
+func deepSample() deep {
+	d := deep{
+		Vars:    []EnvVar{{"A", "SLICE-SECRET-1"}, {"B", "SLICE-SECRET-2"}},
+		ByName:  map[string]EnvVar{"x": {"X", "MAP-SECRET"}},
+		Ptr:     &EnvVar{"P", "PTR-SECRET"},
+		Arr:     [2]EnvVar{{"R0", "ARRAY-SECRET-0"}, {"R1", "ARRAY-SECRET-1"}},
+		PtrS:    []*EnvVar{{"Q", "PTRSLICE-SECRET"}, nil},
+		Any:     map[string]any{"list": []EnvVar{{"I", "IFACE-SECRET"}}},
+		Created: time.Date(2026, 11, 20, 1, 2, 3, 0, time.UTC),
+	}
+	d.hidden = hidden{Token: "EMBEDDED-SECRET", Label: "embedded-label"}
+	return d
+}
+
+var deepSentinels = []string{"SLICE-SECRET-1", "SLICE-SECRET-2", "MAP-SECRET", "PTR-SECRET", "ARRAY-SECRET-0", "ARRAY-SECRET-1",
+	"PTRSLICE-SECRET", "IFACE-SECRET", "EMBEDDED-SECRET"}
+
+func TestNestedSecretsAreFoundAndRedacted(t *testing.T) {
+	d := deepSample()
+	r := ForInput(d)
+	text := "failed: " + strings.Join(deepSentinels, " | ")
+	if got := r.String(text); anyContains(got, deepSentinels) {
+		t.Errorf("not redacted: %s", got)
+	}
+	args, err := ArgsJSON(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anyContains(args, deepSentinels) {
+		t.Fatalf("args leak a nested secret: %s", args)
+	}
+	for _, keep := range []string{`"key":"A"`, `"key":"B"`, `"key":"X"`, `"key":"R1"`, `"label":"embedded-label"`, `"created":"2026-11-20T01:02:03Z"`, `"value":"[redacted]"`} {
+		if !strings.Contains(args, keep) {
+			t.Errorf("args lost %s: %s", keep, args)
+		}
+	}
+	if strings.Contains(args, `"hidden"`) {
+		t.Errorf("the embedded struct was not flattened like encoding/json does: %s", args)
+	}
+	// A pointer to the input, and the input behind an interface, work the same.
+	if anyContains(ForInput(&d).String(text), deepSentinels) {
+		t.Error("pointer input")
+	}
+	var iface any = d
+	if anyContains(ForInput(iface).String(text), deepSentinels) {
+		t.Error("interface input")
+	}
+}
+
+func TestCyclesAndDepthAreBounded(t *testing.T) {
+	type node struct {
+		Next *node
+		S    string `sd:"secret"`
+	}
+	n := &node{S: "CYCLE-SECRET"}
+	n.Next = n
+	if got := ForInput(n).String("x CYCLE-SECRET y"); got != "x "+Placeholder+" y" {
+		t.Errorf("cycle: %q", got)
+	}
+	if _, err := ArgsJSON(n); err != nil {
+		t.Errorf("cycle in ArgsJSON: %v", err)
+	}
+}
+
+func anyContains(s string, subs []string) bool {
+	for _, x := range subs {
+		if strings.Contains(s, x) {
+			return true
+		}
+	}
+	return false
 }

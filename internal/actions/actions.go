@@ -303,7 +303,13 @@ func checkFreeForm(t reflect.Type, path string) error {
 	}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if !f.IsExported() {
+		if !f.IsExported() && !f.Anonymous {
+			continue
+		}
+		if !f.IsExported() { // an unexported embedded struct: its exported fields are still input
+			if err := checkFreeForm(f.Type, path+f.Name+"."); err != nil {
+				return err
+			}
 			continue
 		}
 		tag := f.Tag.Get("sd")

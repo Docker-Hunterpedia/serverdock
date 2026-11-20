@@ -98,6 +98,15 @@ type tagged struct {
 
 func (tagged) Validate() error { return nil }
 
+type hiddenMap struct{ Extra map[string]string }
+
+type embedsHidden struct {
+	hiddenMap // unexported embedded struct: its exported field is still input
+	Name      string
+}
+
+func (embedsHidden) Validate() error { return nil }
+
 type badTag struct {
 	X string `sd:"public"`
 }
@@ -120,6 +129,9 @@ func TestRegisterPanicsOnUntaggedFreeFormFields(t *testing.T) {
 	})
 	mustPanic(t, "pointer to any", func() {
 		Register(reg(t), Def[ptrAny, string]{Name: "t.ptr", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[ptrAny]})
+	})
+	mustPanic(t, "map inside an unexported embedded struct", func() {
+		Register(reg(t), Def[embedsHidden, string]{Name: "t.emb", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[embedsHidden]})
 	})
 	mustPanic(t, "unknown sd tag", func() {
 		Register(reg(t), Def[badTag, string]{Name: "t.tag", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[badTag]})
