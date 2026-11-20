@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
@@ -82,6 +83,7 @@ func serverMain(args []string, stderr io.Writer) int {
 type serverAddrs struct {
 	Internal string
 	Debug    string
+	Listen   string // public proxy address; empty when --proxy=false
 }
 
 // runServer runs the control plane until ctx is cancelled.
@@ -104,7 +106,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return fmt.Errorf("listen internal: %w", err)
 	}
 	addrs := serverAddrs{Internal: ln.Addr().String()}
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	running := 1
 	go func() { errc <- api.Serve(ctx, ln, srv.Handler(), shutdownGrace) }()
 
@@ -121,9 +123,21 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		go func() { errc <- api.Serve(ctx, dl, api.DebugHandler(), shutdownGrace) }()
 	}
 	log.Info("control plane listening", "internal", addrs.Internal)
-	if ready != nil {
-		ready(addrs)
+
+	// In-process local agent; it owns the embedded Caddy when --proxy is set.
+	if cfg.Proxy {
+		addrs.Listen = cfg.Listen
 	}
+	running++
+	go func() {
+		errc <- agent.RunLocal(ctx, agent.LocalOptions{
+			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
+		}, log, func() {
+			if ready != nil {
+				ready(addrs)
+			}
+		})
+	}()
 
 	var first error
 	for i := 0; i < running; i++ {

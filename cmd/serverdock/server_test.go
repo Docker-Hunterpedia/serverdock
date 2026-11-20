@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -89,5 +90,31 @@ func TestServerDebugListener(t *testing.T) {
 	resp.Body.Close()
 	if err := stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServerWithProxy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := ln.Addr().String()
+	ln.Close()
+	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", Listen: listen, Proxy: true})
+	if addrs.Listen != listen {
+		t.Fatalf("Listen = %q", addrs.Listen)
+	}
+	for _, p := range []string{"/", "/healthz"} {
+		resp, err := http.Get("http://" + listen + p)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("GET %s via proxy: %v %v", p, resp, err)
+		}
+		resp.Body.Close()
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := http.Get("http://" + listen + "/"); err == nil {
+		t.Error("proxy still listening after shutdown")
 	}
 }
