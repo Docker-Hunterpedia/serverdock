@@ -23,6 +23,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
@@ -31,6 +32,10 @@ import (
 const (
 	serverMemLimit = 64 << 20
 	shutdownGrace  = 10 * time.Second
+
+	internalMaxConns   = 256
+	agentMaxConns      = 64
+	agentMaxConnsPerIP = 4
 )
 
 type serverConfig struct {
@@ -45,6 +50,8 @@ type serverConfig struct {
 	// listener (ADR 0009). Off by default. AgentSANs are required with it.
 	AgentListen string
 	AgentSANs   []string
+	// AgentMaxSessions caps remote agent sessions; 0 means hub.DefaultMaxSessions.
+	AgentMaxSessions int
 	// AgentToken is the shared agent token (SD_AGENT_TOKEN), at least 43
 	// characters. If empty and AgentListen is set, one is generated into
 	// DATA/agent.token. It is never logged.
@@ -71,6 +78,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.StringVar(&c.DebugSocket, "debug-socket", "", "serve /debug/* on this unix socket path (0600, inside a 0700 directory; off by default)")
 	fs.StringVar(&c.AgentListen, "agent-listen", "", "accept remote (read-only, experimental) agents over TLS on this address, e.g. :7443 (off by default)")
 	fs.Var(&sans, "agent-san", "DNS name or IP address agents dial the hub at; repeatable; required with --agent-listen")
+	fs.IntVar(&c.AgentMaxSessions, "agent-max-sessions", hub.DefaultMaxSessions, "maximum concurrent remote agent sessions")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -79,6 +87,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	c.AgentSANs = sans
+	if c.AgentMaxSessions < 1 {
+		return c, errors.New("--agent-max-sessions must be at least 1")
+	}
 	return c, nil
 }
 
@@ -187,12 +198,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 	}()
 	addrs := serverAddrs{}
-	ln, err := net.Listen("tcp", cfg.Internal)
+	rawInternal, err := net.Listen("tcp", cfg.Internal)
 	if err != nil {
 		return fmt.Errorf("listen internal: %w", err)
 	}
+	// 256 connections in total; no per-IP cap here, because every request from
+	// our own Caddy arrives from the same loopback address.
+	ln := limits.NewListener(rawInternal, internalMaxConns, 0, nil)
 	opened = append(opened, ln)
-	addrs.Internal = ln.Addr().String()
+	addrs.Internal = rawInternal.Addr().String()
 	var agentLn, debugLn net.Listener
 	if mgr != nil {
 		raw, err := net.Listen("tcp", cfg.AgentListen)
@@ -200,7 +214,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			return fmt.Errorf("listen agent: %w", err)
 		}
 		opened = append(opened, raw)
-		agentLn = tls.NewListener(raw, mgr.TLSConfig())
+		// Caps apply to the raw TCP connection, before any TLS work: 64 in total
+		// and 4 per client IP (a connection over the cap is closed in Accept).
+		agentLn = tls.NewListener(limits.NewListener(raw, agentMaxConns, agentMaxConnsPerIP, nil), mgr.TLSConfig())
 		addrs.Agent, addrs.CAFingerprint = raw.Addr().String(), mgr.CAFingerprint()
 	}
 	if cfg.DebugSocket != "" {
@@ -219,7 +235,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	defer agentCancel()
 
 	srv := api.New(web.FS())
-	h := hub.New(cpCtx, token, log)
+	maxSessions := cfg.AgentMaxSessions
+	if maxSessions <= 0 {
+		maxSessions = hub.DefaultMaxSessions
+	}
+	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
 	started = true
 	cpErr := make(chan error, 3)
 	cpRunning := 1

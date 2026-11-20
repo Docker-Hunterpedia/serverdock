@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -149,3 +150,65 @@ func TestAgentPathsAre404(t *testing.T) {
 		t.Errorf("SPA fallback broken: %d", rec.Code)
 	}
 }
+
+// Serve refuses oversized headers (431) and bodies (reads fail past 1 MiB), and
+// sets no global read/write timeout (listeners carry upgrades and long streams).
+func TestServeLimits(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /echo", func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		fmt.Fprint(w, n)
+	})
+	mux.HandleFunc("GET /ok", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, ln, mux, time.Second) }()
+	defer func() { cancel(); <-done }()
+	base := "http://" + ln.Addr().String()
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+	post := func(n int) int {
+		resp, err := c.Post(base+"/echo", "application/octet-stream", io.LimitReader(zeros{}, int64(n)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := post(MaxBodyBytes); got != 200 {
+		t.Errorf("body at the cap: %d", got)
+	}
+	if got := post(MaxBodyBytes + 1); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("body over the cap: %d, want 413", got)
+	}
+
+	big, _ := http.NewRequest("GET", base+"/ok", nil)
+	big.Header.Set("X-Big", strings.Repeat("a", MaxHeaderBytes+8<<10))
+	resp, err := c.Do(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Errorf("oversized header: %d, want 431", resp.StatusCode)
+	}
+	small, _ := http.NewRequest("GET", base+"/ok", nil)
+	small.Header.Set("X-Big", strings.Repeat("a", 8<<10))
+	if resp, err := c.Do(small); err != nil || resp.StatusCode != 200 {
+		t.Errorf("an 8 KiB header was refused: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }

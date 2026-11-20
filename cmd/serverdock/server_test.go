@@ -296,6 +296,53 @@ func TestAgentConnectIs404OnControlPlaneAndProxy(t *testing.T) {
 	}
 }
 
+// The 5th concurrent TCP connection from one IP to the agent listener is closed
+// by the server in Accept (before any TLS work); the other four stay open.
+func TestAgentListenerPerIPConnectionCap(t *testing.T) {
+	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0",
+		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
+	var conns []net.Conn
+	for i := 0; i < agentMaxConnsPerIP+1; i++ {
+		c, err := net.Dial("tcp", addrs.Agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		conns = append(conns, c)
+	}
+	closed := 0
+	for _, c := range conns {
+		c.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+		if _, err := c.Read(make([]byte, 1)); err != nil {
+			if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+				closed++
+			}
+		}
+	}
+	if closed != 1 {
+		t.Errorf("connections closed by the server = %d, want exactly 1", closed)
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentMaxSessionsFlag(t *testing.T) {
+	var buf bytes.Buffer
+	c, err := parseServerFlags(nil, &buf)
+	if err != nil || c.AgentMaxSessions != 16 {
+		t.Fatalf("default: %+v %v", c, err)
+	}
+	if c, err = parseServerFlags([]string{"--agent-max-sessions", "3"}, &buf); err != nil || c.AgentMaxSessions != 3 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for _, bad := range []string{"0", "-1"} {
+		if _, err := parseServerFlags([]string{"--agent-max-sessions", bad}, &buf); err == nil {
+			t.Errorf("--agent-max-sessions %s accepted", bad)
+		}
+	}
+}
+
 func TestAgentListenNeedsSANAndToken(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// No SAN: refuses to start, and nothing is bound.

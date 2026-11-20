@@ -73,6 +73,10 @@ func BuildConfig(c Config) ([]byte, error) {
 		"apps": m{"http": m{"grace_period": GracePeriod.String(), "servers": m{"main": m{
 			"listen":          []string{c.Listen},
 			"automatic_https": m{"disable": true},
+			// Public-facing limits: slow headers, idle keep-alives and header size.
+			"read_header_timeout": "10s",
+			"idle_timeout":        "2m",
+			"max_header_bytes":    64 << 10,
 			"routes": []m{
 				{"handle": []m{reverseProxy(c.Upstream, nil)}},
 			},

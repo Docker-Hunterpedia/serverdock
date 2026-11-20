@@ -22,6 +22,30 @@ const (
 	DefaultKeepAlive = 30 * time.Second
 )
 
+// MaxAgentStreams bounds the log streams one agent serves at once; a stream
+// opened beyond it is closed immediately.
+const MaxAgentStreams = 32
+
+// YamuxConfig is the session config both ends use: a small accept backlog and
+// bounded open/close timeouts so a stuck peer cannot pin streams for minutes.
+//
+// MaxStreamWindowSize stays at yamux's default (256 KiB): yamux rejects any
+// smaller value because every stream starts with a 256 KiB window, so the plan's
+// 64 KiB bound is not expressible with this library. The memory a peer can pin
+// is bounded instead by the stream caps (docs/security.md).
+func YamuxConfig(keepAlive time.Duration) *yamux.Config {
+	cfg := yamux.DefaultConfig()
+	cfg.LogOutput = io.Discard
+	cfg.AcceptBacklog = 8
+	cfg.StreamOpenTimeout = 10 * time.Second
+	cfg.StreamCloseTimeout = 10 * time.Second
+	cfg.EnableKeepAlive = keepAlive > 0
+	if keepAlive > 0 {
+		cfg.KeepAliveInterval = keepAlive
+	}
+	return cfg
+}
+
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // LogSource streams container logs into w until ctx is cancelled or the
@@ -34,19 +58,14 @@ type LogSource interface {
 // accepts streams from the control plane. keepAlive <= 0 disables keepalives
 // (used for the in-memory local pipe). It returns when the session ends.
 func ServeSession(ctx context.Context, conn net.Conn, logs LogSource, keepAlive time.Duration, log *slog.Logger) error {
-	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = io.Discard
-	cfg.EnableKeepAlive = keepAlive > 0
-	if keepAlive > 0 {
-		cfg.KeepAliveInterval = keepAlive
-	}
-	sess, err := yamux.Server(conn, cfg)
+	sess, err := yamux.Server(conn, YamuxConfig(keepAlive))
 	if err != nil {
 		return fmt.Errorf("yamux server: %w", err)
 	}
 	defer sess.Close()
 	stop := context.AfterFunc(ctx, func() { sess.Close() })
 	defer stop()
+	sem := make(chan struct{}, MaxAgentStreams)
 	for {
 		st, err := sess.AcceptStream()
 		if err != nil {
@@ -55,7 +74,16 @@ func ServeSession(ctx context.Context, conn net.Conn, logs LogSource, keepAlive 
 			}
 			return err
 		}
-		go handleStream(ctx, st, logs, log)
+		select {
+		case sem <- struct{}{}:
+		default:
+			st.Close() // over the per-session stream cap
+			continue
+		}
+		go func() {
+			defer func() { <-sem }()
+			handleStream(ctx, st, logs, log)
+		}()
 	}
 }
 

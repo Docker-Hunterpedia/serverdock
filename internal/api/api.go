@@ -99,13 +99,25 @@ func DebugHandler(extra ...func(*http.ServeMux)) http.Handler {
 	return mux
 }
 
+// HTTP server limits (plan 0002 M1 step 6).
+const (
+	// MaxHeaderBytes caps the request header size.
+	MaxHeaderBytes = 64 << 10
+	// MaxBodyBytes caps a request body (reads fail past it).
+	MaxBodyBytes = 1 << 20
+)
+
 // Serve serves h on ln until ctx is cancelled, then shuts down gracefully,
 // waiting up to grace for in-flight requests. It returns nil on a clean stop.
 func Serve(ctx context.Context, ln net.Listener, h http.Handler, grace time.Duration) error {
+	// No global ReadTimeout or WriteTimeout: listeners here carry upgraded
+	// WebSocket sessions and long log streams. Slow headers are bounded by
+	// ReadHeaderTimeout; idle keep-alives by IdleTimeout.
 	srv := &http.Server{
-		Handler:           h,
+		Handler:           http.MaxBytesHandler(h, MaxBodyBytes),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    MaxHeaderBytes,
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

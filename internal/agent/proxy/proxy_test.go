@@ -69,7 +69,7 @@ func TestBuildConfig(t *testing.T) {
 		t.Error("admin.config.persist must be false")
 	}
 	s := string(b)
-	for _, want := range []string{`"grace_period":"10s"`, `"automatic_https":{"disable":true}`, `"dial":"127.0.0.1:7070"`} {
+	for _, want := range []string{`"grace_period":"10s"`, `"automatic_https":{"disable":true}`, `"read_header_timeout":"10s"`, `"idle_timeout":"2m"`, `"max_header_bytes":65536`, `"dial":"127.0.0.1:7070"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("config missing %s", want)
 		}

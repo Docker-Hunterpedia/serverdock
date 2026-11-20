@@ -1,9 +1,17 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/yamux"
 )
 
 func TestParseOp(t *testing.T) {
@@ -130,4 +138,90 @@ func TestClientConfigValidate(t *testing.T) {
 			t.Errorf("%s accepted", c.URL)
 		}
 	}
+}
+
+func TestYamuxConfigBounds(t *testing.T) {
+	cfg := YamuxConfig(30 * time.Second)
+	if err := yamux.VerifyConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AcceptBacklog != 8 || cfg.StreamOpenTimeout != 10*time.Second || cfg.StreamCloseTimeout != 10*time.Second {
+		t.Errorf("config: backlog=%d open=%v close=%v", cfg.AcceptBacklog, cfg.StreamOpenTimeout, cfg.StreamCloseTimeout)
+	}
+	if !cfg.EnableKeepAlive || cfg.KeepAliveInterval != 30*time.Second {
+		t.Error("keepalive not applied")
+	}
+	if YamuxConfig(0).EnableKeepAlive {
+		t.Error("keepalive on for the local pipe")
+	}
+	// The plan asked for a 64 KiB MaxStreamWindowSize. yamux refuses anything
+	// below its 256 KiB initial window, so the bound cannot be expressed here;
+	// this test pins that fact so a library change is noticed.
+	small := YamuxConfig(0)
+	small.MaxStreamWindowSize = 64 << 10
+	if err := yamux.VerifyConfig(small); err == nil {
+		t.Error("yamux now accepts a 64 KiB MaxStreamWindowSize: use it (plan 0002 M1 step 6)")
+	}
+	if cfg.MaxStreamWindowSize != 256<<10 {
+		t.Errorf("MaxStreamWindowSize = %d", cfg.MaxStreamWindowSize)
+	}
+}
+
+// Streams past MaxAgentStreams are closed without reaching the log source.
+func TestAgentStreamCap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a, b := net.Pipe()
+	var calls atomic.Int32
+	src := blockingLogs{calls: &calls}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = ServeSession(ctx, b, src, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	hubSide, err := yamux.Client(a, YamuxConfig(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { hubSide.Close(); cancel(); <-done }()
+	line := []byte(`{"op":"logs","container":"c","tail":5}` + "\n")
+	var streams []*yamux.Stream
+	for i := 0; i < MaxAgentStreams; i++ {
+		st, err := hubSide.OpenStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.Write(line)
+		streams = append(streams, st)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for calls.Load() < MaxAgentStreams && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() != MaxAgentStreams {
+		t.Fatalf("log source calls = %d, want %d", calls.Load(), MaxAgentStreams)
+	}
+	extra, err := hubSide.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra.Write(line)
+	extra.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := extra.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("33rd stream: %v, want EOF", err)
+	}
+	if calls.Load() != MaxAgentStreams {
+		t.Errorf("the over-cap stream reached the log source (%d)", calls.Load())
+	}
+	for _, st := range streams {
+		st.Close()
+	}
+}
+
+type blockingLogs struct{ calls *atomic.Int32 }
+
+func (b blockingLogs) Logs(ctx context.Context, _ string, _ int, _ io.Writer) error {
+	b.calls.Add(1)
+	<-ctx.Done()
+	return ctx.Err()
 }
