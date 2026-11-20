@@ -758,7 +758,7 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
 - If the current leaf has expired and re-issue fails, the handshake fails (honest).
 
 **Agent token (`SD_AGENT_TOKEN`).**
-- The server refuses a token shorter than 32 bytes of entropy: at least 43 characters, base64url/hex accepted.
+- The server refuses a token shorter than 43 characters, with characters outside base64url/hex, or with fewer than 16 distinct characters (a generated token is 256-bit; a hand-made one is only screened, not guaranteed).
 - If `--agent-listen` is set and no token is given, the server **generates** one into `DATA/agent.token` (0600) and prints the path, not the token.
 - The bench switches to a generated 43-character token.
 
@@ -768,18 +768,17 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
   1. the per-IP auth-failure limiter;
   2. the bearer-token compare (constant time);
   3. the session cap;
-  4. the per-IP handshake cap;
-  5. `websocket.Accept`.
+  4. `websocket.Accept`.
 
   This way a rate-limited IP never reaches the compare, and an over-cap request is never upgraded.
 - The Caddy `/agent/connect` route and `StreamCloseDelay` are removed, so `:80/agent/connect` returns 404.
 
 **Local-only ops (rule 9).**
-- The agent protocol keeps a table of op specs `{Name, LocalOnly}`.
-- `logs` is the only op that isn't `LocalOnly`.
-- `Session.open(op)` in the hub refuses `LocalOnly` ops unless `s.ID == LocalID`.
+- The agent protocol keeps a table of op specs `{Name, RemoteOK}`; the zero value is local-only.
+- `logs` is the only op with `RemoteOK`.
+- `Session.open(name)` in the hub looks the op up in the table, refuses unknown names, and refuses non-`RemoteOK` ops unless `s.ID == LocalID`.
 - `LocalID` is reserved, and only `runServer` attaches it, over the in-memory pipe.
-- M3a and later add ops as `LocalOnly`. A test that iterates the spec table fails if an op not on the read-only allowlist is missing `LocalOnly`.
+- M3a and later add ops as `LocalOnly`. A test that iterates the spec table fails if an op not on the read-only allowlist is marked `RemoteOK`.
 
 **Debug listener.**
 - **`--debug-allow-remote` is removed.** `--debug-listen ADDR` is replaced by **`--debug-socket PATH`**: a unix socket created with mode **0600** inside a **0700 directory**, owned by the service user, and off by default. There is no TCP debug listener anymore.
@@ -796,12 +795,11 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
 - **`ClientIP(r, trustLoopbackProxy)`:** `RemoteAddr` only; XFF only from loopback, last hop. Keys are **normalised to /64 for IPv6**.
 - **Hub:**
   - **16 sessions max by default** (`--agent-max-sessions`), refused with 503;
-  - 4 concurrent handshakes per IP;
   - 5 auth failures/min per IP (burst 10), answered with 429 + `Retry-After`;
   - auth-failure logs limited to one line per IP per minute.
 - **yamux, hub side:**
   - `AcceptBacklog` 8;
-  - agent-opened streams are accepted and closed at once;
+  - **an agent-opened stream is a protocol violation: the hub ends that session and logs once** (closing just the stream would leave it buffered in yamux until its close timeout);
   - a per-session semaphore of server-opened streams, **8 for a remote session and 32 for the local one** (when full, calls error);
   - **`MaxStreamWindowSize` stays at yamux's 256 KiB minimum** (yamux rejects 64 KiB; decision 2026-11-20);
   - explicit open and close timeouts.
@@ -1010,7 +1008,7 @@ Panics are recovered and recorded as an `error` outcome.
      - the helper-usage test;
      - the integration busybox test.
 5. **pki, agent TLS listener, token rules, local-only ops, debug flag removal.**
-   - Do: ADR 0009; `internal/pki`; `--agent-listen` with a required `--agent-san`; `GetCertificate` with lazy renewal and back-off; agent `VerifyConnection`; token length check and generation; the op-spec `LocalOnly` table and the hub check; remove the Caddy route, `StreamCloseDelay` and `--debug-allow-remote`; bench updates (netns helper, generated token, SAN).
+   - Do: ADR 0009; `internal/pki`; `--agent-listen` with a required `--agent-san`; `GetCertificate` with lazy renewal and back-off; agent `VerifyConnection`; token length check and generation; the op-spec table (`RemoteOK`, zero value local-only) and the hub check; remove the Caddy route, `StreamCloseDelay` and `--debug-allow-remote`; bench updates (netns helper, generated token, SAN).
    - Tests:
      - CA has `MaxPathLenZero`; file modes;
      - wrong fingerprint, another CA, a same-CA leaf without the role marker, and a SAN mismatch are all refused;
@@ -1019,7 +1017,7 @@ Panics are recovered and recorded as an `error` outcome.
      - **a failed write still completes the handshake with the current leaf, and a burst of handshakes inside the back-off attempts exactly one re-issue**;
      - an expired leaf with a failing re-issue → the handshake fails;
      - a short token is refused; a generated token file is 0600;
-     - **a `LocalOnly` op to a remote session is refused, and to the local session it is allowed**;
+     - **a non-`RemoteOK` op to a remote session is refused, an unknown op is refused everywhere, and a non-`RemoteOK` op to the local session is allowed**;
      - the spec-table iteration test;
      - `:80/agent/connect` → 404;
      - the debug socket is created 0600, there is no TCP debug listener, and the bench helper reaches it through the shared volume;
@@ -1034,9 +1032,11 @@ Panics are recovered and recorded as an `error` outcome.
      - IPv6 /64 keying;
      - the map stays ≤ 4096 entries;
      - a 5th concurrent TCP connection from one IP to the agent listener is closed in `Accept`, while other IPs still connect;
-     - agent-opened streams are closed;
-     - the 33rd stream errors;
-     - window size 64 KiB;
+     - an agent-opened stream ends the session;
+     - the 33rd stream errors on the local session, and **the 9th stream errors on a remote session**;
+     - **the yamux window is pinned at 256 KiB** (yamux rejects 64 KiB; a test notices if that changes);
+     - a stream opened with an already-cancelled context is closed without a data race (`-race`);
+     - the agent listener answers with `Connection: close` and drops a silent connection at its 5 s header/handshake timeout;
      - oversized body and header are refused;
      - XFF ignored from non-loopback peers.
 7. **Migration runner + read-only open.**

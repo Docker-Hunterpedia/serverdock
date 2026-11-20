@@ -197,7 +197,7 @@ func TestServerWithProxy(t *testing.T) {
 	}
 }
 
-var testToken = strings.Repeat("t0k3n-", 8) // 48 characters, base64url-safe
+var testToken = "Zq7-Xw2_Lm9KpR4tVb8NcY1HdJ5sFg3AeUo6iTxWz0QyB" // 45 distinct-rich base64url characters
 
 func TestServerHubLocalAndRemoteAgentsOverTLS(t *testing.T) {
 	sock := filepath.Join(sockDir(t), "d.sock")

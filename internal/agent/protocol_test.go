@@ -3,15 +3,19 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/yamux"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 )
 
 func TestParseOp(t *testing.T) {
@@ -76,9 +80,10 @@ func TestBackoffSchedule(t *testing.T) {
 	}
 }
 
-// Every op not on the read-only allowlist must be LocalOnly. Adding an op
-// without LocalOnly fails here until security has reviewed it as read-only.
-func TestOpSpecTableLocalOnlyRule(t *testing.T) {
+// Only ops on the read-only allowlist may be RemoteOK; the zero value is
+// local-only. Marking a new op RemoteOK fails here until security has reviewed
+// it as read-only.
+func TestOpSpecTableRemoteOKRule(t *testing.T) {
 	readOnly := map[string]bool{OpLogs: true}
 	seen := map[string]bool{}
 	for _, s := range Specs() {
@@ -86,11 +91,11 @@ func TestOpSpecTableLocalOnlyRule(t *testing.T) {
 			t.Errorf("bad or duplicate op name %q", s.Name)
 		}
 		seen[s.Name] = true
-		if !readOnly[s.Name] && !s.LocalOnly {
-			t.Errorf("op %q is not LocalOnly and not on the read-only allowlist", s.Name)
+		if s.RemoteOK && !readOnly[s.Name] {
+			t.Errorf("op %q is RemoteOK but not on the read-only allowlist", s.Name)
 		}
-		if readOnly[s.Name] && s.LocalOnly {
-			t.Errorf("read-only op %q is marked LocalOnly (update the allowlist deliberately)", s.Name)
+		if readOnly[s.Name] && !s.RemoteOK {
+			t.Errorf("read-only op %q is not RemoteOK (update the allowlist deliberately)", s.Name)
 		}
 	}
 	if !seen[OpLogs] {
@@ -99,13 +104,13 @@ func TestOpSpecTableLocalOnlyRule(t *testing.T) {
 }
 
 func TestValidateURL(t *testing.T) {
-	for _, u := range []string{"ws://127.0.0.1:80/agent/connect", "ws://localhost/agent/connect", "ws://[::1]:80/x", "ws://127.9.9.9/x", "wss://x.example/agent/connect"} {
+	for _, u := range []string{"ws://127.0.0.1:80/agent/connect", "ws://[::1]:80/x", "ws://127.9.9.9/x", "wss://x.example/agent/connect"} {
 		if err := ValidateURL(u); err != nil {
 			t.Errorf("%s: %v", u, err)
 		}
 	}
 	// ws:// is for loopback literals only.
-	for _, u := range []string{"ws://x.example/agent/connect", "ws://10.0.0.5/x", "ws://0.0.0.0/x", "ws://localhost.evil.example/x"} {
+	for _, u := range []string{"ws://localhost/agent/connect", "ws://x.example/agent/connect", "ws://10.0.0.5/x", "ws://0.0.0.0/x", "ws://localhost.evil.example/x"} {
 		if err := ValidateURL(u); err == nil {
 			t.Errorf("%s: cleartext to a non-loopback host accepted", u)
 		}
@@ -207,8 +212,9 @@ func TestAgentStreamCap(t *testing.T) {
 	}
 	extra.Write(line)
 	extra.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := extra.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
-		t.Fatalf("33rd stream: %v, want EOF", err)
+	got, err := io.ReadAll(extra) // one explanatory frame, then EOF
+	if err != nil || !strings.Contains(string(got), "too many open streams") {
+		t.Fatalf("33rd stream: %q %v, want the error frame then EOF", got, err)
 	}
 	if calls.Load() != MaxAgentStreams {
 		t.Errorf("the over-cap stream reached the log source (%d)", calls.Load())
@@ -224,4 +230,20 @@ func (b blockingLogs) Logs(ctx context.Context, _ string, _ int, _ io.Writer) er
 	b.calls.Add(1)
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func TestExplainDialError(t *testing.T) {
+	mk := func(code int) *http.Response { return &http.Response{StatusCode: code} }
+	for code, want := range map[int]string{401: "SD_AGENT_TOKEN", 429: "rate limiting", 503: "session limit"} {
+		if got := explainDialError(errors.New("raw"), mk(code)); !strings.Contains(got.Error(), want) {
+			t.Errorf("status %d: %v", code, got)
+		}
+	}
+	got := explainDialError(fmt.Errorf("x: %w", pki.ErrVerify), nil)
+	if !strings.Contains(got.Error(), "--ca-fingerprint") {
+		t.Errorf("pin mismatch: %v", got)
+	}
+	if raw := errors.New("boom"); explainDialError(raw, nil) != raw {
+		t.Error("other errors must pass through")
+	}
 }

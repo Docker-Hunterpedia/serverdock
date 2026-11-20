@@ -77,7 +77,12 @@ func ServeSession(ctx context.Context, conn net.Conn, logs LogSource, keepAlive 
 		select {
 		case sem <- struct{}{}:
 		default:
-			st.Close() // over the per-session stream cap
+			// Over the per-session stream cap. The only peer is the hub, which
+			// reads: say why in one short frame (1 s write bound, so a stuck
+			// peer cannot stall the accept loop), then close.
+			_ = st.SetWriteDeadline(time.Now().Add(time.Second))
+			_, _ = st.Write([]byte("serverdock-agent: too many open streams\n"))
+			st.Close()
 			continue
 		}
 		go func() {

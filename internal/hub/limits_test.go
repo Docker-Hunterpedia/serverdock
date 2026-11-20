@@ -143,28 +143,6 @@ func TestSuccessfulAuthDoesNotConsumeFailureBudget(t *testing.T) {
 	}
 }
 
-func TestHandshakeCapPerIP(t *testing.T) {
-	e := newEnv(t)
-	e.hub.hs["127.0.0.1"] = MaxHandshakesPerIP
-	resp := upgrade(t, e, "a", token, nil)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Upgrade") != "" {
-		t.Fatalf("over the handshake cap: %d %v", resp.StatusCode, resp.Header)
-	}
-	if _, ok := e.hub.Get("a"); ok {
-		t.Error("session created over the handshake cap")
-	}
-	if len(e.hub.slots) != 0 {
-		t.Errorf("slot leaked: %v", e.hub.slots)
-	}
-	e.hub.hs = map[string]int{} // a normal request still works afterwards
-	startAgent(t, e.wsURL(), "ok", newFakeLogs(), nil)
-	waitSession(t, e.hub, "ok", 0)
-	if len(e.hub.hs) != 0 {
-		t.Errorf("handshake counter leaked: %v", e.hub.hs)
-	}
-}
-
 // pipeSession attaches a hub session over an in-memory pipe whose other end is
 // returned as a raw yamux server session, so tests can act as the agent.
 func pipeSession(t *testing.T, id string) (*Session, *yamux.Session) {
@@ -183,16 +161,27 @@ func pipeSession(t *testing.T, id string) (*Session, *yamux.Session) {
 	return waitSession(t, h, id, 0), ys
 }
 
-func TestAgentOpenedStreamsAreClosed(t *testing.T) {
-	_, agentSide := pipeSession(t, "x1")
-	for i := 0; i < 3*8; i++ { // well past the accept backlog of 8
-		st, err := agentSide.OpenStream()
-		if err != nil {
-			t.Fatalf("open %d: %v", i, err)
+// Agents never open streams: the first one ends the session (closing the
+// stream alone would leave it buffered in yamux for up to its close timeout).
+func TestAgentOpenedStreamEndsTheSession(t *testing.T) {
+	for _, n := range []int{1, 8, 40} {
+		s, agentSide := pipeSession(t, fmt.Sprintf("x%d", n))
+		for i := 0; i < n; i++ {
+			st, err := agentSide.OpenStream()
+			if err != nil {
+				break // the hub already ended the session
+			}
+			st.Write([]byte("junk"))
 		}
-		st.SetReadDeadline(time.Now().Add(3 * time.Second))
-		if _, err := st.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
-			t.Fatalf("stream %d: read = %v, want EOF (closed by the hub)", i, err)
+		select {
+		case <-s.ys.CloseChan():
+		case <-time.After(3 * time.Second):
+			t.Fatalf("n=%d: the session survived an agent-opened stream", n)
+		}
+		select {
+		case <-agentSide.CloseChan():
+		case <-time.After(3 * time.Second):
+			t.Fatalf("n=%d: the agent side never saw the session end", n)
 		}
 	}
 }
@@ -266,5 +255,28 @@ func TestNinthRemoteStreamErrors(t *testing.T) {
 	open = append(open, rc)
 	for _, rc := range open {
 		rc.Close()
+	}
+}
+
+// An already-cancelled context must not race with Logs setting up its watcher
+// (run with -race): the stream is closed and its slot freed.
+func TestLogsWithCancelledContext(t *testing.T) {
+	e := newEnv(t)
+	startAgent(t, e.wsURL(), "c1", holdLogs{}, nil)
+	s := waitSession(t, e.hub, "c1", 0)
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rc, err := s.Logs(ctx, "web", 5)
+		if err == nil {
+			rc.Close()
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(s.sem) != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(s.sem) != 0 {
+		t.Errorf("stream slots leaked: %d", len(s.sem))
 	}
 }

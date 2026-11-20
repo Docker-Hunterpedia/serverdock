@@ -9,12 +9,12 @@ import (
 
 func TestValidateToken(t *testing.T) {
 	gen, _ := GenerateToken()
-	for _, ok := range []string{gen, strings.Repeat("a", 43), strings.Repeat("0f", 32), strings.Repeat("A-_", 15)} {
+	for _, ok := range []string{gen, "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "0123456789abcdef0123456789abcdef0123456789abcdef"} {
 		if err := ValidateToken(ok); err != nil {
 			t.Errorf("%q refused: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "short", strings.Repeat("a", 42), strings.Repeat("a", 42) + " ", strings.Repeat("a", 42) + "+", strings.Repeat("a", 42) + "=", strings.Repeat("a", 42) + "\n"} {
+	for _, bad := range []string{"", "short", strings.Repeat("a", 43), strings.Repeat("0f", 32), strings.Repeat("A-_", 15), strings.Repeat("a", 42), strings.Repeat("a", 42) + " ", strings.Repeat("a", 42) + "+", strings.Repeat("a", 42) + "=", strings.Repeat("a", 42) + "\n"} {
 		err := ValidateToken(bad)
 		if err == nil {
 			t.Errorf("%q accepted", bad)

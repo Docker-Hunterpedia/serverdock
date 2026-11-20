@@ -10,9 +10,14 @@ import (
 	"strings"
 )
 
-// MinTokenLen is the shortest accepted agent token: 43 base64url characters
-// carry 256 bits; hex of 32 bytes is 64.
+// MinTokenLen is the shortest accepted agent token. A generated token is 43
+// base64url characters (256 bits); a hand-made one only has to be 43 characters
+// from the base64url alphabet with at least MinDistinctChars distinct ones, which
+// rejects "aaaa...a" but is not an entropy guarantee.
 const MinTokenLen = 43
+
+// MinDistinctChars is the fewest distinct characters a token may have.
+const MinDistinctChars = 16
 
 // TokenFile is the generated token's name inside the data directory.
 const TokenFile = "agent.token"
@@ -28,6 +33,13 @@ func ValidateToken(tok string) error {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
 			return errors.New("agent token may only contain base64url characters (A-Z a-z 0-9 - _)")
 		}
+	}
+	seen := map[byte]struct{}{}
+	for i := 0; i < len(tok); i++ {
+		seen[tok[i]] = struct{}{}
+	}
+	if len(seen) < MinDistinctChars {
+		return fmt.Errorf("agent token is too repetitive (needs at least %d distinct characters); generate one with: head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='", MinDistinctChars)
 	}
 	return nil
 }

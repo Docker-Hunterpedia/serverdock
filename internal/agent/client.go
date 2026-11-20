@@ -48,7 +48,8 @@ type ClientConfig struct {
 }
 
 // ValidateURL checks the dial URL: wss:// with any host, or ws:// only for a
-// loopback literal (127.0.0.0/8, ::1, localhost).
+// loopback IP literal (127.0.0.0/8, ::1). "localhost" is not accepted: it is a
+// name, resolved by whoever controls /etc/hosts or DNS.
 func ValidateURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -64,9 +65,6 @@ func ValidateURL(raw string) error {
 }
 
 func loopbackHost(h string) bool {
-	if h == "localhost" {
-		return true
-	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
 }
@@ -167,13 +165,13 @@ func runOnce(ctx context.Context, cfg *ClientConfig) (connectedAt time.Time, err
 	q := u.Query()
 	q.Set("id", cfg.ID)
 	u.RawQuery = q.Encode()
-	c, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{
+	c, resp, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{
 		HTTPClient: cfg.httpClient,
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + cfg.Token}},
 	})
 	dcancel()
 	if err != nil {
-		return time.Time{}, redact(err, cfg.Token)
+		return time.Time{}, redact(explainDialError(err, resp), cfg.Token)
 	}
 	defer c.CloseNow()
 	connectedAt = cfg.Now()
@@ -200,6 +198,22 @@ func httpClient(cfg *ClientConfig) (*http.Client, error) {
 		tr.TLSClientConfig = tc
 	}
 	return &http.Client{Transport: tr}, nil
+}
+
+// explainDialError turns the two failures an operator can fix into one clear
+// line each; anything else is returned unchanged.
+func explainDialError(err error, resp *http.Response) error {
+	switch {
+	case resp != nil && resp.StatusCode == http.StatusUnauthorized:
+		return errors.New("the hub rejected the agent token (401): check SD_AGENT_TOKEN")
+	case resp != nil && resp.StatusCode == http.StatusTooManyRequests:
+		return errors.New("the hub is rate limiting this address (429): too many failed attempts; check SD_AGENT_TOKEN")
+	case resp != nil && resp.StatusCode == http.StatusServiceUnavailable:
+		return errors.New("the hub refused the connection (503): it is at its agent session limit or has remote agents disabled")
+	case errors.Is(err, pki.ErrVerify):
+		return fmt.Errorf("hub certificate not trusted: check --ca-fingerprint and that --server matches one of the hub's --agent-san names (%w)", err)
+	}
+	return err
 }
 
 func redact(err error, token string) error {

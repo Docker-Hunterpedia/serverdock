@@ -20,19 +20,20 @@ const (
 	MaxTail = 5000
 )
 
-// OpSpec describes one stream op. LocalOnly ops are refused on remote agent
-// sessions by the hub (docs/security.md rule 9: remote agents are read-only
-// until Phase 2); only the in-process local agent may serve them.
+// OpSpec describes one stream op. The zero value is local-only: the hub refuses
+// an op on a remote agent session unless RemoteOK is set (docs/security.md
+// rule 9: remote agents are read-only until Phase 2), so forgetting the field
+// fails safe.
 type OpSpec struct {
-	Name      string
-	LocalOnly bool
+	Name     string
+	RemoteOK bool
 }
 
-// OpSpecs is the table of every op the agent protocol knows. `logs` is the only
-// op that is not LocalOnly. New ops must be LocalOnly unless they are read-only
-// and security-reviewed (a test enforces this).
+// opSpecs is the table of every op the agent protocol knows. `logs` is the only
+// op with RemoteOK. A new op must stay local-only unless it is read-only and
+// security-reviewed (a test pins the allowlist).
 var opSpecs = []OpSpec{
-	{Name: OpLogs, LocalOnly: false},
+	{Name: OpLogs, RemoteOK: true},
 }
 
 // Specs returns a copy of the op table.
@@ -62,7 +63,7 @@ type Op struct {
 
 // Validate checks the op fields.
 func (o Op) Validate() error {
-	if _, ok := SpecFor(o.Op); !ok || o.Op != OpLogs {
+	if _, ok := SpecFor(o.Op); !ok {
 		return fmt.Errorf("unknown op %q", o.Op)
 	}
 	if !ValidContainerID(o.Container) {

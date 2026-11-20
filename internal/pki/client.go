@@ -34,10 +34,17 @@ func ClientTLSConfig(host, fingerprint string, now func() time.Time) (*tls.Confi
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // replaced by VerifyConnection below
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyHub(cs.PeerCertificates, host, want, now())
+			if err := verifyHub(cs.PeerCertificates, host, want, now()); err != nil {
+				return fmt.Errorf("%w: %v", ErrVerify, err)
+			}
+			return nil
 		},
 	}, nil
 }
+
+// ErrVerify marks every hub-verification failure, so callers can tell a pin or
+// name mismatch from a network error.
+var ErrVerify = errors.New("hub certificate verification failed")
 
 func verifyHub(chain []*x509.Certificate, host string, want [32]byte, now time.Time) error {
 	if len(chain) == 0 {
