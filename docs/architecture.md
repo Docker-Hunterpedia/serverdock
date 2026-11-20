@@ -175,10 +175,11 @@ internal/agent/           * agent runtime: dial-out client, backoff, stream hand
 internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)
 internal/agent/dockerapi/ * Docker Engine API client over the unix socket (logs; + per-call deadlines, API negotiation, Stop)
 internal/pki/             + the hub CA, the hub leaf with lazy renewal, the agent-side pin check (ADR 0009)
-internal/limits/          + keyed token buckets, client-IP keys (X-Forwarded-For only from the marked control socket), a connection-capping listener
+internal/limits/          + keyed token buckets, lazy exponential back-off (`Backoff`), client-IP keys (X-Forwarded-For only from the marked control socket), a connection-capping listener
 internal/store/           * SQLite (WAL); + forward-only migrations (migrations/NNNN_name.sql), pre-migrate backup, one-server lock, read-only open, testdata/ fixtures
 internal/audit/           + hash-chained audit log, verify, denied-row rate limit, the intent/outcome flow
 internal/redact/          + removes secrets from audit rows, errors and logs
+internal/auth/            + argon2id hasher (bounded semaphore, fast 503), PHC parsing; sign-in logic follows in M2 steps 5 to 8
 internal/datadir/         + creates and checks DATA (0700, owned by the running uid), the secret-path list, atomic file writes
 internal/secretbox/       + AES-256-GCM sealing under DATA/keys/master.key, with the missing-key and wrong-key refusals
 internal/testbin/         + test-only harness: builds and runs the real binary (umask, file modes, exit codes, other uids)
