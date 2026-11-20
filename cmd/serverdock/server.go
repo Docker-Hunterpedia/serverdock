@@ -386,7 +386,6 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	logDockerVersion(ctx, docker, log)
 	// The action registry: built-ins only, and no HTTP route reaches it in M1
 	// (M2 adds them). The SystemInvoker is deliberately not taken here.
-	reg := actions.New(auditLog, log)
 	deps := actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R}
 	if panel != nil {
 		deps.PanelCert = func() actions.PanelCert {
@@ -394,8 +393,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
 		}
 	}
-	actions.RegisterBuiltins(reg, deps)
-	_ = reg
+	_ = newServerRegistry(auditLog, log, deps)
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
@@ -452,4 +450,13 @@ func panelProxy(p *pki.Panel, cfg serverConfig) *proxy.Panel {
 		return nil
 	}
 	return &proxy.Panel{Listen: cfg.HTTPSListen, CertFile: p.CertFile, Hosts: cfg.PanelHosts}
+}
+
+// newServerRegistry is the server's action registry: the built-ins only. It never
+// gets auth.admin_reset: that action is console-only and exists solely in the
+// registry `serverdock admin reset` builds (TestServerRegistryHasNoAdminReset).
+func newServerRegistry(sink actions.Sink, log *slog.Logger, deps actions.Deps) *actions.Registry {
+	reg := actions.New(sink, log)
+	actions.RegisterBuiltins(reg, deps)
+	return reg
 }

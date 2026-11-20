@@ -212,7 +212,7 @@ Full step plan in **Part B**.
     - Client IP from `X-Forwarded-For` only when the request comes from loopback. Plan 0003 must test that our Caddy **replaces** a client-supplied XFF instead of appending to it.
   - **`serverdock admin reset`.**
     - Console-only. Takes the data-dir flock, so it refuses while the server runs.
-    - Clears the password and TOTP, revokes all sessions and API tokens, writes an audit row through the system invoker, and writes a fresh setup token file.
+    - Clears the password and TOTP, revokes all sessions and API tokens, and writes an audit row through the system invoker. **It does not write a setup token itself: the next server start writes it** (plan 0003, M2 step 7: no admin exists, so setup reopens only with that new token). It runs only as the uid that owns `DATA` (root against another owner is refused with a `sudo -u` hint), runs pending migrations when it opens the store, and creates a missing master key.
   - **Sessions.**
     - Opaque 256-bit `__Host-` cookie (`HttpOnly; Secure; SameSite=Strict`), stored hashed, with idle and absolute expiry.
     - "Fresh 2FA" is valid for 5 minutes.

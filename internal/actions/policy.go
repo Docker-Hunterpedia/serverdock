@@ -1,6 +1,9 @@
 package actions
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ActorKind says who is acting.
 type ActorKind string
@@ -55,10 +58,14 @@ func (a Actor) ID() string      { return a.id }
 //	webhook  | denied   | denied             | WebhookAllowed and Target == bound| denied
 //	system   | allowed  | allowed (audited)  | only when System != ""            | only when System != ""
 //
-// SessionOnly actions refuse every actor except a user.
+// SessionOnly actions refuse every actor except a user. ConsoleOnly actions
+// refuse every actor except the system (the console recovery command).
 func (r *Registry) authorize(a Actor, act *action, target string, opts Options) error {
 	if a.kind == "" {
 		return denied("no actor")
+	}
+	if act.consoleOnly && a.kind != KindSystem {
+		return denied("%s can only be run from the console", act.name)
 	}
 	if act.sessionOnly && a.kind != KindUser {
 		return denied("%s is only available to a signed-in user session", act.name)
@@ -105,4 +112,25 @@ func (r *Registry) authorize(a Actor, act *action, target string, opts Options) 
 		return denied("unknown actor")
 	}
 	return nil
+}
+
+// UnlistedUnattendedDestructive returns the destructive actions with a System
+// reason whose name does not appear (in backticks) in the "Unattended destructive
+// actions" section of docs/security.md (doc is the file's text). Every registry
+// that can hold such an action is checked with it: the server's, and the one
+// `admin reset` builds.
+func UnlistedUnattendedDestructive(list []Info, doc string) []string {
+	const heading = "## Unattended destructive actions"
+	_, rest, ok := strings.Cut(doc, heading)
+	section := ""
+	if ok {
+		section, _, _ = strings.Cut(rest, "\n## ")
+	}
+	var missing []string
+	for _, a := range list {
+		if a.Risk == RiskDestructive && a.System != "" && !strings.Contains(section, "`"+a.Name+"`") {
+			missing = append(missing, a.Name)
+		}
+	}
+	return missing
 }

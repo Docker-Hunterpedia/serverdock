@@ -1,4 +1,4 @@
-// Command serverdock is the single ServerDock binary: server | agent | audit | version.
+// Command serverdock is the single ServerDock binary: server | agent | audit | admin | version.
 package main
 
 import (
@@ -29,6 +29,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return agentMain(args[1:], stderr)
 	case "audit":
 		return auditMain(args[1:], stdout, stderr)
+	case "admin":
+		return adminResetMain(args[1:], os.Stdin, stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -40,5 +42,5 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: serverdock <server|agent|audit|version> [flags]")
+	fmt.Fprintln(w, "usage: serverdock <server|agent|audit|admin|version> [flags]")
 }

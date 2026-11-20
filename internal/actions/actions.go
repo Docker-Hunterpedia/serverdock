@@ -93,6 +93,11 @@ type Def[In Validator, Out any] struct {
 	// with a System reason must be listed in docs/security.md "Unattended
 	// destructive actions" (a test checks).
 	System string
+	// ConsoleOnly actions are denied to every actor except the SystemInvoker
+	// (`serverdock admin reset`: the operator at the console, as the data owner,
+	// with the server stopped). REST answers 404 for them and OpenAPI omits them.
+	// Register panics if ConsoleOnly is set without a System reason.
+	ConsoleOnly bool
 	// WebhookAllowed lets a webhook actor run a mutate action on its bound target.
 	WebhookAllowed bool
 	Target         func(In) string
@@ -156,6 +161,7 @@ type action struct {
 	scope         Scope
 	sensitive     bool
 	sessionOnly   bool
+	consoleOnly   bool
 	system        string
 	webhookOK     bool
 	inType        reflect.Type
@@ -213,6 +219,8 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 		mustf("Summary is required")
 	case d.Execute == nil:
 		mustf("Execute is required")
+	case d.ConsoleOnly && d.System == "":
+		mustf("a ConsoleOnly action needs a System reason (the SystemInvoker is the only actor that may run it)")
 	}
 	switch d.Risk {
 	case RiskRead:
@@ -247,7 +255,7 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 	}
 
 	a := &action{name: d.Name, summary: d.Summary, risk: d.Risk, scope: d.Scope, sensitive: d.Sensitive,
-		sessionOnly: d.SessionOnly, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
+		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
 	a.prepare = func(raw []byte) (*prepared, error) {
 		var in In
 		if err := decodeStrict(raw, &in); err != nil {
@@ -402,6 +410,7 @@ type Info struct {
 	Scope         Scope
 	Sensitive     bool
 	SessionOnly   bool
+	ConsoleOnly   bool
 	System        string
 	WebhookOK     bool
 	InputType     reflect.Type
@@ -414,7 +423,7 @@ func (r *Registry) List() []Info {
 	out := make([]Info, 0, len(r.actions))
 	for _, a := range r.actions {
 		out = append(out, Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
-			SessionOnly: a.sessionOnly, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType})
+			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

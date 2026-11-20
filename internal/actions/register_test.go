@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -145,22 +146,10 @@ func TestRegisterPanicsOnUntaggedFreeFormFields(t *testing.T) {
 
 const unattendedHeading = "## Unattended destructive actions"
 
-// unlistedUnattendedDestructive returns the destructive actions with a System
-// reason whose name does not appear (in backticks) in the doc's "Unattended
-// destructive actions" section.
+// unlistedUnattendedDestructive is the exported check (the server registry and
+// the admin-reset registry use it too).
 func unlistedUnattendedDestructive(list []Info, doc string) []string {
-	_, rest, ok := strings.Cut(doc, unattendedHeading)
-	section := ""
-	if ok {
-		section, _, _ = strings.Cut(rest, "\n## ")
-	}
-	var missing []string
-	for _, a := range list {
-		if a.Risk == RiskDestructive && a.System != "" && !strings.Contains(section, "`"+a.Name+"`") {
-			missing = append(missing, a.Name)
-		}
-	}
-	return missing
+	return UnlistedUnattendedDestructive(list, doc)
 }
 
 func TestEveryUnattendedDestructiveActionIsListedInTheThreatModel(t *testing.T) {
@@ -361,4 +350,49 @@ func TestRegisterRefusesASecretInsideASelfMarshallingType(t *testing.T) {
 		}
 	}()
 	Register(newReg(t), Def[wrapsCred, string]{Name: "t.cred2", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[wrapsCred]})
+}
+
+func TestConsoleOnlyActionRules(t *testing.T) {
+	e := newEnv(t)
+	r := New(e.log, quiet)
+	mk := func(d Def[None, string]) { Register(r, d) }
+	// ConsoleOnly without a System reason is a registration error.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("ConsoleOnly without System was accepted")
+			}
+		}()
+		mk(Def[None, string]{Name: "t.bad_console", Summary: "x", Risk: RiskDestructive, Scope: ScopeAdmin, ConsoleOnly: true,
+			Target: func(None) string { return "x" }, Execute: func(context.Context, Call, None) (string, error) { return "", nil }})
+	}()
+	mk(Def[None, string]{Name: "t.console", Summary: "x", Risk: RiskDestructive, Scope: ScopeAdmin, ConsoleOnly: true, System: "operator at the console",
+		Target: func(None) string { return "x" }, Execute: func(context.Context, Call, None) (string, error) { return "done", nil }})
+	infoOf := func() Info {
+		for _, a := range r.List() {
+			if a.Name == "t.console" {
+				return a
+			}
+		}
+		t.Fatal("not listed")
+		return Info{}
+	}
+	if !infoOf().ConsoleOnly {
+		t.Error("Info does not report ConsoleOnly")
+	}
+	// Every other actor is denied, whatever its scope, MFA state or confirmation.
+	fresh := time.Now().Add(time.Hour)
+	for name, actor := range map[string]Actor{
+		"user admin": UserActor("1", ScopeAdmin, fresh), "token admin": TokenActor("t", ScopeAdmin), "mcp": MCPActor("m"), "webhook": WebhookActor("h", "x"),
+	} {
+		_, err := r.Invoke(ctx, actor, "t.console", nil, Options{Confirm: "x"})
+		if !errors.Is(err, ErrDenied) || !strings.Contains(err.Error(), "console") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// The SystemInvoker runs it (destructive, so with its System reason).
+	res, err := r.SystemInvoker().Invoke(ctx, "t.console", nil, Options{})
+	if err != nil || res.Out != "done" {
+		t.Fatalf("%v %v", res.Out, err)
+	}
 }
