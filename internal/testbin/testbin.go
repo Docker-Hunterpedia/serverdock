@@ -4,6 +4,14 @@
 // tested through runServer in-process, so those tests use this harness.
 //
 // It is for tests only: nothing outside *_test.go files imports it.
+//
+// A package that uses it must call Init and Cleanup from TestMain (Bin fails
+// otherwise), so no sdbin* directory is ever left in the temp directory.
+//
+// Options.Uid (running as another user) works on Linux only, and needs root.
+// ShortDir creates a directory owned by the test's user with mode 0700: when the
+// test runs as root and the binary as another uid, that uid cannot enter it, so
+// give such a server a socket path inside its own (chowned) DATA instead.
 package testbin
 
 import (
@@ -22,9 +30,10 @@ import (
 )
 
 var (
-	buildOnce sync.Once
-	buildDir  string
-	buildErr  error
+	initialised bool
+	buildOnce   sync.Once
+	buildDir    string
+	buildErr    error
 )
 
 // Bin returns the path of the built serverdock binary, building it on first
@@ -32,6 +41,9 @@ var (
 // world-searchable so tests can run the binary as another uid.
 func Bin(t testing.TB) string {
 	t.Helper()
+	if !initialised {
+		t.Fatal("testbin: call testbin.Init() and defer testbin.Cleanup() in this package's TestMain")
+	}
 	buildOnce.Do(func() {
 		var root string
 		if root, buildErr = moduleRoot(); buildErr != nil {
@@ -55,6 +67,9 @@ func Bin(t testing.TB) string {
 	}
 	return filepath.Join(buildDir, "serverdock")
 }
+
+// Init records that the package's TestMain will call Cleanup. Call it first in TestMain.
+func Init() { initialised = true }
 
 // Cleanup removes the built binary. Call it from TestMain after m.Run.
 func Cleanup() {

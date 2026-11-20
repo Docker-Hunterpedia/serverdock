@@ -230,6 +230,11 @@ func ParseForwarded(h http.Header) (netip.Addr, error) {
 
 // ClientIP returns the limiting key for the request's client.
 //
+// Only X-Forwarded-For, set by our own Caddy, is ever read. The RFC 7239
+// "Forwarded" header and X-Real-IP are NEVER trusted: Caddy passes them through
+// from the client untouched, so anything keyed on them could be forged
+// (TestClientIPFromMarkedConnection pins this).
+//
 // X-Forwarded-For is read only when the connection carries the proxy mark
 // (WithProxyMark, set by api.WithTrustedProxy for the control-plane socket), and
 // then only through ParseForwarded. On every other listener the header is

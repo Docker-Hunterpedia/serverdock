@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // maxSocketPath is the longest unix socket path the OS accepts (sun_path less
@@ -57,6 +59,16 @@ func listenPrivate(path string, euid int) (net.Listener, error) {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket", path)
 		}
+		// Only a dead socket is stale. If something still accepts on it, another
+		// server (or process) owns the path: refuse rather than steal it.
+		c, derr := net.DialTimeout("unix", path, 200*time.Millisecond)
+		if derr == nil {
+			c.Close()
+			return nil, fmt.Errorf("socket %s is in use by another process", path)
+		}
+		if !errors.Is(derr, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("socket %s exists and could not be checked (%v); remove it if no server is using it", path, derr)
+		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
 		}
@@ -67,9 +79,52 @@ func listenPrivate(path string, euid int) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", path, err)
 	}
+	ul := ln.(*net.UnixListener)
+	// Unlinking is ours to do, and only if the path is still our own socket.
+	ul.SetUnlinkOnClose(false)
 	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
+		ul.Close()
+		_ = os.Remove(path)
 		return nil, err
 	}
-	return ln, nil
+	pl := &privateListener{UnixListener: ul, path: path}
+	if st, err := os.Lstat(path); err == nil {
+		pl.id, pl.ok = fileID(st)
+	}
+	return pl, nil
+}
+
+type fileKey struct{ dev, ino uint64 }
+
+func fileID(st os.FileInfo) (fileKey, bool) {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileKey{}, false
+	}
+	return fileKey{uint64(sys.Dev), uint64(sys.Ino)}, true //nolint:unconvert // types differ by OS
+}
+
+// privateListener removes its socket file on Close only if the path still holds
+// the socket it created, so a server that lost the path to another one never
+// deletes the other's socket.
+type privateListener struct {
+	*net.UnixListener
+	path string
+	id   fileKey
+	ok   bool
+	once sync.Once
+}
+
+func (l *privateListener) Close() error {
+	err := l.UnixListener.Close()
+	l.once.Do(func() {
+		st, serr := os.Lstat(l.path)
+		if serr != nil || st.Mode()&os.ModeSocket == 0 || !l.ok {
+			return
+		}
+		if id, ok := fileID(st); ok && id == l.id {
+			_ = os.Remove(l.path)
+		}
+	})
+	return err
 }

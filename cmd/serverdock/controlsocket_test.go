@@ -316,3 +316,54 @@ func listeningTCPPorts(pid int) (ports []int, ok bool) {
 	}
 	return ports, true
 }
+
+// Two servers with different DATA but the same --control-socket: the second must
+// not take the path from the first (it is a live socket), and the first keeps
+// answering.
+func TestSecondServerCannotStealALiveControlSocket(t *testing.T) {
+	sock := shortSock(t)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: sock})
+	before, _ := os.Lstat(sock)
+	err := runServer(context.Background(), serverConfig{Data: newData(t), ControlSocket: sock}, quietLog(), nil)
+	if err == nil || !strings.Contains(err.Error(), "in use by another process") {
+		t.Fatalf("second server: %v", err)
+	}
+	if after, err := os.Lstat(sock); err != nil || !os.SameFile(before, after) {
+		t.Fatalf("the first server's socket changed: %v", err)
+	}
+	resp, err := cpGet(addrs.Control, "/healthz")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("first server stopped answering: %v %v", resp, err)
+	}
+	resp.Body.Close()
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A listener closes (and unlinks) only its own socket: if the path was taken
+// over meanwhile, the newcomer's socket stays.
+func TestListenerClosesOnlyItsOwnSocket(t *testing.T) {
+	sock := filepath.Join(sockDir(t), "d", "c.sock")
+	ln, err := listenPrivateSocket(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(sock) // something else takes over the path
+	other, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	ln.Close()
+	if st, err := os.Lstat(sock); err != nil || st.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("the other socket was removed: %v", err)
+	}
+	// Untouched path: removed on Close.
+	sock2 := filepath.Join(sockDir(t), "d", "c.sock")
+	ln2, _ := listenPrivateSocket(sock2)
+	ln2.Close()
+	if _, err := os.Lstat(sock2); err == nil {
+		t.Fatal("own socket left behind")
+	}
+}

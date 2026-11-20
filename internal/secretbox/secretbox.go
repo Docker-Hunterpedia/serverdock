@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -99,29 +100,73 @@ func (b *Box) Open(aad string, ct []byte) ([]byte, error) {
 	return pt, nil
 }
 
+// KeyID returns the box's key id as hex (the first 4 bytes of SHA-256(key)).
+// It is not secret: it is stored in the database so a swapped key file is
+// noticed at start.
+func (b *Box) KeyID() string { return hex.EncodeToString(b.keyID[:]) }
+
+// KeyIDMetaKey is the meta-table key that records the id of the master key.
+const KeyIDMetaKey = "secretbox_key_id"
+
+// Meta stores the id of the master key next to the data it protects.
+type Meta interface {
+	// KeyID returns the recorded key id, if any.
+	KeyID(ctx context.Context) (id string, ok bool, err error)
+	// SetKeyID records the key id.
+	SetKeyID(ctx context.Context, id string) error
+}
+
 // KeyPath is where the master key lives under the data directory.
 func KeyPath(dataDir string) string { return filepath.Join(dataDir, keyDir, keyFile) }
 
 // LoadOrCreate returns the Box for DATA/keys/master.key.
 //
-//   - Missing, and ciphertextsExist reports false: a new random key is written
-//     (mode 0600 in a 0700 directory, atomically) and created is true.
-//   - Missing, but ciphertexts exist: refused. A new key would orphan them.
+//   - Missing, no key id recorded in the database, and ciphertextsExist reports
+//     false: a new random key is written (mode 0600 in a 0700 directory,
+//     atomically), its id is recorded through meta, and created is true.
+//   - Missing, but a key id is recorded or ciphertexts exist: refused. A new key
+//     would orphan them. `admin reset` clears the recorded id with the ciphertexts.
 //   - Present but unreadable, the wrong size, not a regular file, or readable by
 //     group or others: refused. The file is never replaced.
-func LoadOrCreate(dataDir string, ciphertextsExist func() (bool, error)) (box *Box, created bool, err error) {
+//   - Present, and a recorded id differs from the key's: refused. (A key with no
+//     recorded id, as an earlier version left it, is adopted: its id is recorded.)
+//
+// The caller holds the data-directory lock. Leftover master.key.tmp* files from
+// a crashed write are removed here.
+func LoadOrCreate(ctx context.Context, dataDir string, meta Meta, ciphertextsExist func() (bool, error)) (box *Box, created bool, err error) {
 	dir := filepath.Join(dataDir, keyDir)
 	path := KeyPath(dataDir)
 	if err := ensureKeyDir(dir); err != nil {
 		return nil, false, err
 	}
+	var recorded string
+	var haveRecorded bool
+	if meta != nil {
+		if recorded, haveRecorded, err = meta.KeyID(ctx); err != nil {
+			return nil, false, fmt.Errorf("secretbox: reading the recorded key id: %w", err)
+		}
+	}
 	st, err := os.Lstat(path)
 	switch {
 	case err == nil:
 		b, err := readKey(path, st)
-		return b, false, err
+		if err != nil {
+			return nil, false, err
+		}
+		if haveRecorded && recorded != b.KeyID() {
+			return nil, false, fmt.Errorf("%s does not match the key this database was written with (key id %s, expected %s). Restore the right key from a backup, or run `serverdock admin reset` to clear the encrypted admin data", path, b.KeyID(), recorded)
+		}
+		if !haveRecorded && meta != nil {
+			if err := meta.SetKeyID(ctx, b.KeyID()); err != nil {
+				return nil, false, fmt.Errorf("secretbox: recording the key id: %w", err)
+			}
+		}
+		return b, false, nil
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, false, fmt.Errorf("%s cannot be read: %w. It is never replaced automatically; see the docs (admin reset) if it is lost", path, err)
+	}
+	if haveRecorded {
+		return nil, false, fmt.Errorf("%s is missing but the database records its key (id %s). Restore the key from a backup, or run `serverdock admin reset` to clear the encrypted admin data", path, recorded)
 	}
 	if ciphertextsExist != nil {
 		exist, err := ciphertextsExist()
@@ -140,12 +185,47 @@ func LoadOrCreate(dataDir string, ciphertextsExist func() (bool, error)) (box *B
 		return nil, false, fmt.Errorf("secretbox: writing %s: %w", path, err)
 	}
 	box, err = New(key)
-	return box, true, err
+	if err != nil {
+		return nil, false, err
+	}
+	if meta != nil {
+		// A crash between the two writes leaves a key with no recorded id, which the
+		// next start adopts.
+		if err := meta.SetKeyID(ctx, box.KeyID()); err != nil {
+			return nil, false, fmt.Errorf("secretbox: recording the key id: %w", err)
+		}
+	}
+	return box, true, nil
+}
+
+// SQLMeta keeps the key id in the meta table (key, value) of the database.
+type SQLMeta struct{ R, W *sql.DB }
+
+// KeyID implements Meta.
+func (m SQLMeta) KeyID(ctx context.Context) (string, bool, error) {
+	var v string
+	err := m.R.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, KeyIDMetaKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return v, err == nil, err
+}
+
+// SetKeyID implements Meta.
+func (m SQLMeta) SetKeyID(ctx context.Context, id string) error {
+	_, err := m.W.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, KeyIDMetaKey, id)
+	return err
 }
 
 func ensureKeyDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("secretbox: %w", err)
+	}
+	// Half-written keys from a crashed atomic write (the caller holds the lock).
+	if tmps, _ := filepath.Glob(filepath.Join(dir, keyFile+".tmp*")); len(tmps) > 0 {
+		for _, t := range tmps {
+			_ = os.Remove(t)
+		}
 	}
 	st, err := os.Lstat(dir)
 	if err != nil {

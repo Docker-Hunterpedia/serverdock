@@ -6,6 +6,8 @@
 # Scenarios (every container: --memory 1g --cpus 1, nonroot distroless image):
 #   1  (report only) server --proxy=false; the control plane has only its unix socket, so
 #      readiness and the burst run in the curl helper container on the shared volume
+#      (every request is a `docker run` curl, with its own unix-socket connect). From M2 step 2
+#      on, S1 is therefore NOT comparable with M1's S1 (a TCP listener and the host's curl).
 #   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB
 #   3  (report only until the Phase 2 slim agent) remote `agent` connected to a scenario-2 server
 #      through its proxy (measured: the agent)

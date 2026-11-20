@@ -14,6 +14,7 @@ import (
 type closeIdle struct{ m *testing.M }
 
 func (c closeIdle) Run() int {
+	testbin.Init()
 	code := c.m.Run()
 	testbin.Cleanup()
 	http.DefaultClient.CloseIdleConnections()

@@ -199,6 +199,30 @@ func TestClientIPFromMarkedConnection(t *testing.T) {
 	}
 }
 
+// "Forwarded" and X-Real-IP are passed through by Caddy from the client, so they
+// are never a source of the client address, marked connection or not.
+func TestForwardedAndXRealIPNeverTrusted(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		r := fwdReq("203.0.113.5:1", marked, "198.51.100.7")
+		r.Header.Set("Forwarded", "for=6.6.6.6")
+		r.Header.Set("X-Real-IP", "7.7.7.7")
+		want := "203.0.113.5"
+		if marked {
+			want = "198.51.100.7"
+		}
+		if got := ClientIP(r); got != want {
+			t.Errorf("marked=%v: %s, want %s", marked, got, want)
+		}
+		// With no X-Forwarded-For at all they still do not count.
+		r2 := fwdReq("203.0.113.5:1", marked)
+		r2.Header.Set("Forwarded", "for=6.6.6.6")
+		r2.Header.Set("X-Real-IP", "7.7.7.7")
+		if got := ClientIP(r2); got != "203.0.113.5" {
+			t.Errorf("marked=%v without XFF: %s", marked, got)
+		}
+	}
+}
+
 // Anything but exactly one header holding exactly one IP is an error, and
 // ClientIP then falls back to the peer rather than trusting a piece of it.
 func TestMultipleXFFValuesRejected(t *testing.T) {

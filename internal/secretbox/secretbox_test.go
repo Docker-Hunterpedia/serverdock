@@ -13,6 +13,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+var ctx0 = context.Background()
+
 func newBox(t *testing.T, fill byte) *Box {
 	t.Helper()
 	b, err := New(bytes.Repeat([]byte{fill}, 32))
@@ -95,7 +97,7 @@ func dataDir(t *testing.T) string {
 func TestKeyCreatedAndReloaded(t *testing.T) {
 	d := dataDir(t)
 	none := func() (bool, error) { return false, nil }
-	b1, created, err := LoadOrCreate(d, none)
+	b1, created, err := LoadOrCreate(ctx0, d, nil, none)
 	if err != nil || !created {
 		t.Fatalf("%v %v", created, err)
 	}
@@ -111,7 +113,7 @@ func TestKeyCreatedAndReloaded(t *testing.T) {
 		t.Fatalf("leftovers: %v", ents)
 	}
 	ct, _ := b1.Seal("a/1/b", []byte("v"))
-	b2, created, err := LoadOrCreate(d, func() (bool, error) { t.Fatal("asked after the key exists"); return false, nil })
+	b2, created, err := LoadOrCreate(ctx0, d, nil, func() (bool, error) { t.Fatal("asked after the key exists"); return false, nil })
 	if err != nil || created {
 		t.Fatalf("%v %v", created, err)
 	}
@@ -122,7 +124,7 @@ func TestKeyCreatedAndReloaded(t *testing.T) {
 
 func TestMissingKeyWithCiphertextsRefusesStart(t *testing.T) {
 	d := dataDir(t)
-	_, _, err := LoadOrCreate(d, func() (bool, error) { return true, nil })
+	_, _, err := LoadOrCreate(ctx0, d, nil, func() (bool, error) { return true, nil })
 	if err == nil || !strings.Contains(err.Error(), "missing but encrypted data exists") || !strings.Contains(err.Error(), "admin reset") {
 		t.Fatalf("%v", err)
 	}
@@ -130,7 +132,7 @@ func TestMissingKeyWithCiphertextsRefusesStart(t *testing.T) {
 		t.Fatal("a key was created anyway")
 	}
 	// A failing check also refuses (fail closed).
-	if _, _, err := LoadOrCreate(d, func() (bool, error) { return false, errors.New("db down") }); err == nil {
+	if _, _, err := LoadOrCreate(ctx0, d, nil, func() (bool, error) { return false, errors.New("db down") }); err == nil {
 		t.Fatal("check error ignored")
 	}
 	if _, err := os.Stat(KeyPath(d)); err == nil {
@@ -160,7 +162,7 @@ func TestSecretboxRefusesBadKeyFile(t *testing.T) {
 			p := KeyPath(d)
 			mk(p)
 			before, _ := os.Lstat(p)
-			_, created, err := LoadOrCreate(d, none)
+			_, created, err := LoadOrCreate(ctx0, d, nil, none)
 			if err == nil || created {
 				t.Fatalf("accepted a %s key file", name)
 			}
@@ -176,7 +178,7 @@ func TestLooseKeysDirRefused(t *testing.T) {
 	d := dataDir(t)
 	os.Mkdir(filepath.Join(d, "keys"), 0o755)
 	os.Chmod(filepath.Join(d, "keys"), 0o755)
-	if _, _, err := LoadOrCreate(d, nil); err == nil || !strings.Contains(err.Error(), "chmod 700") {
+	if _, _, err := LoadOrCreate(ctx0, d, nil, nil); err == nil || !strings.Contains(err.Error(), "chmod 700") {
 		t.Fatalf("%v", err)
 	}
 }
@@ -208,5 +210,86 @@ func TestCiphertextsExist(t *testing.T) {
 	}
 	if len(Columns()) < 3 {
 		t.Fatal("the M2 columns are not listed")
+	}
+}
+
+type fakeMeta struct {
+	id  string
+	set bool
+}
+
+func (f *fakeMeta) KeyID(context.Context) (string, bool, error) { return f.id, f.set, nil }
+func (f *fakeMeta) SetKeyID(_ context.Context, id string) error {
+	f.id, f.set = id, true
+	return nil
+}
+
+func TestKeyIDRecordedAndChecked(t *testing.T) {
+	none := func() (bool, error) { return false, nil }
+	d := dataDir(t)
+	m := &fakeMeta{}
+	b, created, err := LoadOrCreate(ctx0, d, m, none)
+	if err != nil || !created || m.id != b.KeyID() || len(m.id) != 8 {
+		t.Fatalf("%v %v %q", created, err, m.id)
+	}
+	// Same key, same id: fine.
+	if _, created, err := LoadOrCreate(ctx0, d, m, none); err != nil || created {
+		t.Fatalf("%v %v", created, err)
+	}
+	// Key present but the recorded id differs: refused, key untouched.
+	other := &fakeMeta{id: "deadbeef", set: true}
+	before, _ := os.ReadFile(KeyPath(d))
+	if _, _, err := LoadOrCreate(ctx0, d, other, none); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("%v", err)
+	}
+	if after, _ := os.ReadFile(KeyPath(d)); !bytes.Equal(before, after) {
+		t.Fatal("key changed")
+	}
+	// Key missing but the id is recorded: refused, nothing created.
+	os.Remove(KeyPath(d))
+	if _, _, err := LoadOrCreate(ctx0, d, m, none); err == nil || !strings.Contains(err.Error(), "records its key") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(KeyPath(d)); err == nil {
+		t.Fatal("a key was created although the DB records one")
+	}
+	// A key without a recorded id (an earlier version's) is adopted.
+	d2 := dataDir(t)
+	LoadOrCreate(ctx0, d2, nil, none)
+	m2 := &fakeMeta{}
+	b2, created, err := LoadOrCreate(ctx0, d2, m2, none)
+	if err != nil || created || m2.id != b2.KeyID() {
+		t.Fatalf("adopt: %v %v %q", created, err, m2.id)
+	}
+}
+
+func TestSQLMetaRoundTrip(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.Exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	m := SQLMeta{R: db, W: db}
+	if _, ok, err := m.KeyID(ctx0); ok || err != nil {
+		t.Fatalf("%v %v", ok, err)
+	}
+	m.SetKeyID(ctx0, "00112233")
+	m.SetKeyID(ctx0, "aabbccdd")
+	if id, ok, err := m.KeyID(ctx0); id != "aabbccdd" || !ok || err != nil {
+		t.Fatalf("%q %v %v", id, ok, err)
+	}
+}
+
+func TestLeftoverTempKeyRemoved(t *testing.T) {
+	d := dataDir(t)
+	os.Mkdir(filepath.Join(d, "keys"), 0o700)
+	tmp := filepath.Join(d, "keys", "master.key.tmp123")
+	os.WriteFile(tmp, make([]byte, 32), 0o600)
+	if _, _, err := LoadOrCreate(ctx0, d, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmp); err == nil {
+		t.Fatal("leftover temp key not removed")
 	}
 }

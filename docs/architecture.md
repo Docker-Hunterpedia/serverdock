@@ -127,6 +127,10 @@ These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM. T
 
 Extra containers ServerDock adds to a managed server: **zero** (agent and proxy in one process), or one if the user chooses the Caddy-container fallback.
 
+## Control socket and local tools
+
+The control plane listens only on a unix socket (`--control-socket`, default `DATA/run/cp.sock`, 0600 in a 0700 directory). Every request on it must carry **exactly one `X-Forwarded-For` value holding one IP**, which only our Caddy sets; anything else gets 400. A local tool that talks to it directly (M7a's `doctor` and any container healthcheck) therefore cannot use it like a plain HTTP port. Local tools use the **debug socket** (`--debug-socket`) or read files and the database; they never need to forge a forwarded address.
+
 ## Background work
 
 Every goroutine that wakes on a timer, and the goroutines that exist per session. Anything that adds a timer adds a row (`footprint` checks this table). Lazy work (done inside a request or a handshake, with no timer and no goroutine) is listed so nobody adds a timer for it later.

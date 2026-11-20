@@ -34,7 +34,8 @@ func dataFingerprint(t *testing.T, dir string) map[string]string {
 			return err
 		}
 		st, _ := d.Info()
-		out[rel] = st.Mode().String() + " " + string(sha256.New().Sum(b))
+		sum := sha256.Sum256(b)
+		out[rel] = st.Mode().String() + " " + string(sum[:])
 		return nil
 	})
 	if err != nil {

@@ -206,7 +206,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	defer st.Close()
 	// The master key is used by the auth code from M2 step 5; creating it (or
 	// refusing to start without it) belongs to this point of the startup order.
-	_, keyCreated, err := secretbox.LoadOrCreate(cfg.Data, func() (bool, error) {
+	_, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
 		return secretbox.CiphertextsExist(ctx, st.R, secretbox.Columns())
 	})
 	if err != nil {
