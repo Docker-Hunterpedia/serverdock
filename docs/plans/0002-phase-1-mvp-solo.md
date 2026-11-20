@@ -327,8 +327,8 @@ Full step plan in **Part B**.
 ## M4 — Domains and automatic HTTPS
 
 - **Goal:** domains for services and the panel, automatic HTTPS, actionable diagnostics. A certificate or DNS problem never takes a running app down.
-- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6.
-- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/store`, `web/`.
+- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6; **passkeys for the panel** (added by the maintainer 2026-11-20).
+- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/auth` (passkeys), `internal/store`, `web/`.
 - **Key decisions:**
   - **Per-route validation, not all-or-nothing.** The generator validates each route/host. Failing routes are **left out** and get status `error` with a reason; the rest are loaded.
   - **On boot, the config is generated from the DB minus failing routes, never loaded from a stale copy on disk.**
@@ -336,7 +336,16 @@ Full step plan in **Part B**.
   - Plan 0006 starts with a spike on observing certificate state through Caddy's own events. **Certificate-expiry alerts (M8) use certmagic's maintenance and events, not a timer of ours.**
   - Diagnostics run on demand (`unknown` when undecidable).
   - IPv6: dual-stack.
-- **Footprint:** S2 → ≤ 62 MB; certmagic timers measured and listed.
+  - **Panel domain** (moved here from M2 by plan 0003): set the panel domain, issue its certificate, redirect the IP address to it once the certificate is valid, add HSTS (G15), and prompt the admin to re-enrol TOTP (G5).
+  - **Passkeys (WebAuthn), maintainer request 2026-11-20.** Passkeys need a domain (the relying-party ID can't be an IP address) and a trusted certificate (browsers turn WebAuthn off on pages with certificate errors), so they arrive here, after the panel domain works.
+    - A passkey can replace the TOTP step (password + passkey), or sign in on its own (passkey only, user verification required). Several passkeys per account, each with a name, last-used time and a revoke button in Settings › Security.
+    - The relying-party ID is the panel domain. Passkey sign-in is offered only on that origin; on the IP address the panel keeps password + TOTP.
+    - TOTP and recovery codes stay as the always-available fallback (IP access, lost device). Adding or removing a passkey needs fresh 2FA, is audited, and revokes nothing else. `admin reset` clears all passkeys.
+    - Changing the panel domain invalidates passkeys registered for the old one; the UI says so before the change.
+    - Stored: credential ID, public key, sign counter, transports, AAGUID, name, created and last-used times. No attestation requirement (`none`), so any authenticator works.
+    - Library: one maintained WebAuthn library (e.g. `go-webauthn/webauthn`), justified with a footprint measurement. Control plane only: it must not link into agent mode, and S4 must stay unchanged.
+    - New ADR (passkeys) and a `security` threat-model update: challenge single-use and expiry, origin and RP-ID checks, counter regression handling, user-verification policy, and the same back-off as login.
+- **Footprint:** S2 → ≤ 62 MB; certmagic timers measured and listed; passkey library delta measured (S2 only, S4 unchanged).
 - **Security:** IDNA validation; only the panel domain routes to the control plane; changing it needs fresh 2FA.
 - **Tests:**
   - goldens;
@@ -344,7 +353,8 @@ Full step plan in **Part B**.
   - boot with a failing route;
   - Pebble: issuance, failure while HTTP stays up, reload safety;
   - IPv6;
-  - Playwright.
+  - passkeys: registration and sign-in with a virtual authenticator (Playwright/CDP), wrong origin and wrong RP ID refused, replayed challenge refused, counter regression handled, passkey not offered on the IP address, TOTP fallback still works, `admin reset` clears passkeys;
+  - Playwright, with accessibility checks for the passkey screens.
 - **Reviewers:** `security`, `systems`, `footprint`, `accessibility`.
 - **Exit evidence:** Pebble tests green; a manual real-domain check; bench green.
 
@@ -1130,6 +1140,7 @@ Panics are recovered and recorded as an `error` outcome.
 | 5 | GitHub push-to-deploy + generic webhook, commit status | M5 |
 | 6 | Blue-green, health gate, automatic rollback, one-click rollback from snapshots; auto-cancel superseded | M3a |
 | 7 | Domains with automatic HTTPS and actionable diagnostics; TLS never takes a running app down | M4 |
+| 7a | Passkeys for the panel (WebAuthn), with TOTP and recovery codes as fallback | M4 |
 | 8 | Env vars & secrets (encrypted, audited reveal) | M2 (secretbox), M3b |
 | 9 | Postgres / MySQL / Redis + scheduled S3 backups + restore | M6 |
 | 10 | Metrics, live logs, log search, basic alerts; email/webhook/Telegram | M8 |

@@ -35,6 +35,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] GitHub push-to-deploy + generic webhook, commit status
 - [ ] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys
 - [ ] Domains with automatic HTTPS (embedded Caddy) and actionable diagnostics; TLS problems never take a running app down
+- [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4)
 - [ ] Env vars & secrets (encrypted, audited reveal)
 - [ ] Postgres / MySQL / Redis one-click + scheduled S3 backups + restore
 - [ ] Metrics (cgroup), live logs, log search, basic alerts; email/webhook/Telegram notifications

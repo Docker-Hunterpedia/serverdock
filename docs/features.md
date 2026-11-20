@@ -130,7 +130,7 @@ Legend: **P1** MVP · **P2** multi-server & builds · **P3** light built-in AI +
 
 | Feature | Phase | From / note |
 |---|---|---|
-| Single admin + 2FA (TOTP), passkeys | P1 / P2 | |
+| Single admin + 2FA (TOTP), passkeys | P1 | TOTP in M2; passkeys in M4, once the panel has a domain and a trusted certificate |
 | REST API (OpenAPI) + CLI | P1 (API) / P2 (CLI) | all |
 | Organizations, projects, roles (owner/admin/developer/viewer), per-project access — **free** | P4 | paywalled elsewhere |
 | OIDC/SAML SSO | P4 | Dokploy Enterprise |
