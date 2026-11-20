@@ -77,6 +77,27 @@ func (k *Keyed) Blocked(key string) (bool, time.Duration) {
 	return true, time.Duration((1 - b.tokens) / k.rate * float64(time.Second))
 }
 
+// BlockedIfTracked reports a block only for a key that is already tracked and has
+// no token left. An untracked key is never reported blocked, even when the map is
+// full of blocked keys (Blocked's fail-closed rule): the caller decides what an
+// unknown key may do, and charges it with Take only on a failure. This is for
+// limiters in front of a credential check, where a valid credential from a new
+// address must keep working while guessers are throttled.
+func (k *Keyed) BlockedIfTracked(key string) (bool, time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := k.now()
+	b, ok := k.m[key]
+	if !ok {
+		return false, 0
+	}
+	k.refill(b, now)
+	if b.tokens >= 1 {
+		return false, 0
+	}
+	return true, time.Duration((1 - b.tokens) / k.rate * float64(time.Second))
+}
+
 // allBlocked reports whether every tracked key is blocked. Caller holds mu.
 func (k *Keyed) allBlocked(now time.Time) bool {
 	for _, b := range k.m {

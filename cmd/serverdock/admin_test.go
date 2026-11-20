@@ -559,3 +559,15 @@ func TestAPIPackageNeverReferencesAdminReset(t *testing.T) {
 		}
 	}
 }
+
+// The sign-in handlers and the auth actions must share one set of limiters: the
+// server builds exactly one.
+func TestServerBuildsOneLimitsInstance(t *testing.T) {
+	src, _ := os.ReadFile("server.go")
+	if n := strings.Count(string(src), "api.NewLimits("); n != 1 {
+		t.Errorf("server.go builds %d api.Limits, want 1 (shared by the handlers and the actions)", n)
+	}
+	if !strings.Contains(string(src), "Limits: lim,") || !strings.Contains(string(src), "PasswordGate: lim.AccountPassword") {
+		t.Error("the handlers and the password gate do not both use lim")
+	}
+}

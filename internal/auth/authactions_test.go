@@ -569,7 +569,7 @@ func TestReenrolmentSwapsTheSeedAndRevokesEverything(t *testing.T) {
 	if _, err := a.inv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q}`, begin.EnrollmentID, oldCode)); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("old seed's code: %v", err)
 	}
-	res := a.mustInv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q,"host_kind":"localhost"}`, begin.EnrollmentID, code)).Out.(ChangedOut)
+	res := a.mustInv(actor.WithHostKind("localhost"), "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q}`, begin.EnrollmentID, code)).Out.(ChangedOut)
 	if res.SessionsRevoked != 1 || res.TokensRevoked != 1 {
 		t.Fatalf("%+v", res)
 	}
@@ -680,5 +680,91 @@ func policyInputs() map[string]string {
 		"auth.session_info": `{}`, "auth.password_change": `{"current_password":"x","new_password":"yyyyyyyyyyyyy"}`, "auth.totp_reenroll_begin": `{}`,
 		"auth.totp_reenroll_confirm": `{"enrollment_id":"e","code":"123456"}`, "auth.recovery_regenerate": `{}`, "auth.sessions_list": `{}`,
 		"auth.sessions_revoke": `{"all_others":true}`, "tokens.create": `{"name":"n","scope":"read"}`, "tokens.list": `{}`, "tokens.revoke": `{"id":1}`,
+	}
+}
+
+// host_kind is server state, never client input: it is not an input field, and an
+// unknown host records nothing.
+func TestReenrolmentHostKindIsNeverClientInput(t *testing.T) {
+	a := newAEnv(t)
+	begin := a.mustInv(a.user(), "auth.totp_reenroll_begin", "").Out.(ReenrollBeginOut)
+	seed, _ := b32().DecodeString(begin.Secret)
+	a.clk.Add(31 * time.Second)
+	actor := actions.UserSessionActor(strconv.FormatInt(a.uid, 10), a.public, actions.ScopeAdmin, a.clk.Now().Add(time.Minute))
+	code := TOTPCode(seed, TOTPCounter(a.clk.Now()))
+	// A client cannot send it.
+	if _, err := a.inv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q,"host_kind":"localhost"}`, begin.EnrollmentID, code)); !errors.Is(err, actions.ErrInvalidInput) {
+		t.Fatalf("host_kind was accepted as input: %v", err)
+	}
+	var before string
+	a.st.R.QueryRow(`SELECT totp_enrolled_host FROM users`).Scan(&before)
+	// No Host on the call: the column is left alone.
+	a.mustInv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q}`, begin.EnrollmentID, code))
+	var after string
+	a.st.R.QueryRow(`SELECT totp_enrolled_host FROM users`).Scan(&after)
+	if after != before || after != "ip" {
+		t.Errorf("host recorded without a Host: %q -> %q", before, after)
+	}
+}
+
+// Typos while re-enrolling are not second-factor failures for the sign-in notice.
+func TestReenrolmentTyposAreNotSignInFailures(t *testing.T) {
+	a := newAEnv(t)
+	begin := a.mustInv(a.user(), "auth.totp_reenroll_begin", "").Out.(ReenrollBeginOut)
+	a.clk.Add(31 * time.Second)
+	actor := actions.UserSessionActor(strconv.FormatInt(a.uid, 10), a.public, actions.ScopeAdmin, a.clk.Now().Add(time.Minute))
+	for i := 0; i < 3; i++ {
+		a.inv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":"000000"}`, begin.EnrollmentID))
+	}
+	var fails int
+	a.st.R.QueryRow(`SELECT totp_fail_since_login FROM users`).Scan(&fails)
+	if fails != 0 {
+		t.Errorf("%d failures counted for re-enrolment typos", fails)
+	}
+}
+
+func TestSessionsRevokeAllOthersNeedsToKnowTheCallersSession(t *testing.T) {
+	a := newAEnv(t)
+	a.newSessionFor(a.uid)
+	noSession := actions.UserActor(strconv.FormatInt(a.uid, 10), actions.ScopeAdmin, a.clk.Now().Add(time.Hour))
+	before := a.count(`SELECT count(*) FROM sessions`)
+	if _, err := a.inv(noSession, "auth.sessions_revoke", `{"all_others":true}`); err == nil {
+		t.Fatal("all_others ran without a session id")
+	}
+	if a.count(`SELECT count(*) FROM sessions`) != before {
+		t.Fatal("sessions were deleted")
+	}
+}
+
+// Revoked or long-expired token rows are pruned when a token is created (100 at a time).
+func TestTokenCreatePrunesOldRows(t *testing.T) {
+	a := newAEnv(t)
+	now := a.clk.Now().Unix()
+	day := int64(86400)
+	for i := 0; i < 130; i++ { // revoked 40 days ago
+		a.st.W.Exec(`INSERT INTO api_tokens (user_id, name, prefix, hash, scope, created_at, expires_at, revoked_at) VALUES (?, 'old', 'p', ?, 'read', 1, ?, ?)`, a.uid, []byte(fmt.Sprint("r", i)), now+100*day, now-40*day)
+	}
+	a.st.W.Exec(`INSERT INTO api_tokens (user_id, name, prefix, hash, scope, created_at, expires_at) VALUES (?, 'expired-long-ago', 'p', x'aa', 'read', 1, ?)`, a.uid, now-40*day)
+	a.st.W.Exec(`INSERT INTO api_tokens (user_id, name, prefix, hash, scope, created_at, expires_at, revoked_at) VALUES (?, 'revoked-recently', 'p', x'bb', 'read', 1, ?, ?)`, a.uid, now+100*day, now-5*day)
+	a.st.W.Exec(`INSERT INTO api_tokens (user_id, name, prefix, hash, scope, created_at, expires_at) VALUES (?, 'expired-recently', 'p', x'cc', 'read', 1, ?)`, a.uid, now-5*day)
+	live := a.createToken("read", 30)
+	if n := a.count(`SELECT count(*) FROM api_tokens WHERE name = 'old'`); n != 131-100-1 && n != 30 {
+		// 131 old candidates (130 revoked + 1 expired), 100 removed by the first create
+		t.Logf("old rows left: %d", n)
+	}
+	if n := a.count(`SELECT count(*) FROM api_tokens WHERE name IN ('old', 'expired-long-ago')`); n != 31 {
+		t.Errorf("%d long-dead rows left after one create, want 31 (100 of 131 pruned)", n)
+	}
+	a.createToken("read", 30)
+	if n := a.count(`SELECT count(*) FROM api_tokens WHERE name IN ('old', 'expired-long-ago')`); n != 0 {
+		t.Errorf("%d long-dead rows left after two creates", n)
+	}
+	for _, kept := range []string{"revoked-recently", "expired-recently", "ci"} {
+		if a.count(`SELECT count(*) FROM api_tokens WHERE name = ?`, kept) == 0 {
+			t.Errorf("%s was pruned", kept)
+		}
+	}
+	if _, err := a.s.VerifyToken(ctx, live.Token); err != nil {
+		t.Errorf("a live token was pruned: %v", err)
 	}
 }

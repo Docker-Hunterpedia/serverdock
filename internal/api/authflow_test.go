@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
@@ -1045,5 +1047,50 @@ func TestAuthAuditRowsIntentThenOutcome(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %v", want, got)
 		}
+	}
+}
+
+// The sign-in and the password-change action share ONE account-password limiter:
+// wrong current passwords block the next login of that user, and wrong login
+// passwords block password_change.
+func TestPasswordChangeAndLoginShareTheAccountLimiter(t *testing.T) {
+	f := newFlow(t)
+	f.setup()
+	reg := actions.New(f.aud, slog.New(slog.NewTextHandler(f.logs, nil)), actions.WithClock(f.clk.Now))
+	auth.RegisterAuthActions(reg, f.as, auth.ActionDeps{Hasher: auth.NewHasher(), PasswordGate: f.lim.AccountPassword})
+	sess, err := f.as.ListSessions(context.Background(), f.userID)
+	if err != nil || len(sess) != 1 {
+		t.Fatal(err, len(sess))
+	}
+	actor := actions.UserSessionActor(strconv.FormatInt(f.userID, 10), sess[0].PublicID, actions.ScopeAdmin, f.clk.Now().Add(time.Hour))
+	change := func(cur string) error {
+		_, err := reg.Invoke(context.Background(), actor, "auth.password_change",
+			[]byte(fmt.Sprintf(`{"current_password":%q,"new_password":"a brand new passphrase"}`, cur)), actions.Options{})
+		return err
+	}
+	// Eleven wrong current passwords (10 are free) start the block...
+	for i := 0; i < 11; i++ {
+		if err := change(fmt.Sprintf("wrong guess number %d", i)); !errors.Is(err, auth.ErrWrongPassword) {
+			t.Fatalf("guess %d: %v", i, err)
+		}
+	}
+	// ...which the sign-in sees: even the right password is a 429 from a new IP.
+	if r := f.client("192.0.2.77").do("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": testPassword}); r.Code != 429 {
+		t.Fatalf("login after wrong current passwords: %d %s", r.Code, r.Raw)
+	}
+	// The reverse, on a fresh server: wrong login passwords block password_change.
+	g := newFlow(t)
+	g.setup()
+	greg := actions.New(g.aud, slog.New(slog.NewTextHandler(g.logs, nil)), actions.WithClock(g.clk.Now))
+	auth.RegisterAuthActions(greg, g.as, auth.ActionDeps{Hasher: auth.NewHasher(), PasswordGate: g.lim.AccountPassword})
+	gsess, _ := g.as.ListSessions(context.Background(), g.userID)
+	gactor := actions.UserSessionActor(strconv.FormatInt(g.userID, 10), gsess[0].PublicID, actions.ScopeAdmin, g.clk.Now().Add(time.Hour))
+	for i := 0; i < 11; i++ {
+		g.client(fmt.Sprintf("192.0.2.%d", 10+i)).do("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "wrong password!!"})
+	}
+	_, err = greg.Invoke(context.Background(), gactor, "auth.password_change",
+		[]byte(fmt.Sprintf(`{"current_password":%q,"new_password":"a brand new passphrase"}`, testPassword)), actions.Options{})
+	if !errors.Is(err, auth.ErrRateLimited) {
+		t.Fatalf("password_change after wrong logins: %v", err)
 	}
 }

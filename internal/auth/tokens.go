@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -97,6 +96,12 @@ func (s *Store) CreateToken(ctx context.Context, userID int64, name, scope strin
 	now := s.now()
 	t := APIToken{Name: name, Prefix: raw[:prefixLen], Scope: scope, CreatedAt: now, ExpiresAt: now.Add(time.Duration(days) * 24 * time.Hour)}
 	err = s.write(ctx, func(tx *sql.Tx) error {
+		// Lazy cleanup, no timer: drop up to 100 tokens that were revoked or have
+		// been expired for more than 30 days.
+		cutoff := now.Add(-30 * 24 * time.Hour).Unix()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE id IN (SELECT id FROM api_tokens WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ? LIMIT 100)`, cutoff, cutoff); err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO api_tokens (user_id, name, prefix, hash, scope, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			userID, name, t.Prefix, hashSecret(secret), scope, now.Unix(), t.ExpiresAt.Unix())
 		if err != nil {
@@ -121,20 +126,19 @@ func (s *Store) VerifyToken(ctx context.Context, token string) (TokenCheck, erro
 	}
 	h := hashSecret(token)
 	var (
-		stored            []byte
 		expires           int64
 		lastUsed, revoked sql.NullInt64
 	)
-	err := s.st.R.QueryRowContext(ctx, `SELECT t.id, t.user_id, t.scope, t.hash, t.expires_at, t.last_used_at, t.revoked_at FROM api_tokens t
+	err := s.st.R.QueryRowContext(ctx, `SELECT t.id, t.user_id, t.scope, t.expires_at, t.last_used_at, t.revoked_at FROM api_tokens t
 		WHERE t.hash = ? AND t.user_id IN (SELECT id FROM users WHERE password_hash IS NOT NULL AND totp_confirmed_at IS NOT NULL)`, h).
-		Scan(&c.ID, &c.UserID, &c.Scope, &stored, &expires, &lastUsed, &revoked)
+		Scan(&c.ID, &c.UserID, &c.Scope, &expires, &lastUsed, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TokenCheck{}, ErrBadAPIToken
 	}
 	if err != nil {
 		return TokenCheck{}, err
 	}
-	if subtle.ConstantTimeCompare(stored, h) != 1 || revoked.Valid {
+	if revoked.Valid {
 		return TokenCheck{}, ErrBadAPIToken
 	}
 	now := s.now()

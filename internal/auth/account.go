@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -117,7 +118,7 @@ func (s *Store) ReenrollConfirm(ctx context.Context, userID int64, enrollmentID,
 	switch hostKind {
 	case "ip", "localhost", "name":
 	default:
-		hostKind = "name"
+		hostKind = "" // unknown (no Host on the request): record nothing
 	}
 	if len(enrollmentID) > maxTokenInput {
 		return 0, 0, ErrEnrollmentReplaced
@@ -131,7 +132,7 @@ func (s *Store) ReenrollConfirm(ctx context.Context, userID int64, enrollmentID,
 			Scan(&pending, &enrollHash, &expires, &tries); err != nil {
 			return err
 		}
-		if pending == nil || enrollHash == nil || string(enrollHash) != string(hashSecret(enrollmentID)) {
+		if pending == nil || enrollHash == nil || subtle.ConstantTimeCompare(enrollHash, hashSecret(enrollmentID)) != 1 {
 			return ErrEnrollmentReplaced
 		}
 		if !expires.Valid || now >= expires.Int64 || tries <= 0 {
@@ -152,10 +153,12 @@ func (s *Store) ReenrollConfirm(ctx context.Context, userID int64, enrollmentID,
 		return 0, 0, err
 	}
 	discard := func() {
-		_ = s.write(ctx, func(tx *sql.Tx) error {
+		if err := s.write(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE users SET totp_pending_seed = NULL, totp_pending_expires_at = NULL, totp_pending_enrollment_hash = NULL, totp_pending_tries = 0 WHERE id = ? AND totp_pending_enrollment_hash = ?`, userID, enrollHash)
 			return err
-		})
+		}); err != nil {
+			s.warnOncePerMinute("could not discard a used-up re-enrolment", "err", err.Error())
+		}
 	}
 	seed, err := s.openSeed("users", "totp_pending_seed", fmt.Sprintf("users/%d/totp_pending_seed", userID), pending)
 	if err != nil {
@@ -166,7 +169,8 @@ func (s *Store) ReenrollConfirm(ctx context.Context, userID int64, enrollmentID,
 		if tries <= 0 {
 			discard()
 		}
-		_ = s.RecordSecondFactorFailure(ctx, userID, "")
+		// A typo here is not a second-factor failure for the sign-in notice: the user
+		// is signed in already, and the 5 tries bound the guessing.
 		return 0, 0, &ReenrollError{Err: ErrBadCode, TriesLeft: tries}
 	}
 	sealed, err := s.box.Seal(fmt.Sprintf("users/%d/totp_seed", userID), seed)
@@ -174,7 +178,7 @@ func (s *Store) ReenrollConfirm(ctx context.Context, userID int64, enrollmentID,
 		return 0, 0, err
 	}
 	err = s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE users SET totp_seed = ?, totp_last_counter = ?, totp_enrolled_host = ?, totp_confirmed_at = ?,
+		res, err := tx.ExecContext(ctx, `UPDATE users SET totp_seed = ?, totp_last_counter = ?, totp_enrolled_host = COALESCE(NULLIF(?, ''), totp_enrolled_host), totp_confirmed_at = ?,
 			totp_pending_seed = NULL, totp_pending_expires_at = NULL, totp_pending_enrollment_hash = NULL, totp_pending_tries = 0
 			WHERE id = ? AND totp_pending_enrollment_hash = ? AND password_hash IS NOT NULL`, sealed, counter, hostKind, now, userID, enrollHash)
 		if err != nil {

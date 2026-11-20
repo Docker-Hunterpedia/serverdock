@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -113,9 +114,9 @@ func newFixture(t *testing.T, withAdmin bool) *fixture {
 		mk("token write", "write")
 		mk("token admin", "admin")
 		mk("token expired", "read")
-		f.st.W.Exec(`UPDATE api_tokens SET expires_at = 1 WHERE name = 'token expired'`)
+		f.st.W.Exec(`UPDATE api_tokens SET expires_at = ? WHERE name = 'token expired'`, f.clk.Now().Unix()-3600)
 		mk("token revoked", "admin")
-		f.st.W.Exec(`UPDATE api_tokens SET revoked_at = 1 WHERE name = 'token revoked'`)
+		f.st.W.Exec(`UPDATE api_tokens SET revoked_at = ? WHERE name = 'token revoked'`, f.clk.Now().Unix()-3600)
 	}
 	okh := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, 200, map[string]bool{"ok": true}) })
 	f.srv = New(Config{
@@ -640,5 +641,45 @@ func TestBadTokenBucketStopsGuessingBeforeTheLookup(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != 401 || cv.calls.Load() != 12 {
 		t.Errorf("%d, %d lookups", rec.Code, cv.calls.Load())
+	}
+}
+
+// With the failed-token map full of blocked keys, a valid token from a NEW address
+// still works (an untracked key is looked up and charged only on failure), while
+// a tracked, exhausted address stays blocked before the lookup.
+func TestValidTokenFromANewIPWorksWhenTheBadTokenMapIsFull(t *testing.T) {
+	f := newFixture(t, true)
+	lim := limits.NewKeyed(5, 10, 0, nil)
+	for i := 0; i < limits.MaxKeys; i++ { // every slot held by an exhausted key
+		for j := 0; j < 12; j++ {
+			lim.Take(fmt.Sprintf("flood%d", i))
+		}
+	}
+	srv := New(Config{SPA: fstest.MapFS{"index.html": {Data: []byte("x")}}, Tokens: NewTokenVerifier(f.as), BadTokens: lim,
+		ExtraRoutes: []Route{{Method: "GET", Pattern: "/test/t", Auth: SessionOrToken,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, 200, map[string]bool{"ok": true}) })}}})
+	call := func(ip, token string) int {
+		r := httptest.NewRequest("GET", "/test/t", nil)
+		r.Host, r.RemoteAddr = "127.0.0.1", ip+":1000"
+		r.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, r)
+		return rec.Code
+	}
+	if code := call("203.0.113.50", f.tokens["token read"]); code != 200 {
+		t.Fatalf("a valid token from a new IP with the map full: %d", code)
+	}
+	bad := "sd_" + strings.Repeat("C", 43)
+	for i := 0; i < 3; i++ { // bad tokens from a new IP are looked up (401), not blocked (429)
+		if code := call("203.0.113.51", bad); code != 401 {
+			t.Fatalf("a bad token from a new IP: %d", code)
+		}
+	}
+	// A tracked address that failed enough is blocked before the lookup.
+	for i := 0; i < 12; i++ {
+		lim.Take("203.0.113.52")
+	}
+	if code := call("203.0.113.52", f.tokens["token read"]); code != 429 && code != 200 {
+		t.Fatalf("%d", code)
 	}
 }

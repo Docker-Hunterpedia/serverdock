@@ -27,6 +27,7 @@ type Actor struct {
 	mfaFreshUntil time.Time
 	boundTarget   string
 	session       string // the signed-in session's public id (user actors from REST)
+	hostKind      string // how the panel was reached: ip, localhost or name ("" when unknown)
 }
 
 // UserActor is a signed-in user session; mfaFreshUntil is when its fresh-2FA
@@ -42,6 +43,14 @@ func UserSessionActor(id, sessionPublicID string, scope Scope, mfaFreshUntil tim
 	a.session = sessionPublicID
 	return a
 }
+
+// WithHostKind returns the actor with how the panel was reached ("ip", "localhost"
+// or "name"), as the REST layer derives it from the request's Host. It is server
+// state, never client input (no action input field carries it).
+func (a Actor) WithHostKind(kind string) Actor { a.hostKind = kind; return a }
+
+// HostKind is how the panel was reached ("" when unknown).
+func (a Actor) HostKind() string { return a.hostKind }
 
 // TokenActor is an API token with a scope.
 func TokenActor(id string, scope Scope) Actor { return Actor{kind: KindToken, id: id, scope: scope} }

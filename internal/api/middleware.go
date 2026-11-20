@@ -361,7 +361,7 @@ func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, p *Princ
 	// The bad-token bucket is checked BEFORE the lookup: an attacker guessing
 	// tokens is stopped without touching the database.
 	ip := limits.ClientIP(r)
-	if blocked, wait := s.badTokens.Blocked(ip); blocked {
+	if blocked, wait := s.badTokens.BlockedIfTracked(ip); blocked {
 		tooMany(w, wait)
 		return nil, false
 	}

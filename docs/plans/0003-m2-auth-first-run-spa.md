@@ -598,8 +598,8 @@ Security-critical foundations first, then the auth core, then the HTTP surface, 
    - Reviewers: `reviewer`, `security` (required).
 
 9. **JSON Schema reflector, REST handler, OpenAPI 3.1.**
-   - Do: `schema.go`; `Info.OutputType`; the REST handler (dry-run and confirm headers, server-generated request id, envelope, errors, the hard-coded `audit.verify` limit); `openapi.json` route and golden; `make openapi`.
-   - Tests: schema goldens per kind; unsupported kinds error; every action reflects; golden up to date; `ConsoleOnly` absent and 404; `audit: "unrecorded"` on an injected outcome failure; the 3rd `audit.verify` in a minute → 429; error messages carry no sentinel.
+   - Do: `schema.go`; `Info.OutputType`; the REST handler (dry-run and confirm headers, server-generated request id, envelope, errors, the hard-coded `audit.verify` limit); **cookie clearing: REST clears `__Host-sd_session` after a successful `auth.password_change` or `auth.totp_reenroll_confirm` (they revoke the caller's own session), and after `auth.sessions_revoke` when it removed the caller's own session; REST builds the user actor with `UserSessionActor(...).WithHostKind(hostKind(r.Host))`, so `host_kind` is derived from `r.Host` and is never client input (a caller without a Host records nothing)**; `openapi.json` route and golden; `make openapi`.
+   - Tests: **the matrix rows check the clearing `Set-Cookie` for those three actions and its absence for every other action; `host_kind` in a request body is refused;** schema goldens per kind; unsupported kinds error; every action reflects; golden up to date; `ConsoleOnly` absent and 404; `audit: "unrecorded"` on an injected outcome failure; the 3rd `audit.verify` in a minute → 429; error messages carry no sentinel.
    - Footprint: QUICK S4 delta.
    - Reviewers: `reviewer`, `security`, `footprint`.
 
@@ -627,7 +627,7 @@ Security-critical foundations first, then the auth core, then the HTTP surface, 
     - Reviewers: `reviewer`, `accessibility` (required), `security`.
 
 13. **Settings › Security screen.**
-    - Do: the page with its sub-nav (Security only); fingerprint and dates (with the under-60-days warning); admin created; sessions and tokens (A9 tables/cards); create token with step-up, show once; revoke; change password; re-enrol 2FA; regenerate recovery codes; A8 dialogs.
+    - Do: the page with its sub-nav (Security only); fingerprint and dates (with the under-60-days warning); admin created; sessions and tokens (A9 tables/cards); create token with step-up, show once; revoke; change password; re-enrol 2FA; regenerate recovery codes; A8 dialogs. The password-change and re-enrolment dialogs show "Keep API tokens (only if you are rotating routinely, not after a suspected compromise)", unticked by default (`keep_tokens` defaults to false and is audited).
     - Screen states: page loaded (desktop table, phone cards); empty tokens list; create-token form and its errors; new token shown once; each confirmation dialog (revoke token, revoke session, revoke this device, sign out everywhere else, regenerate codes, change password, re-enrol); step-up prompt; certificate expiry warning.
     - Tests (all A5 projects): each flow end to end; dialogs name target and consequence, default focus on Cancel, Escape closes, focus moves to the next row after removal; after a password change the Signed-out screen gives the reason and the old token fails; a created token works from the test via `fetch` and is shown once; tables have `<caption>`/`<th scope>` and become cards below 768 px; absolute times with timezone; zero axe violations. **Exit item:** manual screen-reader pass, recorded in the PR.
     - Reviewers: `reviewer`, `accessibility` (required), `security`.

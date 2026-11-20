@@ -132,10 +132,8 @@ type ReenrollBeginOut struct {
 type ReenrollConfirmIn struct {
 	EnrollmentID string `json:"enrollment_id" sd:"secret"`
 	Code         string `json:"code" sd:"secret"`
-	// HostKind is how the panel was reached (ip, localhost or name); the REST
-	// layer sets it from the request, and M4 uses it to recommend re-enrolment.
-	HostKind   string `json:"host_kind,omitempty" sd:"audit"`
-	KeepTokens bool   `json:"keep_tokens,omitempty"`
+	// KeepTokens is deliberately untagged, so it is recorded in the audit row.
+	KeepTokens bool `json:"keep_tokens,omitempty" doc:"keep API tokens (only when rotating routinely, not after a suspected compromise)"`
 }
 
 // Validate implements actions.Validator.
@@ -293,7 +291,7 @@ func RegisterAuthActions(r *actions.Registry, s *Store, d ActionDeps) {
 			if err != nil {
 				return ChangedOut{}, err
 			}
-			sess, toks, err := s.ReenrollConfirm(ctx, uid, in.EnrollmentID, in.Code, in.HostKind, in.KeepTokens)
+			sess, toks, err := s.ReenrollConfirm(ctx, uid, in.EnrollmentID, in.Code, c.Actor.HostKind(), in.KeepTokens)
 			return ChangedOut{SessionsRevoked: sess, TokensRevoked: toks}, err
 		},
 	})
@@ -345,6 +343,9 @@ func RegisterAuthActions(r *actions.Registry, s *Store, d ActionDeps) {
 				return RevokedOut{}, err
 			}
 			if in.AllOthers {
+				if c.Actor.SessionID() == "" {
+					return RevokedOut{}, errors.New("all_others needs to know which session is the caller's")
+				}
 				n, err := s.RevokeOtherSessions(ctx, uid, c.Actor.SessionID())
 				return RevokedOut{Revoked: n}, err
 			}

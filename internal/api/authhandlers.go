@@ -124,23 +124,6 @@ func (a *authAPI) auditDown(w http.ResponseWriter) {
 	WriteError(w, http.StatusServiceUnavailable, "audit_unavailable", "the server is busy or the audit log is not writable; nothing was done")
 }
 
-// intentWait bounds the audit intent write: a stuck writer must not hold a
-// sign-in request open.
-const intentWait = 2 * time.Second
-
-// boundedIntent gives only the intent write a deadline; outcome writes use the
-// caller's context as before.
-type boundedIntent struct{ audit.Appender }
-
-func (b boundedIntent) Append(ctx context.Context, e audit.Entry) (int64, error) {
-	if e.Phase == audit.PhaseIntent {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, intentWait)
-		defer cancel()
-	}
-	return b.Appender.Append(ctx, e)
-}
-
 // checkIP applies the per-IP back-offs; it answers 429 and returns false when
 // blocked. known IPs (a full sign-in in the last 30 days) are admitted even when
 // the limiter maps are full.
@@ -220,7 +203,7 @@ func (a *authAPI) denied(ctx context.Context, action, username string, r *http.R
 // execute runs fn between an intent row and an outcome row (intent first: if the
 // intent cannot be written, fn is not run).
 func execute[T any](ctx context.Context, a *authAPI, actorKind, actorID, action, target string, args map[string]any, fn func(context.Context) (T, error)) (audit.Outcome[T], error) {
-	return audit.Execute(ctx, boundedIntent{a.Audit}, a.Log, redact.New(), audit.Entry{
+	return audit.Execute(ctx, a.Audit, a.Log, redact.New(), audit.Entry{
 		ActorKind: actorKind, ActorID: actorID, Action: action, Target: target, Risk: "mutate",
 		ArgsJSON: argsJSON(args), RequestID: newRequestID(),
 	}, fn)

@@ -345,7 +345,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	lim := api.NewLimits(nil)
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
-		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: api.NewLimits(nil), Log: log}),
+		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
 		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
 	})
 	started = true
