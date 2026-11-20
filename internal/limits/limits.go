@@ -57,27 +57,55 @@ func (k *Keyed) refill(b *bucket, now time.Time) {
 func (k *Keyed) Blocked(key string) (bool, time.Duration) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	now := k.now()
 	b, ok := k.m[key]
 	if !ok {
+		// Fail toward refusing: with the map full of blocked keys a new key cannot
+		// be tracked, so it is treated as blocked until a slot's block expires.
+		if len(k.m) >= k.maxKey && k.allBlocked(now) {
+			return true, k.untilFirstToken(now)
+		}
 		return false, 0
 	}
-	k.refill(b, k.now())
+	k.refill(b, now)
 	if b.tokens >= 1 {
 		return false, 0
 	}
 	return true, time.Duration((1 - b.tokens) / k.rate * float64(time.Second))
 }
 
+// allBlocked reports whether every tracked key is blocked. Caller holds mu.
+func (k *Keyed) allBlocked(now time.Time) bool {
+	for _, b := range k.m {
+		if k.tokensAt(b, now) >= 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// untilFirstToken is how long until the soonest blocked key gets a token.
+func (k *Keyed) untilFirstToken(now time.Time) time.Duration {
+	best := time.Duration(1<<62 - 1)
+	for _, b := range k.m {
+		if d := time.Duration((1 - k.tokensAt(b, now)) / k.rate * float64(time.Second)); d < best {
+			best = d
+		}
+	}
+	return max(best, time.Second)
+}
+
 // Take consumes one token, creating the key if needed. It reports whether a
-// token was available.
+// token was available. When the map is full of blocked keys a new key is
+// refused (false): a blocked bucket is never evicted to make room.
 func (k *Keyed) Take(key string) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := k.now()
 	b, ok := k.m[key]
 	if !ok {
-		if len(k.m) >= k.maxKey {
-			k.evict(now)
+		if len(k.m) >= k.maxKey && !k.evict(now) {
+			return false
 		}
 		b = &bucket{tokens: k.burst, last: now}
 		k.m[key] = b
@@ -90,26 +118,34 @@ func (k *Keyed) Take(key string) bool {
 	return true
 }
 
+// tokensAt is a bucket's token count at now, without touching it.
+func (k *Keyed) tokensAt(b *bucket, now time.Time) float64 {
+	return min(k.burst, b.tokens+max(0, now.Sub(b.last).Seconds())*k.rate)
+}
+
 // evict makes room: it drops every idle (full) bucket, and if none is idle the
-// least recently touched one. Caller holds mu.
-func (k *Keyed) evict(now time.Time) {
+// least recently touched bucket that is NOT blocked. A currently blocked bucket
+// is never evicted (that would hand its owner a fresh budget). It reports
+// whether room was made; false means every key is blocked. Caller holds mu.
+func (k *Keyed) evict(now time.Time) bool {
 	var oldest string
 	var oldestAt time.Time
 	freed := false
 	for key, b := range k.m {
-		// Read-only refill: the scan must not touch b.last, which is what orders them.
-		if min(k.burst, b.tokens+max(0, now.Sub(b.last).Seconds())*k.rate) >= k.burst {
+		t := k.tokensAt(b, now) // read-only: the scan must not touch b.last, which orders them
+		switch {
+		case t >= k.burst:
 			delete(k.m, key)
 			freed = true
-			continue
-		}
-		if oldest == "" || b.last.Before(oldestAt) {
+		case t >= 1 && (oldest == "" || b.last.Before(oldestAt)):
 			oldest, oldestAt = key, b.last
 		}
 	}
 	if !freed && oldest != "" {
 		delete(k.m, oldest)
+		freed = true
 	}
+	return freed
 }
 
 // Len returns the number of tracked keys.

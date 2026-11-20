@@ -68,23 +68,62 @@ func TestKeyedMapIsBounded(t *testing.T) {
 			clk.Add(time.Second)
 		}
 	}
-	// Idle keys (refilled to full) are dropped first, so a flood of one-shot keys
-	// does not push out a key that is genuinely being limited... until the map is
-	// entirely made of limited keys, where the least recent goes.
-	k2 := NewKeyed(0.001, 1, 8, clk.Now)
+}
+
+// A blocked bucket is never evicted (that would give its owner a fresh budget);
+// when the map is full of blocked keys a new key is refused and treated as blocked.
+func TestEvictionNeverDropsABlockedKey(t *testing.T) {
+	clk := &clock{t: time.Unix(5000, 0)}
+	k := NewKeyed(60, 1, 8, clk.Now) // burst 1, one token per second, 8 keys
 	for i := 0; i < 8; i++ {
-		k2.Take(fmt.Sprintf("hot%d", i)) // each drains its single token
+		if !k.Take(fmt.Sprintf("hot%d", i)) { // drains each key's only token
+			t.Fatalf("hot%d", i)
+		}
 		clk.Add(time.Millisecond)
 	}
-	k2.Take("new")
-	if k2.Len() != 8 {
-		t.Errorf("len %d", k2.Len())
+	for i := 0; i < 8; i++ {
+		if b, _ := k.Blocked(fmt.Sprintf("hot%d", i)); !b {
+			t.Fatalf("hot%d should be blocked", i)
+		}
 	}
-	if b, _ := k2.Blocked("hot0"); b {
-		t.Error("oldest key should have been evicted (it then looks fresh)")
+	// Every key blocked: a new key is refused, not squeezed in by evicting one.
+	if k.Take("new") {
+		t.Error("a new key was admitted while every slot is blocked")
 	}
-	if b, _ := k2.Blocked("hot7"); !b {
-		t.Error("recent limited key was evicted")
+	if b, wait := k.Blocked("new"); !b || wait < time.Second {
+		t.Errorf("an untrackable new key must be treated as blocked: %v %v", b, wait)
+	}
+	if k.Len() != 8 {
+		t.Errorf("len %d", k.Len())
+	}
+	for i := 0; i < 8; i++ {
+		if b, _ := k.Blocked(fmt.Sprintf("hot%d", i)); !b {
+			t.Errorf("hot%d lost its block", i)
+		}
+	}
+	// Some blocks expire: only the unblocked slots are reusable.
+	k2 := NewKeyed(60, 1, 4, clk.Now)
+	k2.Take("a0")
+	clk.Add(100 * time.Millisecond)
+	k2.Take("a1")
+	clk.Add(900 * time.Millisecond)
+	k2.Take("a2")
+	clk.Add(100 * time.Millisecond)
+	k2.Take("a3")
+	clk.Add(400 * time.Millisecond) // a0 and a1 are over a second old; a2 and a3 are not
+	if b, _ := k2.Blocked("a0"); b {
+		t.Fatal("a0 should have a token")
+	}
+	if b, _ := k2.Blocked("a3"); !b {
+		t.Fatal("a3 should still be blocked")
+	}
+	if !k2.Take("fresh") {
+		t.Fatal("a new key was refused although unblocked slots exist")
+	}
+	for _, key := range []string{"a2", "a3"} {
+		if b, _ := k2.Blocked(key); !b {
+			t.Errorf("%s was evicted while blocked", key)
+		}
 	}
 }
 

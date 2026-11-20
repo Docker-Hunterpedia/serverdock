@@ -225,7 +225,7 @@ func (h *Hub) Attach(ctx context.Context, id string, conn net.Conn, keepAlive ti
 // attach is Attach plus the peer's limiting key (an IP, never a token), used
 // only in log lines.
 func (h *Hub) attach(ctx context.Context, id, remote string, conn net.Conn, keepAlive time.Duration) error {
-	ys, err := yamux.Client(conn, agent.YamuxConfig(keepAlive))
+	ys, err := yamux.Client(agent.GuardPings(conn), agent.YamuxConfig(keepAlive))
 	if err != nil {
 		return fmt.Errorf("yamux client: %w", err)
 	}

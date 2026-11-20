@@ -197,7 +197,14 @@ func httpClient(cfg *ClientConfig) (*http.Client, error) {
 		}
 		tr.TLSClientConfig = tc
 	}
-	return &http.Client{Transport: tr}, nil
+	return &http.Client{
+		Transport: tr,
+		// The bearer token must go only where the operator pointed the agent: a
+		// redirect (even from a hub with a valid certificate) is refused.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("the hub answered with a redirect; refusing to follow it with the agent token")
+		},
+	}, nil
 }
 
 // explainDialError turns the two failures an operator can fix into one clear

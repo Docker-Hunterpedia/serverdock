@@ -39,6 +39,8 @@ func YamuxConfig(keepAlive time.Duration) *yamux.Config {
 	cfg.AcceptBacklog = 8
 	cfg.StreamOpenTimeout = 10 * time.Second
 	cfg.StreamCloseTimeout = 10 * time.Second
+	// Each answered ping holds a goroutine for up to this long (see GuardPings).
+	cfg.ConnectionWriteTimeout = 5 * time.Second
 	cfg.EnableKeepAlive = keepAlive > 0
 	if keepAlive > 0 {
 		cfg.KeepAliveInterval = keepAlive
@@ -58,7 +60,7 @@ type LogSource interface {
 // accepts streams from the control plane. keepAlive <= 0 disables keepalives
 // (used for the in-memory local pipe). It returns when the session ends.
 func ServeSession(ctx context.Context, conn net.Conn, logs LogSource, keepAlive time.Duration, log *slog.Logger) error {
-	sess, err := yamux.Server(conn, YamuxConfig(keepAlive))
+	sess, err := yamux.Server(GuardPings(conn), YamuxConfig(keepAlive))
 	if err != nil {
 		return fmt.Errorf("yamux server: %w", err)
 	}

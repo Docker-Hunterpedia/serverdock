@@ -3,11 +3,13 @@ package hub
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -278,5 +280,65 @@ func TestLogsWithCancelledContext(t *testing.T) {
 	}
 	if len(s.sem) != 0 {
 		t.Errorf("stream slots leaked: %d", len(s.sem))
+	}
+}
+
+// G1 regression (from the security review's scratch program): a peer that
+// sends yamux ping SYNs and never reads used to make yamux start a goroutine per
+// ping (640k goroutines and 2 GiB in one second). The hub now ends the session
+// past a few pings and the goroutine count stays bounded.
+func TestPingFloodEndsTheSessionAndGoroutinesStayBounded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := New(ctx, "", quiet)
+	hubEnd, agentEnd := net.Pipe()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = h.Attach(ctx, "flooder", hubEnd, agent.DefaultKeepAlive) }()
+	waitSession(t, h, "flooder", 0)
+	base := runtime.NumGoroutine()
+
+	var sent atomic.Int64
+	stop := make(chan struct{})
+	go func() {
+		hdr := make([]byte, 12)
+		hdr[1], hdr[3] = 2, 1 // typePing, flagSYN
+		buf := make([]byte, 0, 12*1000)
+		for i := 0; i < 1000; i++ {
+			binary.BigEndian.PutUint32(hdr[8:], uint32(i))
+			buf = append(buf, hdr...)
+		}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n, err := agentEnd.Write(buf) // never reads
+			sent.Add(int64(n / 12))
+			if err != nil {
+				return
+			}
+		}
+	}()
+	defer close(stop)
+
+	select {
+	case <-done: // Attach returns when the session ends
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the session survived a ping flood (%d pings sent, %d goroutines, base %d)", sent.Load(), runtime.NumGoroutine(), base)
+	}
+	if _, ok := h.Get("flooder"); ok {
+		t.Error("the flooding session is still registered")
+	}
+	// Let the few goroutines of the allowed pings drain, then check the bound.
+	deadline := time.Now().Add(8 * time.Second)
+	for runtime.NumGoroutine() > base+25 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if g := runtime.NumGoroutine(); g > base+25 {
+		t.Errorf("goroutines = %d (base %d): the flood leaked goroutines", g, base)
+	}
+	if sent.Load() > 5000 {
+		t.Errorf("%d pings were read before the session ended", sent.Load())
 	}
 }
