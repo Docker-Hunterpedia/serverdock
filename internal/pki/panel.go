@@ -103,11 +103,8 @@ func EnsurePanelLeaf(o PanelOptions) (*Panel, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(o.Dir, 0o700); err != nil {
-		return nil, fmt.Errorf("pki: %w", err)
-	}
-	if err := os.Chmod(o.Dir, 0o700); err != nil {
-		return nil, fmt.Errorf("pki: %w", err)
+	if err := ensurePKIDir(o.Dir); err != nil {
+		return nil, err
 	}
 	pemPath := filepath.Join(o.Dir, PanelFile)
 	fpPath := filepath.Join(o.Dir, PanelFingerprintFile)
@@ -153,8 +150,33 @@ func panelInfo(path string, c *x509.Certificate) *Panel {
 	return &Panel{CertFile: path, Fingerprint: PanelFingerprint(c.Raw), NotBefore: c.NotBefore, NotAfter: c.NotAfter}
 }
 
+// ensurePKIDir creates dir 0700, or accepts an existing one that is a directory
+// with no group or other bits. It never changes the mode of a directory it did
+// not create: a looser one is refused, as for DATA and DATA/keys.
+func ensurePKIDir(dir string) error {
+	st, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("pki: %w", err)
+		}
+		return os.Chmod(dir, 0o700) // created just now: exactly 0700 whatever the umask
+	}
+	if err != nil {
+		return fmt.Errorf("pki: %w", err)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("pki: %s is not a directory", dir)
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("pki: %s must not be accessible to group or others (mode %04o); chmod 700 %s", dir, st.Mode().Perm(), dir)
+	}
+	return nil
+}
+
 // hostsMarker is stored in the certificate subject so a changed --panel-host set
-// is noticed without any other state.
+// is noticed without any other state. With many or long names it can exceed the
+// 64-character guideline X.509 gives for an OU; Go and browsers accept it, and
+// it is not shown to users. If that ever causes trouble, hash the set instead.
 func hostsMarker(h sanSet) string {
 	all := append(append([]string{}, h.dns...), h.ip...)
 	sort.Strings(all)

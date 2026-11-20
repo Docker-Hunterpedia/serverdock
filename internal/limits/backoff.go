@@ -50,6 +50,11 @@ func NewBackoff(free int, base, max time.Duration, now func() time.Time) *Backof
 	if now == nil {
 		now = time.Now
 	}
+	if max > ForgetAfter {
+		// A block longer than the memory of failures would be forgotten while it is
+		// still running.
+		panic("limits: back-off cap exceeds ForgetAfter")
+	}
 	return &Backoff{m: map[string]*backoffEntry{}, free: free, base: base, max: max, maxKey: MaxKeys, now: now}
 }
 
@@ -119,6 +124,10 @@ func (b *Backoff) Len() int {
 	defer b.mu.Unlock()
 	return len(b.m)
 }
+
+// The scans below (hasRoom, makeRoom, untilSoonest) are O(n) over the map. They
+// run only when the map is full (at most 4096 keys, so a few microseconds) and
+// under the mutex; revisit with an ordered structure if MaxKeys ever grows.
 
 // hasRoom reports whether makeRoom would succeed, without changing anything.
 func (b *Backoff) hasRoom(now time.Time) bool {

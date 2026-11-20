@@ -268,10 +268,10 @@ func TestPanelConfig(t *testing.T) {
 
 	// :80: one redirect route, never a reverse proxy; Caddy logs at WARN.
 	routes := main["routes"].([]any)
-	if len(routes) != 1 {
+	if len(routes) != 2 { // an IPv6-literal route, then the default
 		t.Fatalf("main routes %v", routes)
 	}
-	r := routes[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	r := routes[1].(map[string]any)["handle"].([]any)[0].(map[string]any)
 	loc := r["headers"].(map[string]any)["Location"].([]any)[0]
 	if r["handler"] != "static_response" || r["status_code"] != float64(308) || loc != "https://{http.request.host}{http.request.uri}" {
 		t.Errorf("redirect %v", r)
@@ -284,7 +284,7 @@ func TestPanelConfig(t *testing.T) {
 	}
 
 	// A non-443 HTTPS port is part of Location.
-	r = build("127.0.0.1:8443")["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["main"].(map[string]any)["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	r = build("127.0.0.1:8443")["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["main"].(map[string]any)["routes"].([]any)[1].(map[string]any)["handle"].([]any)[0].(map[string]any)
 	if loc := r["headers"].(map[string]any)["Location"].([]any)[0]; loc != "https://{http.request.host}:8443{http.request.uri}" {
 		t.Errorf("Location %v", loc)
 	}

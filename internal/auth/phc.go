@@ -23,7 +23,7 @@ const (
 
 	// Upper bounds accepted when parsing a stored hash: a tampered database must
 	// not be able to make a login allocate gigabytes.
-	maxArgonMemoryKiB = 256 * 1024
+	maxArgonMemoryKiB = 64 * 1024
 	maxArgonTime      = 10
 	maxArgonThreads   = 8
 )

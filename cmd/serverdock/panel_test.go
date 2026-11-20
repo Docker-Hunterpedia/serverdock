@@ -232,3 +232,38 @@ func TestPanelFlags(t *testing.T) {
 		t.Error("a bad --panel-host was accepted")
 	}
 }
+
+// The :80 redirect with an IPv6 literal Host: the brackets must survive into
+// Location, or the browser is sent to an invalid URL.
+func TestPanelRedirectKeepsIPv6Brackets(t *testing.T) {
+	addrs, stop, _ := panelServer(t, newData(t))
+	defer stop()
+	c := insecureClient()
+	defer c.CloseIdleConnections()
+	_, httpsPort, _ := net.SplitHostPort(addrs.HTTPS)
+	for _, tc := range []struct{ host, want string }{
+		{"[2001:db8::1]", "https://[2001:db8::1]:" + httpsPort + "/p?q=1"},
+		{"[2001:db8::1]:80", "https://[2001:db8::1]:" + httpsPort + "/p?q=1"},
+		{"[::1]:8080", "https://[::1]:" + httpsPort + "/p?q=1"},
+		{"203.0.113.9:8080", "https://203.0.113.9:" + httpsPort + "/p?q=1"},
+		{"panel.example.com", "https://panel.example.com:" + httpsPort + "/p?q=1"},
+	} {
+		var resp *http.Response
+		var err error
+		for i := 0; i < 50; i++ {
+			req, _ := http.NewRequest("GET", "http://"+addrs.Listen+"/p?q=1", nil)
+			req.Host = tc.host
+			if resp, err = c.Do(req); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Location"); resp.StatusCode != 308 || got != tc.want {
+			t.Errorf("Host %q: %d Location %q, want %q", tc.host, resp.StatusCode, got, tc.want)
+		}
+	}
+}

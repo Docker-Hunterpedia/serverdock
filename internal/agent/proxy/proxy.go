@@ -139,12 +139,22 @@ func BuildConfig(c Config) ([]byte, error) {
 	} else {
 		// :80 only redirects; nothing on it reaches the control plane. The port in
 		// Location is the one of --https-listen as seen inside this process.
-		redirect := m{"handler": "static_response", "status_code": 308,
-			"headers": m{"Location": []string{"https://{http.request.host}" + c.Panel.redirectPort() + "{http.request.uri}"}}}
+		// {http.request.host} drops the port. For an IPv6 literal it has no brackets
+		// when the Host had a port ("[2001:db8::1]:80") and keeps them when it had
+		// none ("[2001:db8::1]"), so only the first form needs them put back.
+		redirect := func(hostExpr string) m {
+			return m{"handler": "static_response", "status_code": 308,
+				"headers": m{"Location": []string{"https://" + hostExpr + c.Panel.redirectPort() + "{http.request.uri}"}}}
+		}
+		ipv6 := m{"vars_regexp": m{"{http.request.host}": m{"pattern": "^[0-9a-fA-F:.]*:[0-9a-fA-F:.]*$"}}}
+		redirects := []m{
+			{"match": []m{ipv6}, "handle": []m{redirect("[{http.request.host}]")}, "terminal": true},
+			{"handle": []m{redirect("{http.request.host}")}},
+		}
 		httpApp["servers"] = m{
 			"main": limits(m{
 				"listen": []string{c.Listen},
-				"routes": []m{{"handle": []m{redirect}}},
+				"routes": redirects,
 			}),
 			"panel": limits(m{
 				"listen": []string{c.Panel.Listen},

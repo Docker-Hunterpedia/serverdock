@@ -292,3 +292,20 @@ func contains(l []string, s string) bool {
 	}
 	return false
 }
+
+func TestPanelRefusesALooserExistingPKIDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pki")
+	os.Mkdir(dir, 0o755)
+	os.Chmod(dir, 0o755)
+	now := time.Now()
+	var logs logBuf
+	if _, err := EnsurePanelLeaf(panelOpts(t, dir, &now, &logs)); err == nil || !strings.Contains(err.Error(), "chmod 700") {
+		t.Fatalf("%v", err)
+	}
+	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o755 {
+		t.Fatalf("the directory was changed to %v", st.Mode().Perm())
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("files written into a refused directory: %v", ents)
+	}
+}

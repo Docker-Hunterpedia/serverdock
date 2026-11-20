@@ -18,6 +18,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
+	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 	"github.com/Docker-Hunterpedia/serverdock/internal/testbin"
 )
 
@@ -166,7 +167,13 @@ func TestControlSocketConnectionCap(t *testing.T) {
 
 // Real Caddy in front of the socket: a client-supplied X-Forwarded-For never
 // reaches the handler. It sees exactly one value, the real peer.
-func TestForgedXFFOnSocketIgnoredByCaddy(t *testing.T) {
+func TestForgedXFFOnSocketIgnoredByCaddy(t *testing.T) { forgedXFF(t, false) }
+
+// The same through the production path: the HTTPS panel config (TLS on :443,
+// proxied to the socket), not the plain-HTTP one.
+func TestForgedXFFOnSocketIgnoredByCaddyOverHTTPS(t *testing.T) { forgedXFF(t, true) }
+
+func forgedXFF(t *testing.T, https bool) {
 	sock := shortSock(t)
 	ln, err := listenPrivateSocket(sock)
 	if err != nil {
@@ -187,7 +194,20 @@ func TestForgedXFFOnSocketIgnoredByCaddy(t *testing.T) {
 	defer func() { cancel(); <-done }()
 
 	listen := testbin.FreeAddr(t)
-	if err := proxy.Load(proxy.Config{DataDir: newData(t), Listen: listen, Upstream: proxy.UnixUpstream(sock)}); err != nil {
+	cfg := proxy.Config{DataDir: newData(t), Listen: listen, Upstream: proxy.UnixUpstream(sock)}
+	scheme, client := "http", http.DefaultClient
+	if https {
+		pkiDir := filepath.Join(newData(t), "pki")
+		leaf, err := pki.EnsurePanelLeaf(pki.PanelOptions{Dir: pkiDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpsAddr := testbin.FreeAddr(t)
+		cfg.Panel = &proxy.Panel{Listen: httpsAddr, CertFile: leaf.CertFile}
+		scheme, listen, client = "https", httpsAddr, insecureClient()
+		defer client.CloseIdleConnections()
+	}
+	if err := proxy.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	defer proxy.Stop()
@@ -205,11 +225,11 @@ func TestForgedXFFOnSocketIgnoredByCaddy(t *testing.T) {
 	for name, vals := range forged {
 		var resp *http.Response
 		for i := 0; i < 50; i++ { // Caddy may need a moment after Load
-			req, _ := http.NewRequest("GET", "http://"+listen+"/", nil)
+			req, _ := http.NewRequest("GET", scheme+"://"+listen+"/", nil)
 			for _, v := range vals {
 				req.Header.Add("X-Forwarded-For", v)
 			}
-			if resp, err = http.DefaultClient.Do(req); err == nil {
+			if resp, err = client.Do(req); err == nil {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)

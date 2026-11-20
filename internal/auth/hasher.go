@@ -85,10 +85,12 @@ func (h *Hasher) acquire(ctx context.Context) error {
 // returned to the OS from a new goroutine, so the response is never delayed by
 // it (SYS18: argon2's 19 MiB would otherwise stay in RSS until the next GC cycle).
 func (h *Hasher) release() {
-	<-h.slot
+	// Decide before freeing the slot: once it is free a queued caller may take it
+	// at once, and a decision taken afterwards would depend on that race.
 	h.mu.Lock()
 	idle := h.waiting == 0
 	h.mu.Unlock()
+	<-h.slot
 	if idle {
 		go h.freeMem()
 	}

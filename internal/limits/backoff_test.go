@@ -105,7 +105,9 @@ func TestBackoffEvictsUnblockedOldestFirst(t *testing.T) {
 	c.Add(time.Second)
 	b2.free = 100 // later keys are never blocked
 	b2.Fail("x", false)
+	c.Add(time.Second)
 	b2.Fail("y", false)
+	c.Add(time.Second)
 	b2.Fail("z", false)
 	if _, ok := b2.m["old-blocked"]; !ok {
 		t.Error("the oldest key was evicted although it is blocked")
@@ -133,7 +135,7 @@ func TestBackoffForgetsAfter24h(t *testing.T) {
 		t.Fatalf("not restarted from zero: %+v", b.m["k"])
 	}
 	// Entries past 24 h go first when room is needed, even blocked-looking ones.
-	b3 := NewBackoff(0, time.Hour, time.Hour*48, c.Now)
+	b3 := NewBackoff(0, time.Hour, time.Hour*12, c.Now)
 	b3.maxKey = 2
 	b3.Fail("stale", false)
 	b3.Fail("fresh", false)
@@ -282,4 +284,13 @@ func TestIPv6Slash48Bucket(t *testing.T) {
 	if ip48.Check(Key48(net.ParseIP("2001:db8:1:ffff::1")), false) == 0 {
 		t.Error("rotating /64s inside one /48 escaped the /48 limiter")
 	}
+}
+
+func TestBackoffCapMustNotExceedForgetAfter(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a cap over ForgetAfter was accepted")
+		}
+	}()
+	NewBackoff(1, time.Second, ForgetAfter+time.Second, nil)
 }
