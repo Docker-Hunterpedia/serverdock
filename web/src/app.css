@@ -1,0 +1,164 @@
+/* Global styles and design tokens. Components use only the custom properties
+   below: no hard-coded colours anywhere else (plan 0003, A4). */
+:root {
+	color-scheme: light dark;
+
+	--bg: #ffffff;
+	--surface: #f4f5f7;
+	--text: #1a1d21;
+	--muted: #4a5260;
+	--border: #6b7280;
+	--accent: #0b57d0;
+	--accent-text: #ffffff;
+	--focus: #0b57d0;
+	--focus-width: 3px;
+	--danger: #b3261e;
+
+	--bar-height: 3.5rem;
+	--target: 2.75rem; /* 44 px at the default size */
+	--scroll-padding-top: calc(var(--bar-height) + 1rem);
+	--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	--mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #14171c;
+		--surface: #1c2027;
+		--text: #e8eaed;
+		--muted: #b4bac4;
+		--border: #8a919d;
+		--accent: #8ab4f8;
+		--accent-text: #0b1b3a;
+		--focus: #8ab4f8;
+		--danger: #f2b8b5;
+	}
+}
+
+@media (prefers-contrast: more) {
+	:root {
+		--text: #000000;
+		--muted: #1a1d21;
+		--border: #000000;
+		--focus-width: 4px;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--text: #ffffff;
+			--muted: #ffffff;
+			--border: #ffffff;
+		}
+	}
+}
+
+@media (forced-colors: active) {
+	:root {
+		--bg: Canvas;
+		--surface: Canvas;
+		--text: CanvasText;
+		--muted: CanvasText;
+		--border: CanvasText;
+		--accent: LinkText;
+		--accent-text: Canvas;
+		--focus: Highlight;
+		--danger: CanvasText;
+	}
+	button,
+	.button {
+		border: 2px solid ButtonText;
+		background: ButtonFace;
+		color: ButtonText;
+	}
+	:focus-visible {
+		outline-color: Highlight;
+	}
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	scroll-padding-top: var(--scroll-padding-top);
+	scroll-behavior: smooth;
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font: 1rem/1.5 var(--font);
+}
+
+.app-root {
+	display: contents;
+}
+
+a {
+	color: var(--accent);
+	text-underline-offset: 0.15em;
+}
+
+/* SvelteKit's visually hidden route announcer (see vite.config.ts). */
+.sd-announcer {
+	position: absolute;
+	left: 0;
+	top: 0;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	overflow: hidden;
+	white-space: nowrap;
+	width: 1px;
+	height: 1px;
+}
+
+h1 {
+	font-size: 1.5rem;
+	line-height: 1.25;
+	margin: 0 0 1rem;
+}
+
+h1:focus {
+	outline: none; /* focused programmatically on route change; never a tab stop */
+}
+
+h2 {
+	font-size: 1.125rem;
+	margin: 0 0 0.5rem;
+}
+
+:focus-visible {
+	outline: var(--focus-width) solid var(--focus);
+	outline-offset: 2px;
+}
+
+button {
+	font: inherit;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	min-height: var(--target);
+	min-width: var(--target);
+	padding: 0.5rem 1rem;
+	cursor: pointer;
+}
+
+/* Reduced motion: nothing moves; at most an opacity fade of 100 ms or less. */
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0s !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0s !important;
+		scroll-behavior: auto !important;
+	}
+}

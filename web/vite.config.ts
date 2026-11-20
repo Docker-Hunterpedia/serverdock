@@ -2,6 +2,7 @@ import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { readFileSync } from 'node:fs';
+import type { Plugin } from 'vite';
 
 // SvelteKit 3 reads its configuration from here (there is no svelte.config.js).
 //
@@ -23,8 +24,29 @@ const key = process.env.VITE_DEV_KEY;
 const cert = process.env.VITE_DEV_CERT;
 const target = process.env.VITE_DEV_API ?? 'https://localhost:8443';
 
+// SvelteKit's route announcer (an aria-live element in its root component) carries
+// an inline style attribute, which our CSP (style-src 'self', no 'unsafe-inline')
+// blocks: the announced title would show on screen. This plugin swaps the attribute
+// for a class styled in src/app.css. It fails the build when the pinned SvelteKit's
+// markup changes, so an upgrade cannot silently reintroduce the violation.
+const ANNOUNCER_STYLE =
+	'style="position: absolute; left: 0; top: 0; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; width: 1px; height: 1px"';
+function announcerWithoutInlineStyle(): Plugin {
+	return {
+		name: 'serverdock-announcer-csp',
+		enforce: 'pre',
+		transform(code, id) {
+			if (!id.replaceAll('\\', '/').endsWith('@sveltejs/kit/src/runtime/components/root.svelte')) return;
+			if (!code.includes(ANNOUNCER_STYLE)) {
+				throw new Error("SvelteKit's route announcer markup changed: update announcerWithoutInlineStyle() in vite.config.ts");
+			}
+			return { code: code.replace(ANNOUNCER_STYLE, 'class="sd-announcer"'), map: null };
+		}
+	};
+}
+
 export default defineConfig({
-	plugins: [sveltekit(config)],
+	plugins: [announcerWithoutInlineStyle(), sveltekit(config)],
 	server: {
 		https: key && cert ? { key: readFileSync(key), cert: readFileSync(cert) } : undefined,
 		proxy: { '/api': { target, secure: false, changeOrigin: false } }

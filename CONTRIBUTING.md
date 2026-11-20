@@ -56,8 +56,9 @@ The single-page app lives in `web/` (SvelteKit, static output). Node (see `web/.
 
 - `make web` installs the pinned dependencies (`npm ci`), runs svelte-check and builds `web/build` (gzip twins, 250 KB JavaScript budget). `make build` then embeds it (`-tags spa`, `ui=spa`).
 - `make dev` runs a throwaway server and Vite over HTTPS (self-signed certificate) at https://localhost:5173, proxying `/api`. The Host allowlist and Origin rule are not loosened; `web/scripts/dev-proxy-check.sh` verifies that.
-- `make web-types` regenerates `web/src/lib/api/types.ts` from `docs/api/openapi.json`; CI fails if it is stale.
+- `make web-types` regenerates `web/src/lib/api-types.ts` from `docs/api/openapi.json`; CI fails if it is stale.
 - npm dependencies are pinned exactly and kept minimal; add one only with a plan that names it.
 - TypeScript is pinned to 6.x (SvelteKit's peer). `openapi-typescript` (codegen only, dev) declares a 5.x peer, so `package.json` has an explicit `overrides` entry that lets it use the same TypeScript; every `npm ci` reproduces that. Drop the override when the tool supports 6.
 - `npm audit --omit=dev` and `npm audit --audit-level=high` (dev included, since vite and its plugins write the shipped bundle) both run in CI.
 - Any future release workflow must build `web/build` itself from the checked-out commit (`npm ci --ignore-scripts && npm run build`). It must never download an artifact by run id or with a token, because a release must not embed a bundle it did not build.
+- `make e2e` runs the Playwright + axe suite (`web/e2e`) against `bin/serverdock` (so run `make web build` first; the first time, `cd web && npx playwright install chromium webkit`). It starts the binary on high ports with a temp data directory, does the first run through the API and checks every shell state in eight projects (desktop, phone, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit). Zero axe violations and zero CSP violations are required.

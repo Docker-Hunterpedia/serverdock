@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOVULNCHECK_VERSION := v1.10.0
 
-.PHONY: build test lint vuln fmt bench openapi web dev web-types
+.PHONY: build test lint vuln fmt bench openapi web dev web-types e2e
 # build embeds the real app when web/build exists (run `make web` first); without
 # it the binary has the placeholder page and `serverdock version` says ui=placeholder.
 build:
@@ -37,6 +37,11 @@ web:
 dev:
 	web/scripts/dev.sh
 
-# Regenerate web/src/lib/api/types.ts from the OpenAPI golden.
+# Regenerate web/src/lib/api-types.ts from the OpenAPI golden.
 web-types:
 	cd web && npm run types
+
+# Playwright + axe against bin/serverdock (run `make web build` first; first time:
+# cd web && npx playwright install chromium webkit).
+e2e:
+	cd web && npx playwright test
