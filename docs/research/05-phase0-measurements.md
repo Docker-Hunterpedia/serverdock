@@ -1,6 +1,6 @@
 # 05 — Phase 0 measurements
 
-Status: **CI done, VPS pending.** The full CI bench passed every gate on 2026-11-20. The required run on a real 1 GB VPS is still pending, so the Phase 0 exit criterion is not yet met.
+Status: **CI done; VPS run deferred.** The full CI bench passed every gate on 2026-11-20. No 1 GB VPS is available yet, so the maintainer deferred the real-VPS run to the Phase 1 exit (which already requires a fresh 1 GB VPS). Phase 0 exits on the CI numbers.
 
 Written by the implementer agent (AI), 2026-11-20, from plan 0001 steps 1-7. Not confirmed by the maintainer.
 
@@ -43,9 +43,9 @@ Binary gzip -9: 18.8 MB amd64, 16.9 MB arm64 (gate 40 MB): pass.
 
 Reading: anonymous memory (RssAnon) is only 7–11 MB in every scenario. The rest is file-backed pages of the shared binary, which matches the local run and the reasoning in ADR 0008. Embedded Caddy costs about +2.8 MB VmRSS (scenario 2 minus scenario 1, amd64). The slim agent should bring scenario 3 close to its 20 MB target mainly by shrinking RssFile.
 
-## Real 1 GB VPS (required exit): pending
+## Real 1 GB VPS: deferred to the Phase 1 exit
 
-Required exit criterion of Phase 0: one full bench run (3 runs per scenario, 2 min warm-up, 5 min idle) on a real 1 GB VPS. Not done.
+Decided by the maintainer on 2026-11-20: no 1 GB VPS is available yet. CI already runs every scenario in a container capped at 1 GB and 1 CPU on a real Linux kernel, which is the closest stand-in we have. The full bench (`bench/run.sh`, 3 runs, 2 min warm-up, 5 min idle) runs on a fresh 1 GB VPS as part of the Phase 1 exit, and its numbers get published there. A VPS result over budget reopens ADR 0004 and ADR 0008.
 
 ## ADR 0004 verdict: provisional
 

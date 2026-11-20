@@ -22,6 +22,7 @@ Goal: decisions locked and a skeleton that proves the footprint.
 - [ ] `docs/security.md` threat model reviewed by the `security` agent
 
 **Exit:** both spikes measured under budget (≤ 80 MB single node). If not, revisit ADR 0004 (Caddy container fallback).
+**Result (2026-11-20):** met in CI: single node 47.6 MB, remote node 44.1 MB, 0% idle CPU ([research/05](research/05-phase0-measurements.md)). The real 1 GB VPS run is deferred to the Phase 1 exit.
 
 ## Phase 1 — MVP: "Solo on one server"
 
@@ -51,7 +52,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
 - [ ] Accessible, phone-usable UI for all of the above
 
-**Exit:** fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
+**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 
 ## Phase 2 — Multi-server & builds
 
