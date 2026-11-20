@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -241,6 +242,9 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 	if err := checkFreeForm(inType, ""); err != nil {
 		mustf("%v", err)
 	}
+	if err := checkMarshalerSecrets(inType, map[reflect.Type]bool{}); err != nil {
+		mustf("%v", err)
+	}
 
 	a := &action{name: d.Name, summary: d.Summary, risk: d.Risk, scope: d.Scope, sensitive: d.Sensitive,
 		sessionOnly: d.SessionOnly, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
@@ -324,6 +328,59 @@ func checkFreeForm(t reflect.Type, path string) error {
 		}
 	}
 	return nil
+}
+
+var (
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
+)
+
+func marshals(t reflect.Type) bool {
+	p := reflect.PointerTo(t)
+	return t.Implements(jsonMarshalerType) || p.Implements(jsonMarshalerType) ||
+		t.Implements(textMarshalerType) || p.Implements(textMarshalerType)
+}
+
+// checkMarshalerSecrets rejects an input type that has a json.Marshaler or
+// encoding.TextMarshaler struct with an sd:"secret" field anywhere inside it.
+// Such a type encodes itself, so the audit row would record its own output and
+// the field-level redaction could not reach the secret.
+func checkMarshalerSecrets(t reflect.Type, seen map[reflect.Type]bool) error {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] {
+		return nil
+	}
+	seen[t] = true
+	if marshals(t) && hasSecretField(t, map[reflect.Type]bool{}) {
+		return fmt.Errorf("%s encodes itself (MarshalJSON or MarshalText) and has an sd:\"secret\" field inside it; its secrets could not be redacted from the audit row", t)
+	}
+	for i := 0; i < t.NumField(); i++ {
+		if err := checkMarshalerSecrets(t.Field(i).Type, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasSecretField reports whether t, or any struct reachable from it, has an
+// sd:"secret" field.
+func hasSecretField(t reflect.Type, seen map[reflect.Type]bool) bool {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] {
+		return false
+	}
+	seen[t] = true
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Tag.Get("sd") == redact.TagSecret || hasSecretField(f.Type, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 var rawMessage = reflect.TypeFor[json.RawMessage]()

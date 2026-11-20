@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustPanic(t *testing.T, name string, f func()) {
@@ -305,4 +306,59 @@ func TestWalkEveryAction(t *testing.T) {
 			t.Errorf("built-in %s missing", want)
 		}
 	}
+}
+
+// A type that encodes itself would be recorded as it marshals, bypassing the
+// field-level redaction, so a secret inside one is refused at Register.
+type cred struct {
+	User string `json:"user"`
+	Pass string `json:"pass" sd:"secret"`
+}
+
+func (c cred) MarshalJSON() ([]byte, error) { // value receiver: the reviewer's reproduction
+	return json.Marshal(map[string]string{"user": c.User, "pass": c.Pass})
+}
+
+type ptrCred struct {
+	Pass string `sd:"secret"`
+}
+
+func (c *ptrCred) MarshalText() ([]byte, error) { return []byte(c.Pass), nil }
+
+type wrapsCred struct {
+	Name  string
+	Creds []cred
+}
+
+func (wrapsCred) Validate() error { return nil }
+
+type deepCred struct {
+	Outer struct{ Inner map[string]*ptrCred }
+}
+
+func (deepCred) Validate() error { return nil }
+
+type safeMarshaler struct {
+	When time.Time // marshals itself, but holds no secret
+	Name string
+}
+
+func (safeMarshaler) Validate() error { return nil }
+
+func TestRegisterRefusesASecretInsideASelfMarshallingType(t *testing.T) {
+	mustPanic(t, "value-receiver MarshalJSON", func() {
+		Register(newReg(t), Def[wrapsCred, string]{Name: "t.cred", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[wrapsCred]})
+	})
+	mustPanic(t, "pointer-receiver MarshalText, nested in a map in a struct", func() {
+		Register(newReg(t), Def[deepCred, string]{Name: "t.deepcred", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[deepCred]})
+	})
+	// A marshaler without secrets (time.Time) is fine.
+	Register(newReg(t), Def[safeMarshaler, string]{Name: "t.safe", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[safeMarshaler]})
+	// And the message says why.
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "encodes itself") {
+			t.Errorf("panic message: %v", r)
+		}
+	}()
+	Register(newReg(t), Def[wrapsCred, string]{Name: "t.cred2", Summary: "x", Risk: RiskRead, Scope: ScopeRead, Execute: exec0[wrapsCred]})
 }
