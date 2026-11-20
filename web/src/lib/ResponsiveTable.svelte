@@ -35,9 +35,9 @@
 			{/each}
 		</tbody>
 	</table>
-	<ul class="cards" aria-label={caption}>
+	<ul class="cards" role="list" aria-label={caption}>
 		{#each rows as r (rowKey(r))}
-			<li data-row={rowKey(r)}>
+			<li role="listitem" data-row={rowKey(r)}>
 				<p class="card-title">{@render cell(r, columns[0].key)}</p>
 				<dl>
 					{#each columns.slice(1) as c (c.key)}

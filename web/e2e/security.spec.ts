@@ -8,7 +8,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const url = (s: TestServer, path: string) => s.baseURL + path;
 const isPhone = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
 const h1 = (page: Page, name: string) => page.getByRole('heading', { level: 1, name });
-const status = (page: Page) => page.getByRole('status');
+const status = (page: Page) => page.locator('.alerts [role="status"]'); // the page's one status region (the certificate has its own)
 const alert = (page: Page) => page.getByRole('alert');
 const dialog = (page: Page, name: string | RegExp) => page.getByRole('dialog', { name });
 const ABSOLUTE = /\d{4}-\d\d-\d\d \d\d:\d\d UTC/;
@@ -196,12 +196,13 @@ test.describe('API tokens', () => {
 
 		// It is listed (prefix only) and gone from the page once hidden or reloaded.
 		await page.getByRole('button', { name: 'I have copied it, hide it' }).click();
+		await expect(page.getByRole('heading', { level: 2, name: 'API tokens' })).toBeFocused(); // the button is gone: focus goes to the section
 		await expect(page.locator('body')).not.toContainText(token);
 		await page.reload();
 		await expect(page.getByRole('heading', { level: 2, name: 'API tokens' })).toBeVisible();
 		await expect(page.locator('body')).not.toContainText(token);
 		const prefix = ((await page.locator('code', { hasText: '…' }).first().textContent()) ?? '').replace('…', '');
-		expect(token.includes(prefix) && prefix.length >= 6 && prefix.length < token.length / 2).toBe(true); // only the prefix is ever listed
+		expect(prefix.startsWith('sd_') && token.startsWith(prefix.slice(3, -1)) === false && token.includes(prefix.slice(3, -1)) && prefix.length < token.length / 2).toBe(true); // only the prefix is ever listed
 		await expect(page.getByText('● Active').locator('visible=true').first()).toBeVisible();
 		if (!isPhone(page)) {
 			const table = page.getByRole('table', { name: 'API tokens' });
@@ -214,7 +215,7 @@ test.describe('API tokens', () => {
 		await page.getByRole('button', { name: /^Revoke token backup script/ }).click();
 		const d = dialog(page, 'Revoke this token?');
 		await expect(d).toContainText('"backup script"');
-		await expect(d).toContainText(token.slice(3, 11)); // the prefix, never the token
+		await expect(d).toContainText('sd_' + token.slice(3, 11)); // the prefix, never the token
 		await expect(d).toContainText('This cannot be undone.');
 		await expect(d.getByRole('button', { name: 'Cancel' })).toBeFocused();
 		await d.getByRole('button', { name: 'Revoke token' }).click();
@@ -302,7 +303,7 @@ test.describe('sensitive changes', () => {
 		await page.getByRole('button', { name: 'I have copied it, hide it' }).click();
 		const keep = page.getByLabel('Keep API tokens').first();
 		await expect(keep).not.toBeChecked();
-		await expect(page.getByText('Keep API tokens (only if you are rotating routinely, not after a suspected compromise)').first()).toBeVisible();
+		await expect(page.getByText('Tick this only if you are rotating routinely, not after a suspected compromise.').first()).toBeVisible();
 
 		await page.getByLabel('Current password').fill('definitely the wrong password');
 		await page.getByLabel('New password').fill('a brand new long password');
@@ -361,7 +362,7 @@ test.describe('sensitive changes', () => {
 		await expect(qr).toBeVisible();
 		expect(await qr.getAttribute('aria-label')).not.toContain(secret);
 		expect(await key.evaluate((k, q) => !!(k.compareDocumentPosition(q!) & Node.DOCUMENT_POSITION_FOLLOWING), await qr.elementHandle())).toBe(true);
-		await expect(page.getByText('Keep API tokens (only if you are rotating routinely, not after a suspected compromise)').first()).toBeVisible();
+		await expect(page.getByText('Tick this only if you are rotating routinely, not after a suspected compromise.').first()).toBeVisible();
 		await expect(page.getByLabel('Keep API tokens').last()).not.toBeChecked();
 		await expectNoAxeViolations(page, 're-enrol');
 
@@ -392,5 +393,168 @@ test.describe('sizes', () => {
 			const b = (await dialog(page, 'Sign out this device?').getByRole('button', { name }).boundingBox())!;
 			expect(b.height, name).toBeGreaterThanOrEqual(44);
 		}
+	});
+});
+
+test.describe('step 13 review fixes', () => {
+	test('an unrecorded audit outcome is a warning alert, and it follows a session-ending change to Signed-out', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		await createToken(page, 'audited');
+		await page.getByRole('button', { name: 'I have copied it, hide it' }).click();
+		const unrecorded = (route: import('@playwright/test').Route) =>
+			route.fetch().then(async (res) => route.fulfill({ response: res, json: { ...(await res.json()), audit: 'unrecorded' } }));
+		await page.route('**/api/v1/actions/tokens.revoke', unrecorded);
+		await page.getByRole('button', { name: /^Revoke token audited/ }).click();
+		await dialog(page, 'Revoke this token?').getByRole('button', { name: 'Revoke token' }).click();
+		await expect(alert(page)).toContainText('audit record could not be written');
+		await expect(alert(page)).toBeFocused();
+		await expectNoAxeViolations(page, 'unrecorded audit warning');
+
+		await page.route('**/api/v1/actions/auth.password_change', unrecorded);
+		await page.getByLabel('Current password').fill(PASSWORD);
+		await page.getByLabel('New password').fill('a brand new long password');
+		await page.getByRole('button', { name: 'Change password…' }).click();
+		await dialog(page, 'Change the password?').getByRole('button', { name: 'Change password and sign out' }).click();
+		await expect(page).toHaveURL(/\/signed-out\?reason=credentials$/);
+		await expect(page.getByRole('alert')).toContainText('audit record for the change that signed you out could not be written');
+		await expectNoAxeViolations(page, 'signed out with an audit warning');
+	});
+
+	test('the dialog is named by its new title the moment it opens', async ({ page, server, admin }) => {
+		await signIn(page, server, admin, 0);
+		await signInWithRecoveryCode(server, admin.recoveryCodes[1]);
+		await openSecurity(page, server);
+		await page.getByRole('button', { name: /^Sign out session from/ }).click();
+		await expect(page.getByRole('dialog')).toHaveAccessibleName('Sign out this session?');
+		await page.keyboard.press('Escape');
+		await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+		await expect(page.getByRole('dialog')).toHaveAccessibleName('Make new recovery codes?');
+		await expect(page.getByRole('dialog')).toHaveAccessibleDescription(/unused codes will stop working/);
+	});
+
+	test('the step-up error belongs to the field; 401 and 429 are mapped', async ({ page, server, admin }) => {
+		await signIn(page, server, admin, 0);
+		await openSecurity(page, server);
+		server.sql('UPDATE sessions SET mfa_fresh_until = 1');
+		await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+		await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
+		const step = dialog(page, 'Confirm it is you');
+		const field = step.getByLabel('Code from your authenticator');
+		await field.fill('000000');
+		await step.getByRole('button', { name: 'Confirm' }).click();
+		await expect(field).toHaveAttribute('aria-invalid', 'true');
+		expect(await field.getAttribute('aria-describedby')).toContain('stepup-code-error');
+		await expect(step.getByRole('alert')).toHaveCount(0); // one announcement path, no double alert
+		await expect(field).toBeFocused();
+		// 429: the coarse countdown, and the button is aria-disabled.
+		await page.route('**/api/v1/auth/reauth', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '90' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
+		await field.fill('111111');
+		await step.getByRole('button', { name: 'Confirm' }).click();
+		await expect(step.getByText(/^Try again in \d+:\d\d$/)).toBeVisible();
+		await expect(step.getByRole('button', { name: 'Confirm' })).toHaveAttribute('aria-disabled', 'true');
+		// A 401 that is not "revoked" uses the ordinary reason.
+		await page.unroute('**/api/v1/auth/reauth');
+		await page.route('**/api/v1/auth/reauth', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: '{"error":{"code":"idle_expired","message":"x","request_id":"r"}}' }));
+		await step.getByRole('button', { name: 'Cancel' }).click();
+	});
+
+	test('step-up 401 with code revoked says step_up; any other 401 uses its own reason', async ({ page, server, admin }) => {
+		for (const [code, reason] of [['revoked', 'step_up'], ['idle_expired', 'idle']]) {
+			server.sql('DELETE FROM sessions');
+			const state = await signInWithRecoveryCode(server, admin.recoveryCodes[code === 'revoked' ? 0 : 1]);
+			await page.context().clearCookies();
+			await page.context().addCookies(state.cookies);
+			await openSecurity(page, server);
+			server.sql('UPDATE sessions SET mfa_fresh_until = 1');
+			await page.route('**/api/v1/auth/reauth', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code, message: 'x', request_id: 'r' } }) }));
+			await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+			await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
+			const step = dialog(page, 'Confirm it is you');
+			await step.getByLabel('Code from your authenticator').fill('123456');
+			await step.getByRole('button', { name: 'Confirm' }).click();
+			await expect(page).toHaveURL(new RegExp(`/signed-out\\?reason=${reason}$`));
+			await page.unroute('**/api/v1/auth/reauth');
+		}
+	});
+
+	test('the error summary links to each failing field', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		await page.getByRole('button', { name: 'Change password…' }).click();
+		await expect(alert(page)).toBeFocused();
+		await alert(page).getByRole('link', { name: 'Current password' }).click();
+		await expect(page.getByLabel('Current password')).toBeFocused();
+		await alert(page).getByRole('link', { name: 'New password' }).click();
+		await expect(page.getByLabel('New password')).toBeFocused();
+		await page.getByRole('button', { name: 'Create token' }).click();
+		await alert(page).getByRole('link', { name: 'Name' }).click();
+		await expect(page.getByLabel('Name', { exact: true })).toBeFocused();
+		await page.getByRole('button', { name: 'Replace authenticator…' }).click();
+		await page.getByLabel('Code from the new authenticator').fill('12');
+		await page.getByRole('button', { name: 'Replace authenticator…' }).last().click();
+		await alert(page).getByRole('link', { name: 'Code from the new authenticator' }).click();
+		await expect(page.getByLabel('Code from the new authenticator')).toBeFocused();
+		// Cancelling re-enrolment returns focus to the button that started it.
+		await page.getByRole('button', { name: 'Cancel' }).click();
+		await expect(page.getByRole('button', { name: 'Replace authenticator…' })).toBeFocused();
+	});
+
+	test('a shown token disappears when the page is hidden or another action starts', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		const token = await createToken(page, 'one');
+		await page.evaluate(() => {
+			Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+			document.dispatchEvent(new Event('visibilitychange'));
+		});
+		await expect(page.locator('body')).not.toContainText(token);
+		await page.evaluate(() => {
+			Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+		});
+		const second = await createToken(page, 'two');
+		await page.getByRole('button', { name: /^Revoke token one/ }).click();
+		await expect(page.locator('body')).not.toContainText(second); // starting another action clears it
+		await dialog(page, 'Revoke this token?').getByRole('button', { name: 'Cancel' }).click();
+	});
+
+	test('Sign out in the navigation asks first while recovery codes are unsaved', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+		await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
+		await expect(page.getByRole('list', { name: 'Recovery codes' })).toBeVisible();
+		if (isPhone(page)) await page.getByRole('button', { name: 'Menu' }).click();
+		const asked: string[] = [];
+		page.once('dialog', (d) => { asked.push(d.message()); void d.dismiss(); });
+		await page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Sign out' }).click();
+		await expect.poll(() => asked.length).toBe(1);
+		expect(asked[0]).toContain('not marked as saved');
+		await expect(page.getByRole('list', { name: 'Recovery codes' })).toBeVisible(); // still signed in, codes still shown
+		page.once('dialog', (d) => void d.accept());
+		await page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Sign out' }).click();
+		await expect(page).toHaveURL(/\/signed-out\?reason=signed_out$/);
+	});
+
+	test('markup details: cards are lists, the current session button has no suffix, the password form names its account', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		const btn = page.getByRole('button', { name: /^Sign out this device/ });
+		await expect(btn.first()).toHaveAccessibleName('Sign out this device');
+		await expect(page.locator('input[name="username"][autocomplete="username"]')).toHaveValue('admin');
+		await expect(page.locator('ul.cards').first()).toHaveAttribute('role', 'list');
+		await expect(page.locator('ul.cards li').first()).toHaveAttribute('role', 'listitem');
+		await expect(page.locator('.cert-status')).toHaveAttribute('role', 'status'); // present before the certificate is known
+		await expect(page.getByLabel('Keep API tokens').first()).not.toBeChecked();
+		await expect(page.getByText('Tick this only if you are rotating routinely, not after a suspected compromise.').first()).toBeVisible();
+	});
+
+	test('tokens are listed as sd_<prefix>…', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await openSecurity(page, server);
+		const token = await createToken(page, 'shown');
+		await page.getByRole('button', { name: 'I have copied it, hide it' }).click();
+		await expect(page.locator('code', { hasText: /^sd_.{6,12}…$/ }).first()).toBeAttached();
+		expect(token.startsWith('sd_')).toBe(true);
 	});
 });

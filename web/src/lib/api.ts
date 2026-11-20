@@ -102,8 +102,16 @@ export async function getSession(): Promise<Session> {
 }
 
 /** Runs a registered action (POST /api/v1/actions/{name}). */
+let onAudit: (() => void) | undefined;
+/** The page registers a handler for outcomes the server did not write to the audit log. */
+export function setAuditHandler(fn: (() => void) | undefined) {
+	onAudit = fn;
+}
+
+/** Runs a registered action (POST /api/v1/actions/{name}). An unrecorded audit outcome is never plain success: the registered handler is told. */
 export async function runAction<T>(name: string, input: object = {}, signal?: AbortSignal): Promise<T> {
-	const res = await call<{ data: T }>('POST', `/api/v1/actions/${encodeURIComponent(name)}`, { body: input, signal });
+	const res = await call<{ data: T; audit?: string }>('POST', `/api/v1/actions/${encodeURIComponent(name)}`, { body: input, signal });
+	if (res.audit === 'unrecorded') onAudit?.();
 	return res.data;
 }
 

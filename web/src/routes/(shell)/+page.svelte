@@ -26,7 +26,7 @@
 
 {#if unrecorded}
 	<div role="alert" class="banner">
-		<p><span aria-hidden="true">▲</span> The audit record for this sign-in could not be written. You are signed in, but check the server's disk and logs.</p>
+		<p><span aria-hidden="true">▲</span> The audit record for this action could not be written. It went through, but check the server's disk and logs.</p>
 		<button type="button" onclick={() => dismiss(() => (unrecorded = false))}>Dismiss audit warning</button>
 	</div>
 {/if}

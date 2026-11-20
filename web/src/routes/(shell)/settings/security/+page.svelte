@@ -6,6 +6,7 @@
 		Cancelled,
 		NETWORK_MESSAGE,
 		runAction,
+		setAuditHandler,
 		setStepUpHandler,
 		signedOutReason,
 		withStepUp,
@@ -17,6 +18,7 @@
 		type TokenRow
 	} from '../../../../lib/api';
 	import { copyText } from '../../../../lib/copy';
+	import { flash } from '../../../../lib/flow.svelte';
 	import { absolute, daysUntil } from '../../../../lib/time';
 	import Alerts from '../../../../lib/Alerts.svelte';
 	import ConfirmDialog from '../../../../lib/ConfirmDialog.svelte';
@@ -34,14 +36,18 @@
 	let loaded = $state(false);
 
 	let error: string | null = $state(null);
+	let links: { id: string; text: string }[] = $state([]);
+	// An action that went through but whose audit record was not written is a warning, never plain success.
+	let unrecorded = false;
 	let status = $state('');
 	let alerts: Alerts | undefined = $state();
 	let confirm: ConfirmDialog | undefined = $state();
 	let stepUp: StepUpDialog | undefined = $state();
 
 	// ---- loading ---------------------------------------------------------------
-	async function fail(msg: string) {
+	async function fail(msg: string, l: { id: string; text: string }[] = []) {
 		error = msg;
+		links = l;
 		await tick();
 		alerts?.focus();
 	}
@@ -66,11 +72,35 @@
 			await handle(e);
 		}
 	}
+	const AUDIT_WARNING = 'The change went through, but its audit record could not be written. Check the server disk and logs.';
 	onMount(() => {
 		setStepUpHandler(() => stepUp!.ask());
+		setAuditHandler(() => {
+			unrecorded = true;
+			void fail(AUDIT_WARNING);
+		});
+		// A token shown once does not stay on screen when you look away.
+		const onHidden = () => document.visibilityState === 'hidden' && (created = undefined);
+		document.addEventListener('visibilitychange', onHidden);
 		void load();
+		return () => document.removeEventListener('visibilitychange', onHidden);
 	});
-	onDestroy(() => setStepUpHandler(undefined));
+	onDestroy(() => {
+		setStepUpHandler(undefined);
+		setAuditHandler(undefined);
+	});
+	/** Starting any action clears the shown-once token and the previous message. */
+	function begin() {
+		created = undefined;
+		error = null;
+		links = [];
+		unrecorded = false;
+	}
+	/** Where an action that ends the session carries its audit warning. */
+	function endSession(reason: string) {
+		if (unrecorded) flash.audit = 'unrecorded';
+		return goto(`/signed-out?reason=${reason}`);
+	}
 
 	const others = $derived(sessions.filter((s) => !s.current));
 	const certDays = $derived(cert ? daysUntil(cert.not_after) : 0);
@@ -92,6 +122,7 @@
 
 	// ---- sessions ---------------------------------------------------------------
 	async function revokeSession(s: SessionRow, index: number) {
+		begin();
 		const device = s.user_agent || 'an unknown device';
 		const ok = await confirm!.ask(
 			s.current
@@ -101,15 +132,16 @@
 		if (!ok) return;
 		try {
 			await withStepUp(() => runAction('auth.sessions_revoke', { public_id: s.public_id }));
-			if (s.current) return void (await goto('/signed-out?reason=signed_out'));
+			if (s.current) return void (await endSession('signed_out'));
 			sessions = sessions.filter((x) => x.public_id !== s.public_id);
 			status = 'Session signed out.';
-			await focusAfterRemoval('sessions', index);
+			if (!unrecorded) await focusAfterRemoval('sessions', index); // a warning alert keeps focus
 		} catch (e) {
 			await handle(e);
 		}
 	}
 	async function revokeOthers() {
+		begin();
 		const n = others.length;
 		if (n === 0) {
 			status = 'There are no other sessions to sign out.';
@@ -126,7 +158,7 @@
 			sessions = sessions.filter((x) => x.current);
 			status = `${n} ${n === 1 ? 'session' : 'sessions'} signed out.`;
 			await tick();
-			document.getElementById('sessions-heading')?.focus();
+			if (!unrecorded) document.getElementById('sessions-heading')?.focus();
 		} catch (e) {
 			await handle(e);
 		}
@@ -143,12 +175,12 @@
 	async function createToken(e: SubmitEvent) {
 		e.preventDefault();
 		if (busyToken) return;
-		error = null;
+		begin();
 		tokenErrors = {};
 		const days = Number(tokenDays);
 		if (!tokenName.trim()) tokenErrors.name = 'Say what the token is for.';
 		if (!Number.isInteger(days) || days < 1 || days > 365) tokenErrors.days = 'Enter a whole number of days from 1 to 365.';
-		if (Object.keys(tokenErrors).length) return fail('Fix the highlighted fields.');
+		if (Object.keys(tokenErrors).length) return fail('Fix the highlighted fields.', [...(tokenErrors.name ? [{ id: 'token-name', text: 'Name' }] : []), ...(tokenErrors.days ? [{ id: 'token-days', text: 'Expires in (days)' }] : [])]);
 		busyToken = true;
 		status = 'Creating the token…';
 		try {
@@ -166,9 +198,10 @@
 		}
 	}
 	async function revokeToken(t: TokenRow, index: number) {
+		begin();
 		const ok = await confirm!.ask({
 			title: 'Revoke this token?',
-			lines: [`"${t.name}" (${t.prefix}…, ${t.scope}). Anything using it stops working at once. This cannot be undone.`],
+			lines: [`"${t.name}" (sd_${t.prefix}…, ${t.scope}). Anything using it stops working at once. This cannot be undone.`],
 			confirm: 'Revoke token'
 		});
 		if (!ok) return;
@@ -176,10 +209,15 @@
 			await withStepUp(() => runAction('tokens.revoke', { id: t.id }));
 			tokens = tokens.map((x) => (x.id === t.id ? { ...x, revoked: true } : x));
 			status = `Token "${t.name}" revoked.`;
-			await focusAfterRemoval('tokens', index);
+			if (!unrecorded) await focusAfterRemoval('tokens', index);
 		} catch (e) {
 			await handle(e);
 		}
+	}
+	async function hideToken() {
+		created = undefined;
+		await tick();
+		document.getElementById('tokens-heading')?.focus(); // the button is gone: focus goes to the section
 	}
 	async function copyToken() {
 		status = created && (await copyText(created.token)) ? 'Token copied.' : 'Could not copy. Select the token and copy it yourself.';
@@ -193,13 +231,13 @@
 
 	async function changePassword(e: SubmitEvent) {
 		e.preventDefault();
-		error = null;
+		begin();
 		pwErrors = {};
 		if (!currentPassword) pwErrors.current = 'Enter your current password.';
 		if ([...newPassword].length < 12) pwErrors.next = 'The new password must have at least 12 characters.';
 		else if (new TextEncoder().encode(newPassword).length > 256) pwErrors.next = 'The new password is longer than 256 bytes.';
 		else if (info && newPassword.toLowerCase() === info.username.toLowerCase()) pwErrors.next = 'The new password must differ from the username.';
-		if (Object.keys(pwErrors).length) return fail('Fix the highlighted fields.');
+		if (Object.keys(pwErrors).length) return fail('Fix the highlighted fields.', [...(pwErrors.current ? [{ id: 'current-password', text: 'Current password' }] : []), ...(pwErrors.next ? [{ id: 'new-password', text: 'New password' }] : [])]);
 		const n = sessions.length;
 		const ok = await confirm!.ask({
 			title: 'Change the password?',
@@ -213,12 +251,12 @@
 		try {
 			await withStepUp(() => runAction('auth.password_change', { current_password: currentPassword, new_password: newPassword, keep_tokens: keepTokensPw }));
 			currentPassword = newPassword = '';
-			await goto('/signed-out?reason=credentials');
+			await endSession('credentials');
 		} catch (err) {
 			currentPassword = '';
 			if (err instanceof ApiError && err.code === 'wrong_password') {
 				pwErrors = { current: 'That is not your current password.' };
-				return fail('That is not your current password.');
+				return fail('That is not your current password.', [{ id: 'current-password', text: 'Current password' }]);
 			}
 			await handle(err);
 		}
@@ -232,7 +270,7 @@
 	const grouped = $derived((enrolling?.secret ?? '').replace(/\s/g, '').replace(/(.{4})/g, '$1 ').trim());
 
 	async function beginReenroll() {
-		error = null;
+		begin();
 		try {
 			enrolling = await withStepUp(() => runAction<Enrollment>('auth.totp_reenroll_begin'));
 			reCode = '';
@@ -244,15 +282,21 @@
 			await handle(e);
 		}
 	}
+	async function cancelReenroll() {
+		enrolling = undefined;
+		status = '';
+		await tick();
+		document.getElementById('reenroll-button')?.focus();
+	}
 	async function confirmReenroll(e: SubmitEvent) {
 		e.preventDefault();
 		if (!enrolling) return;
-		error = null;
+		begin();
 		reErrors = {};
 		const c = reCode.replace(/\s/g, '');
 		if (!/^\d{6}$/.test(c)) {
 			reErrors.code = 'Enter the 6 digits from your app.';
-			return fail('Enter the 6-digit code.');
+			return fail('Enter the 6-digit code.', [{ id: 're-code', text: 'Code from the new authenticator' }]);
 		}
 		const n = sessions.length;
 		const ok = await confirm!.ask({
@@ -268,7 +312,7 @@
 		try {
 			await withStepUp(() => runAction('auth.totp_reenroll_confirm', { enrollment_id: enrolling!.enrollment_id, code: c, keep_tokens: keepTokensTotp }));
 			enrolling = undefined;
-			await goto('/signed-out?reason=credentials');
+			await endSession('credentials');
 		} catch (err) {
 			reCode = '';
 			if (err instanceof ApiError && (err.code === 'enrollment_expired' || err.code === 'enrollment_replaced')) {
@@ -277,7 +321,7 @@
 			}
 			if (err instanceof ApiError && (err.code === 'invalid_code' || err.code === 'code_reused')) {
 				reErrors.code = err.code === 'code_reused' ? 'That code was already used. Wait for the next one.' : 'That code is wrong. Try the next code your app shows.';
-				return fail(reErrors.code);
+				return fail(reErrors.code, [{ id: 're-code', text: 'Code from the new authenticator' }]);
 			}
 			await handle(err);
 		}
@@ -286,7 +330,7 @@
 	// ---- recovery codes -------------------------------------------------------------------
 	let newCodes: string[] = $state([]);
 	async function regenerate() {
-		error = null;
+		begin();
 		const left = info?.recovery_codes_left ?? 0;
 		const ok = await confirm!.ask({
 			title: 'Make new recovery codes?',
@@ -318,7 +362,17 @@
 
 <PageHeading>Security</PageHeading>
 
-<Alerts bind:this={alerts} {error} {status} />
+<Alerts bind:this={alerts} {error} {links} {status} />
+
+<!-- Always in the page, filled once the certificate is known, so the warning is announced. -->
+<div role="status" class="cert-status">
+	{#if loaded && cert && certWarn}
+		<p class="warn">
+			<span aria-hidden="true">▲</span>
+			The panel certificate {certDays < 0 ? 'has expired' : `expires in ${certDays} ${certDays === 1 ? 'day' : 'days'}`} ({absolute(cert.not_after)}). ServerDock renews it when it starts: restart ServerDock soon.
+		</p>
+	{/if}
+</div>
 
 {#if !loaded && !error}
 	<p>Loading…</p>
@@ -327,12 +381,6 @@
 {#if loaded && info && cert}
 	<section aria-labelledby="panel-heading">
 		<h2 id="panel-heading" tabindex="-1">This server</h2>
-		{#if certWarn}
-			<p class="warn" role="status">
-				<span aria-hidden="true">▲</span>
-				The panel certificate {certDays < 0 ? 'has expired' : `expires in ${certDays} ${certDays === 1 ? 'day' : 'days'}`} ({absolute(cert.not_after)}). ServerDock renews it when it starts: restart ServerDock soon.
-			</p>
-		{/if}
 		<dl class="facts">
 			<div><dt>Panel certificate fingerprint (SHA-256)</dt><dd><code id="fingerprint">{cert.fingerprint}</code></dd></div>
 			<div><dt>Certificate created</dt><dd>{absolute(cert.created)}</dd></div>
@@ -369,7 +417,7 @@
 				{:else if key === 'state'}<span aria-hidden="true">●</span> {s.current ? 'This device' : 'Active'}
 				{:else}
 					<button type="button" class="row-action" onclick={() => revokeSession(s, sessions.indexOf(s))}>
-						{s.current ? 'Sign out this device' : 'Sign out'}<span class="sr"> session from {s.ip_key}, {s.user_agent || 'unknown device'}</span>
+						{#if s.current}Sign out this device{:else}Sign out<span class="sr"> session from {s.ip_key}, {s.user_agent || 'unknown device'}</span>{/if}
 					</button>
 				{/if}
 			{/snippet}
@@ -402,13 +450,13 @@
 		>
 			{#snippet cell(t, key)}
 				{#if key === 'name'}{t.name}
-				{:else if key === 'prefix'}<code>{t.prefix}…</code>
+				{:else if key === 'prefix'}<code>sd_{t.prefix}…</code>
 				{:else if key === 'scope'}{t.scope}
 				{:else if key === 'expires'}{absolute(t.expires_at)}
 				{:else if key === 'used'}{absolute(t.last_used_at)}
 				{:else if key === 'state'}<span aria-hidden="true">{tokenState(t).symbol}</span> {tokenState(t).word}
 				{:else if !t.revoked}
-					<button type="button" class="row-action" onclick={() => revokeToken(t, tokens.indexOf(t))}>Revoke<span class="sr"> token {t.name} ({t.prefix})</span></button>
+					<button type="button" class="row-action" onclick={() => revokeToken(t, tokens.indexOf(t))}>Revoke<span class="sr"> token {t.name} (sd_{t.prefix}…)</span></button>
 				{:else}<span class="muted">None</span>
 				{/if}
 			{/snippet}
@@ -420,7 +468,7 @@
 				<p>Copy it now. It is shown only once and cannot be looked up later.</p>
 				<div class="codeblock"><code id="new-token">{created.token}</code><button type="button" onclick={copyToken}>Copy token</button></div>
 				<p class="hint">{created.scope} scope, expires {absolute(created.expires_at)}.</p>
-				<button type="button" onclick={() => (created = undefined)}>I have copied it, hide it</button>
+				<button type="button" onclick={hideToken}>I have copied it, hide it</button>
 			</div>
 		{/if}
 
@@ -444,12 +492,14 @@
 	<section aria-labelledby="password-heading">
 		<h2 id="password-heading" tabindex="-1">Password</h2>
 		<form onsubmit={changePassword} novalidate>
+			<!-- For password managers: which account this password belongs to. -->
+			<input class="sr" type="text" name="username" autocomplete="username" value={info.username} readonly tabindex="-1" aria-hidden="true" />
 			<Field id="current-password" label="Current password" bind:value={currentPassword} type="password" autocomplete="current-password" error={pwErrors.current} />
 			<Field id="new-password" label="New password" bind:value={newPassword} type="password" autocomplete="new-password" hint="At least 12 characters. A few ordinary words work well." error={pwErrors.next} />
 			<p class="check-row">
 				<label class="check"><input type="checkbox" bind:checked={keepTokensPw} aria-describedby="keep-pw-hint" /> Keep API tokens</label>
 			</p>
-			<p id="keep-pw-hint" class="hint">Keep API tokens (only if you are rotating routinely, not after a suspected compromise)</p>
+			<p id="keep-pw-hint" class="hint">Tick this only if you are rotating routinely, not after a suspected compromise.</p>
 			<div class="actions"><button type="submit" class="primary">Change password…</button></div>
 		</form>
 	</section>
@@ -458,7 +508,7 @@
 		<h2 id="totp-heading" tabindex="-1">Authenticator</h2>
 		{#if !enrolling}
 			<p>Replace the app that makes your sign-in codes, for example after changing phones.</p>
-			<div class="actions"><button type="button" onclick={beginReenroll}>Replace authenticator…</button></div>
+			<div class="actions"><button type="button" id="reenroll-button" onclick={beginReenroll}>Replace authenticator…</button></div>
 		{:else}
 			<form onsubmit={confirmReenroll} novalidate>
 				<h3 id="reenroll-heading" tabindex="-1">Add the new key</h3>
@@ -474,9 +524,9 @@
 				<p class="check-row">
 					<label class="check"><input type="checkbox" bind:checked={keepTokensTotp} aria-describedby="keep-totp-hint" /> Keep API tokens</label>
 				</p>
-				<p id="keep-totp-hint" class="hint">Keep API tokens (only if you are rotating routinely, not after a suspected compromise)</p>
+				<p id="keep-totp-hint" class="hint">Tick this only if you are rotating routinely, not after a suspected compromise.</p>
 				<div class="actions">
-					<button type="button" onclick={() => (enrolling = undefined)}>Cancel</button>
+					<button type="button" onclick={cancelReenroll}>Cancel</button>
 					<button type="submit" class="primary">Replace authenticator…</button>
 				</div>
 			</form>

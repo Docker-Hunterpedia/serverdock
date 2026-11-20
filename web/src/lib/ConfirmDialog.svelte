@@ -4,7 +4,7 @@
 	// native modal <dialog>, so focus is trapped only inside it and returns to the
 	// button that opened it.
 	import { currentOpener, trackOpener } from './opener';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	type Spec = { title: string; lines: string[]; confirm: string };
 	let dialog: HTMLDialogElement | undefined = $state();
 	let cancelButton: HTMLButtonElement | undefined = $state();
@@ -13,12 +13,14 @@
 	onMount(trackOpener);
 	let resolve: ((ok: boolean) => void) | undefined;
 
-	export function ask(s: Spec): Promise<boolean> {
-		spec = s;
+	export async function ask(s: Spec): Promise<boolean> {
 		opener = currentOpener();
+		spec = s;
+		await tick(); // the new title and body are in the DOM before the dialog is announced
+		const answer = new Promise<boolean>((r) => (resolve = r));
 		dialog?.showModal();
 		cancelButton?.focus();
-		return new Promise((r) => (resolve = r));
+		return answer;
 	}
 	function finish(ok: boolean) {
 		const r = resolve;

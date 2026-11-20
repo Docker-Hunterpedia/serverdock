@@ -6,3 +6,6 @@ import type { Notice } from './api';
 
 export const flow = $state({ username: '', pendingUntil: 0 });
 export const flash = $state<{ notice?: Notice; audit?: string }>({});
+
+/** True while recovery codes are on screen and not yet marked saved (the nav Sign out asks first). */
+export const guard = $state({ unsavedCodes: false });

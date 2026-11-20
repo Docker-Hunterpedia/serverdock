@@ -576,7 +576,7 @@ test.describe('step 12 review fixes', () => {
 		await page.getByLabel('Code from your authenticator').fill(totp(admin.secret, Date.now() + 30_000));
 		await page.getByRole('button', { name: 'Verify' }).click();
 		await expect(h1(page, 'Overview')).toBeVisible();
-		await expect(page.getByRole('alert')).toContainText('The audit record for this sign-in could not be written');
+		await expect(page.getByRole('alert')).toContainText('The audit record for this action could not be written');
 		await expect(page.getByRole('status').filter({ hasText: 'wrong two-factor code was entered' })).toBeVisible();
 		await expectNoAxeViolations(page, 'Overview with banners');
 		await page.getByRole('button', { name: 'Dismiss audit warning' }).click();

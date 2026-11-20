@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { logout, signedOutReason } from '../../lib/api';
+	import { guard } from '../../lib/flow.svelte';
 	import { startStatusPolling, type Status } from '../../lib/status';
 
 	let { children } = $props();
@@ -37,6 +38,9 @@
 	}
 
 	async function signOut() {
+		// Unsaved recovery codes are shown once: ask before ending the session, not after.
+		if (guard.unsavedCodes && !confirm('You have new recovery codes on screen that are not marked as saved. If you sign out now they are lost. Sign out anyway?')) return;
+		guard.unsavedCodes = false; // a deliberate choice: the recovery-code page lets this navigation through
 		try {
 			await logout();
 		} catch {

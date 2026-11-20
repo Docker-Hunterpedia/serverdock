@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { flash } from '../../lib/flow.svelte';
 	import PageHeading from '../../lib/PageHeading.svelte';
 
 	const reasons: Record<string, string> = {
@@ -11,6 +12,9 @@
 		revoked: 'This session was ended from another device.',
 		ended: 'Your session ended or you are not signed in.'
 	};
+	// Set by the action that ended the session (password or authenticator change).
+	const unrecorded = flash.audit === 'unrecorded';
+	flash.audit = undefined;
 	const reason = $derived(page.url.searchParams.get('reason') ?? 'ended');
 	const text = $derived(reasons[reason] ?? reasons.ended);
 </script>
@@ -22,6 +26,9 @@
 <main class="card">
 	<PageHeading>Signed out</PageHeading>
 	<p id="why">{text}</p>
+	{#if unrecorded}
+		<p role="alert" class="audit-warning"><span aria-hidden="true">▲</span> The audit record for the change that signed you out could not be written. It went through, but check the server's disk and logs.</p>
+	{/if}
 	<p><a class="button" href="/login">Sign in again</a></p>
 </main>
 

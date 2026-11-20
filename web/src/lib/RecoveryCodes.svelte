@@ -4,11 +4,17 @@
 	// (with its reason) until the box is ticked. Used by first-run setup and by
 	// "Make new recovery codes" in Settings > Security.
 	import { beforeNavigate } from '$app/navigation';
+	import { onDestroy } from 'svelte';
 	import { copyText } from './copy';
+	import { guard as unsaved } from './flow.svelte';
 
 	type Props = { codes: string[]; onstatus: (message: string) => void; onfinish: () => void; lead: string };
 	let { codes, onstatus, onfinish, lead }: Props = $props();
 	let saved = $state(false);
+	$effect(() => {
+		unsaved.unsavedCodes = !saved;
+	});
+	onDestroy(() => (unsaved.unsavedCodes = false));
 
 	async function copy() {
 		onstatus((await copyText(codes.join('\n'))) ? 'Codes copied.' : 'Could not copy. Select the text and copy it yourself.');
@@ -26,7 +32,8 @@
 	// In-app navigation is cancelled with a message until the codes are saved;
 	// reloading or closing the tab is the beforeunload guard.
 	beforeNavigate((nav) => {
-		if (!saved && nav.type !== 'leave') {
+		// A deliberate sign-out (confirmed in the navigation) clears the flag first.
+		if (!saved && unsaved.unsavedCodes && nav.type !== 'leave') {
 			nav.cancel();
 			onstatus('Tick "I have saved these codes" before you leave this page. They are not shown again.');
 		}

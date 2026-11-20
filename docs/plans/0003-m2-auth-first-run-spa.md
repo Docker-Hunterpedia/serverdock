@@ -629,7 +629,7 @@ Security-critical foundations first, then the auth core, then the HTTP surface, 
     - Reviewers: `reviewer`, `accessibility` (required), `security`.
 
 13. **Settings › Security screen.**
-    - Do: the page with its sub-nav (Security only); fingerprint and dates (with the under-60-days warning); admin created; sessions and tokens (A9 tables/cards); create token with step-up, show once; revoke; change password; re-enrol 2FA; regenerate recovery codes; A8 dialogs. The password-change and re-enrolment dialogs show "Keep API tokens (only if you are rotating routinely, not after a suspected compromise)", unticked by default (`keep_tokens` defaults to false and is audited).
+    - Do: the page with its sub-nav (Security only); fingerprint and dates (with the under-60-days warning); admin created; sessions and tokens (A9 tables/cards); create token with step-up, show once; revoke; change password; re-enrol 2FA; regenerate recovery codes; A8 dialogs. The password-change and re-enrolment forms show a "Keep API tokens" checkbox with the hint "Tick this only if you are rotating routinely, not after a suspected compromise.", unticked by default, and the confirmation states the choice (`keep_tokens` defaults to false and is audited).
     - Screen states: page loaded (desktop table, phone cards); empty tokens list; create-token form and its errors; new token shown once; each confirmation dialog (revoke token, revoke session, revoke this device, sign out everywhere else, regenerate codes, change password, re-enrol); step-up prompt; certificate expiry warning.
     - Tests (all A5 projects): each flow end to end; dialogs name target and consequence, default focus on Cancel, Escape closes, focus moves to the next row after removal; after a password change the Signed-out screen gives the reason and the old token fails; a created token works from the test via `fetch` and is shown once; tables have `<caption>`/`<th scope>` and become cards below 768 px; absolute times with timezone; zero axe violations. **Exit item:** manual screen-reader pass, recorded in the PR.
     - Reviewers: `reviewer`, `accessibility` (required), `security`.
@@ -801,3 +801,14 @@ With VoiceOver on iOS Safari and NVDA on Windows (or VoiceOver on macOS Safari),
 8. **Signed out:** after changing the password or the authenticator the Signed-out page reads "password or authenticator changed".
 9. **Certificate warning:** with fewer than 60 days left (the maintainer can test by editing the leaf's expiry) the warning is announced as a status and is not only red.
 10. **Zoom and text size:** at 200% zoom and the largest text size the tables become cards and nothing is clipped.
+
+Additions from the step 13 review (accessibility, reviewer, security):
+
+11. **Hiding a new token:** after "I have copied it, hide it" focus is on the "API tokens" heading (the button is gone). Cancelling re-enrolment returns focus to "Replace authenticator…".
+12. **Keep API tokens:** the checkbox and its hint ("Tick this only if you are rotating routinely, not after a suspected compromise.") are read together; the confirmation dialog states whether tokens are kept or revoked.
+13. **Re-enrol:** the new key is read before the QR code, and the QR code is announced without the secret.
+14. **Sign out with unsaved codes:** the navigation's Sign out asks first while recovery codes are on screen and not marked saved.
+15. **Error summary:** after a failed submit the summary is read and each link moves focus to its field (current password, new password, token name and days, the re-enrolment code).
+16. **Cards in Safari:** below 768 px the session and token cards are announced as lists with labelled values (VoiceOver on iOS and macOS Safari), and each card's action names its target.
+17. **Wrong current password:** the message is read once, with the field linked, the password field empty and the new password kept.
+18. **Unrecorded audit outcome:** if the server reports `audit: "unrecorded"` the page shows a warning alert, never plain success; for password and authenticator changes the warning is on the Signed-out page.

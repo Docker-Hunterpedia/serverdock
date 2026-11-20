@@ -3,7 +3,8 @@
 	// The dialog asks for one, sends it to /auth/reauth, and resolves true when it was
 	// accepted. Five wrong codes end the session (Signed-out, reason step_up).
 	import { goto } from '$app/navigation';
-	import { ApiError, NETWORK_MESSAGE, reauth } from './api';
+	import { ApiError, NETWORK_MESSAGE, reauth, signedOutReason } from './api';
+	import { Countdown, humanDuration } from './countdown.svelte';
 	import { currentOpener, trackOpener } from './opener';
 	import { onMount } from 'svelte';
 	import Field from './Field.svelte';
@@ -12,6 +13,7 @@
 	let code = $state('');
 	let error = $state('');
 	let busy = $state(false);
+	const countdown = new Countdown((m) => (error = m));
 	let field: HTMLInputElement | undefined = $state();
 	let opener: HTMLElement | null = null;
 	onMount(trackOpener);
@@ -38,6 +40,10 @@
 	}
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
+		if (countdown.active) {
+			error = `Try again in ${humanDuration(countdown.remaining)}.`;
+			return;
+		}
 		if (busy) return;
 		const c = code.replace(/\s/g, '');
 		if (!/^\d{6}$/.test(c)) {
@@ -55,7 +61,13 @@
 			if (!(err instanceof ApiError)) throw err;
 			if (err.status === 401) {
 				finish(false);
-				await goto('/signed-out?reason=step_up');
+				// Too many wrong step-up codes end the session; any other 401 is the usual reason.
+				await goto(`/signed-out?reason=${err.code === 'revoked' ? 'step_up' : signedOutReason(err.code)}`);
+				return;
+			}
+			if (err.code === 'rate_limited') {
+				countdown.start(err.retryAfter ?? 60);
+				field?.focus();
 				return;
 			}
 			if (err.code === 'invalid_code') error = `That code is wrong.${err.failuresLeft !== undefined ? ` ${err.failuresLeft} ${err.failuresLeft === 1 ? 'try' : 'tries'} left before you are signed out.` : ''}`;
@@ -73,11 +85,12 @@
 	<form onsubmit={submit} aria-busy={busy} novalidate>
 		<h2 id="stepup-title">Confirm it is you</h2>
 		<p id="stepup-body">This change needs a fresh code from your authenticator app.</p>
-		<div role="alert" class="stepup-error">{#if error}<span aria-hidden="true">▲</span> {error}{/if}</div>
-		<Field id="stepup-code" label="Code from your authenticator" bind:value={code} bind:el={field} inputmode="numeric" autocomplete="one-time-code" maxlength={7} />
+		{#if countdown.active}<p class="banner">Try again in {countdown.text}</p>{/if}
+		<!-- One announcement path: the error is the field's own (aria-describedby, aria-invalid) and focus returns to the field, so it is read once. -->
+		<Field id="stepup-code" label="Code from your authenticator" bind:value={code} bind:el={field} inputmode="numeric" autocomplete="one-time-code" maxlength={7} {error} />
 		<div class="actions">
 			<button type="button" onclick={() => finish(false)}>Cancel</button>
-			<button type="submit" class="primary" aria-disabled={busy}>Confirm</button>
+			<button type="submit" class="primary" aria-disabled={busy || countdown.active}>Confirm</button>
 		</div>
 	</form>
 </dialog>
@@ -97,10 +110,5 @@
 	}
 	h2 {
 		margin-top: 0;
-	}
-	.stepup-error {
-		color: var(--danger);
-		font-weight: 600;
-		margin-bottom: 0.5rem;
 	}
 </style>
