@@ -107,13 +107,19 @@ func openWith(ctx context.Context, dir string, opts Options) (*Store, error) {
 	return &Store{W: w, R: r, Dir: dir, lock: lock}, nil
 }
 
-// lockDir takes an exclusive, non-blocking flock on DATA/serverdock.lock. The
-// file is 0644 so a read-only tool running as another user can test whether a
-// server is running (see OpenReadOnly); it holds no data.
+// lockDir takes an exclusive flock on DATA/serverdock.lock. The file is 0600
+// and owned by the service user (an existing one is tightened here): if other
+// users could open it, any of them could hold a shared lock and keep the server
+// from starting. A read-only tool running as another user therefore cannot probe
+// it and falls back to the -wal heuristic in OpenReadOnly.
 func lockDir(dir string) (*os.File, error) {
-	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("store: lock file: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("store: lock file mode: %w", err)
 	}
 	// A read-only probe (audit verify from cron) holds a shared lock for a moment;
 	// wait it out instead of failing a starting server.

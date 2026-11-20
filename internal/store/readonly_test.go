@@ -241,3 +241,74 @@ func TestReadOnlyHelper(t *testing.T) {
 	}
 	fmt.Printf("RO-OK %s %d\n", ro.Schema, n)
 }
+
+func TestLockFileIsPrivateAndTightenedAtBoot(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, lockName)
+	s, err := openWithT(t, dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(lock); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("new lock file mode %v %v", st.Mode().Perm(), err)
+	}
+	s.Close()
+	// A file left 0644 by an older version is tightened on the next start.
+	os.Chmod(lock, 0o644)
+	s2, err := openWithT(t, dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if st, _ := os.Stat(lock); st.Mode().Perm() != 0o600 {
+		t.Errorf("existing lock file mode %v after boot", st.Mode().Perm())
+	}
+}
+
+// Another local user cannot block a start by holding a shared lock: the file is
+// 0600 and owned by the service user, so they cannot open it at all. (The service
+// user's own probes, such as a cron `audit verify`, are handled by the retry in
+// lockDir; see TestStartingServerWaitsOutAReadOnlyProbe.) What a user who cannot
+// open the file does instead: with a non-empty -wal it assumes a server and reads
+// with mode=ro&readonly_shm=1.
+func TestReadOnlyFallsBackToTheWALWhenTheLockFileIsUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can open any file; TestReadOnlyAsAnotherUser covers the real case")
+	}
+	dir := t.TempDir()
+	s, err := openWithT(t, dir, Options{Migrations: list(mParentChild)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.W.Exec(`INSERT INTO parent VALUES (1,'x')`)
+	lock := filepath.Join(dir, lockName)
+	os.Chmod(lock, 0o000) // as seen by another user: permission denied
+	defer os.Chmod(lock, 0o600)
+	if running, err := serverRunning(dir, 4096); err != nil || !running {
+		t.Errorf("EACCES with a non-empty WAL: running=%v err=%v", running, err)
+	}
+	if running, err := serverRunning(dir, 0); err != nil || running {
+		t.Errorf("EACCES with an empty WAL: running=%v err=%v", running, err)
+	}
+	before := ls(t, dir)
+	ro, err := openReadOnly(dir, ReadOnlyOptions{}, list(mParentChild))
+	if err != nil {
+		t.Fatalf("read-only open with an unreadable lock file: %v", err)
+	}
+	var n int
+	ro.DB.QueryRow(`SELECT count(*) FROM parent`).Scan(&n)
+	ro.Close()
+	if n != 1 {
+		t.Errorf("rows %d", n)
+	}
+	if after := ls(t, dir); !reflect.DeepEqual(before, after) {
+		t.Errorf("files changed: %v -> %v", before, after)
+	}
+	// And a missing lock file still means "no server".
+	os.Chmod(lock, 0o600)
+	os.Remove(lock)
+	if running, err := serverRunning(dir, 4096); err != nil || running {
+		t.Errorf("no lock file: running=%v err=%v", running, err)
+	}
+	os.WriteFile(lock, nil, 0o600)
+}

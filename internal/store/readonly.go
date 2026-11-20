@@ -45,11 +45,17 @@ func roDSN(path string, immutable bool) string {
 }
 
 // serverRunning reports whether a server holds DATA/serverdock.lock. It only
-// opens the lock file read-only (never creates it), so it works as another user.
-func serverRunning(dir string) (bool, error) {
+// opens the lock file read-only (never creates it). The file is 0600, so as
+// another user the open fails with a permission error; then the best evidence
+// left is the write-ahead log: a non-empty -wal means a server may be running,
+// and the caller reads with mode=ro&readonly_shm=1, which cannot write.
+func serverRunning(dir string, walSize int64) (bool, error) {
 	f, err := os.Open(filepath.Join(dir, lockName))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return walSize > 0, nil
 	}
 	if err != nil {
 		return false, err
@@ -98,7 +104,7 @@ func openReadOnly(dir string, opts ReadOnlyOptions, ms []Migration) (*ReadOnly, 
 		case werr != nil:
 			return nil, fmt.Errorf("store: %w", werr)
 		default:
-			running, err := serverRunning(dir)
+			running, err := serverRunning(dir, wal.Size())
 			if err != nil {
 				return nil, fmt.Errorf("store: cannot tell whether a server is running: %w", err)
 			}
