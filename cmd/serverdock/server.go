@@ -336,12 +336,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentCtx, agentCancel := context.WithCancel(ctx)
 	defer agentCancel()
 
-	srv := api.New(web.FS())
 	maxSessions := cfg.AgentMaxSessions
 	if maxSessions <= 0 {
 		maxSessions = hub.DefaultMaxSessions
 	}
 	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	srv := api.New(api.Config{
+		SPA: web.FS(), Sessions: authStore, PanelHosts: cfg.PanelHosts,
+		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
+	})
 	started = true
 	cpErr := make(chan error, 3)
 	cpRunning := 1
@@ -364,7 +367,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	if debugLn != nil {
 		cpRunning++
-		go func() { cpErr <- api.Serve(cpCtx, debugLn, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
+		go func() { cpErr <- api.Serve(cpCtx, debugLn, srv.DebugHandler(), shutdownGrace) }()
 	}
 	log.Info("control plane listening", "socket", addrs.Control)
 
@@ -446,5 +449,5 @@ func panelProxy(p *pki.Panel, cfg serverConfig) *proxy.Panel {
 	if p == nil {
 		return nil
 	}
-	return &proxy.Panel{Listen: cfg.HTTPSListen, CertFile: p.CertFile}
+	return &proxy.Panel{Listen: cfg.HTTPSListen, CertFile: p.CertFile, Hosts: cfg.PanelHosts}
 }

@@ -169,7 +169,7 @@ Full threat model: [security.md](security.md).
 
 ```
 cmd/serverdock/           * main: server | agent | version; + audit verify (cli later)
-internal/api/             * control-plane HTTP: /healthz, SPA serving, debug handlers; + header/body limits, /agent/* answers 404, the "from our proxy" connection mark (`WithTrustedProxy`)
+internal/api/             * control-plane HTTP: the route table (every route and its AuthKind), Host/Origin/content-type/CSRF middleware, credential resolution, SPA serving with CSP, debug handlers; + header/body limits, /agent/* answers 404, the "from our proxy" connection mark (`WithTrustedProxy`)
 internal/hub/             * server side of agent connections (WebSocket + yamux); + sessions cap, auth-failure limiter, stream caps, token rules
 internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`; + op-spec table (RemoteOK), ping guard
 internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)

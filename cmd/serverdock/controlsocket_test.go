@@ -35,7 +35,7 @@ func TestControlSocketModes(t *testing.T) {
 		t.Fatalf("socket dir %v %v", st, err)
 	}
 	// A request without the proxy's single X-Forwarded-For is refused with 400.
-	resp, err := unixClient(sock).Get("http://cp/healthz")
+	resp, err := unixClient(sock).Get("http://127.0.0.1/healthz")
 	if err != nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("no XFF: %v %v", resp, err)
 	}
@@ -125,7 +125,7 @@ func TestControlAndDebugPathsMustDiffer(t *testing.T) {
 func TestControlSocketConnectionCap(t *testing.T) {
 	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t)})
 	defer stop()
-	req := "GET /healthz HTTP/1.1\r\nHost: cp\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n"
+	req := "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-For: 127.0.0.1\r\n\r\n"
 	roundTrip := func(c net.Conn, d time.Duration) (string, error) {
 		c.SetDeadline(time.Now().Add(d))
 		if _, err := c.Write([]byte(req)); err != nil {

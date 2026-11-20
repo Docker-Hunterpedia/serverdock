@@ -268,13 +268,17 @@ func TestPanelConfig(t *testing.T) {
 
 	// :80: one redirect route, never a reverse proxy; Caddy logs at WARN.
 	routes := main["routes"].([]any)
-	if len(routes) != 2 { // an IPv6-literal route, then the default
+	if len(routes) != 3 { // IPv6 with a port, other literals and localhost, then 421
 		t.Fatalf("main routes %v", routes)
 	}
 	r := routes[1].(map[string]any)["handle"].([]any)[0].(map[string]any)
 	loc := r["headers"].(map[string]any)["Location"].([]any)[0]
 	if r["handler"] != "static_response" || r["status_code"] != float64(308) || loc != "https://{http.request.host}{http.request.uri}" {
 		t.Errorf("redirect %v", r)
+	}
+	last := routes[2].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if last["status_code"] != float64(421) || routes[2].(map[string]any)["match"] != nil {
+		t.Errorf("the last :80 route is not an unconditional 421: %v", last)
 	}
 	if strings.Contains(string(mustJSON(t, main)), "reverse_proxy") {
 		t.Error(":80 reaches the control plane")

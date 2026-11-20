@@ -169,7 +169,7 @@ cp_curl() { # curl args...
 wait_ready_sock() { # waits for /healthz on the control socket
   i=0
   while [ "$i" -lt 60 ]; do
-    cp_curl -f -o /dev/null http://cp/healthz 2>/dev/null && return 0
+    cp_curl -f -o /dev/null http://127.0.0.1/healthz 2>/dev/null && return 0
     i=$((i + 1)); sleep 0.5
   done
   log "control socket never became ready"; return 1
@@ -205,7 +205,7 @@ for id in $SCENARIOS; do
         docker volume create --label sdbench=1 "$DBG_VOL" >/dev/null
         docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -v "$DBG_VOL":/debug "$IMAGE" \
           server --data /data --proxy=false --control-socket /debug/cp.sock >/dev/null
-        base="http://cp"; BURST_VIA=sock
+        base="http://127.0.0.1"; BURST_VIA=sock
         wait_ready_sock ;;
       2)
         docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::443 "$IMAGE" \

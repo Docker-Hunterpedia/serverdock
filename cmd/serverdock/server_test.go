@@ -131,7 +131,9 @@ func cpClient(sock string) *http.Client {
 	return c
 }
 
-func cpGet(sock, path string) (*http.Response, error) { return cpClient(sock).Get("http://cp" + path) }
+func cpGet(sock, path string) (*http.Response, error) {
+	return cpClient(sock).Get("http://127.0.0.1" + path)
+}
 
 // unixClient talks HTTP over the debug socket.
 func unixClient(sock string) *http.Client {

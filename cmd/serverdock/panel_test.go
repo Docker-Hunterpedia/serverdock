@@ -36,7 +36,8 @@ func panelServer(t *testing.T, data string) (serverAddrs, func() error, *lockedB
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan serverAddrs, 1)
 	done := make(chan error, 1)
-	cfg := serverConfig{Data: data, ControlSocket: shortSock(t), Listen: testbinFree(t), HTTPSListen: testbinFree(t), Proxy: true}
+	cfg := serverConfig{Data: data, ControlSocket: shortSock(t), Listen: testbinFree(t), HTTPSListen: testbinFree(t), Proxy: true,
+		PanelHosts: []string{"panel.example.com"}}
 	go func() {
 		done <- runServer(ctx, cfg, slog.New(slog.NewTextHandler(&logs, nil)), func(a serverAddrs) { ready <- a })
 	}()
@@ -264,6 +265,42 @@ func TestPanelRedirectKeepsIPv6Brackets(t *testing.T) {
 		resp.Body.Close()
 		if got := resp.Header.Get("Location"); resp.StatusCode != 308 || got != tc.want {
 			t.Errorf("Host %q: %d Location %q, want %q", tc.host, resp.StatusCode, got, tc.want)
+		}
+	}
+}
+
+// :80 redirects only for names the server answers to: IP literals, localhost and
+// --panel-host. Any other Host is 421, not a redirect to a name the client chose.
+func TestPanelRedirectHostAllowlist(t *testing.T) {
+	addrs, stop, _ := panelServer(t, newData(t))
+	defer stop()
+	c := insecureClient()
+	defer c.CloseIdleConnections()
+	status := func(host string) (int, string) {
+		var resp *http.Response
+		var err error
+		for i := 0; i < 50; i++ {
+			req, _ := http.NewRequest("GET", "http://"+addrs.Listen+"/x", nil)
+			req.Host = host
+			if resp, err = c.Do(req); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("Host %q: %v", host, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode, resp.Header.Get("Location")
+	}
+	for _, ok := range []string{"127.0.0.1", "203.0.113.9:8080", "localhost", "LOCALHOST:80", "[::1]", "[::1]:80", "panel.example.com", "Panel.Example.com:80"} {
+		if code, loc := status(ok); code != 308 || !strings.HasPrefix(loc, "https://") {
+			t.Errorf("Host %q: %d %q, want a redirect", ok, code, loc)
+		}
+	}
+	for _, bad := range []string{"evil.test", "localhost.evil.test", "panel.example.com.evil.test", "evilpanel.example.com", "example.org:80", "999"} {
+		if code, loc := status(bad); code != 421 || loc != "" {
+			t.Errorf("Host %q: %d Location %q, want 421 and no Location", bad, code, loc)
 		}
 	}
 }

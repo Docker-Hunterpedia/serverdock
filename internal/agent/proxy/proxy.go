@@ -46,6 +46,10 @@ type Panel struct {
 	Listen string
 	// CertFile is DATA/pki/panel.pem, used as both certificate and key.
 	CertFile string
+	// Hosts are the --panel-host names. The :80 redirect answers only for an IP
+	// literal, "localhost" and these names (the control plane's Host allowlist);
+	// any other Host gets 421 instead of a redirect to an attacker-chosen name.
+	Hosts []string
 }
 
 // SNI is the server name both the default (no SNI) and the fallback (unknown
@@ -146,11 +150,21 @@ func BuildConfig(c Config) ([]byte, error) {
 			return m{"handler": "static_response", "status_code": 308,
 				"headers": m{"Location": []string{"https://" + hostExpr + c.Panel.redirectPort() + "{http.request.uri}"}}}
 		}
-		ipv6 := m{"vars_regexp": m{"{http.request.host}": m{"pattern": "^[0-9a-fA-F:.]*:[0-9a-fA-F:.]*$"}}}
-		redirects := []m{
-			{"match": []m{ipv6}, "handle": []m{redirect("[{http.request.host}]")}, "terminal": true},
-			{"handle": []m{redirect("{http.request.host}")}},
+		host := "{http.request.host}"
+		match := func(pattern string) []m {
+			return []m{{"vars_regexp": m{host: m{"pattern": pattern}}}}
 		}
+		redirects := []m{
+			// IPv6 literal that had a port: no brackets in the placeholder.
+			{"match": match("^[0-9a-fA-F:.]*:[0-9a-fA-F:.]*$"), "handle": []m{redirect("[" + host + "]")}, "terminal": true},
+			// IPv4 literal, bracketed IPv6 literal without a port, localhost.
+			{"match": match(`(?i)^(localhost|\[[0-9a-f:.]+\]|([0-9]{1,3}\.){3}[0-9]{1,3})$`), "handle": []m{redirect(host)}, "terminal": true},
+		}
+		if len(c.Panel.Hosts) > 0 {
+			redirects = append(redirects, m{"match": []m{{"host": c.Panel.Hosts}}, "handle": []m{redirect(host)}, "terminal": true})
+		}
+		// Anything else: 421, not a redirect to whatever name the client sent.
+		redirects = append(redirects, m{"handle": []m{m{"handler": "static_response", "status_code": 421, "body": "misdirected request\n"}}})
 		httpApp["servers"] = m{
 			"main": limits(m{
 				"listen": []string{c.Listen},
