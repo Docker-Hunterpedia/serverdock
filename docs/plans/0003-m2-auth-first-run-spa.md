@@ -419,7 +419,7 @@ Base rules: every input has a visible label; hints and errors linked with `aria-
   - Setup shows the token's actual expiry time and says what happens at expiry. If the token expires while the form is open, the expired message appears and the username is kept.
   - The two-factor step says up front it lasts 5 minutes, announces politely about 1 minute before expiry ("About a minute left"), and on expiry shows "This step expired. Sign in again" with the username kept.
   - The Signed-out screen says why (step-up failures, idle, absolute expiry, revoked, credentials changed).
-  - Playwright runs these with injected short expiries (a test-only server flag behind the `testbin` harness, not in release help).
+  - Playwright runs these without a test-only server flag: each state-changing test starts a fresh binary and expires or revokes state by editing its temporary database with Node's built-in `node:sqlite` (`sessions.idle_expires_at` and `abs_expires_at`, `auth_pending.expires_at`, `setup_state.expires_at`), and `page.clock` moves the browser's timers. `web/e2e/server.ts` therefore has to follow any renamed or removed column in those tables (a migration that touches them must update it).
 - **A2 — Live regions.**
   - The back-off countdown updates visually every second but is announced only at the start ("Too many attempts. Try again in 2 minutes"), at coarse steps (each minute, then at 10 s), and at the end ("You can try again now").
   - One assertive region (`role="alert"`) per page carries errors; status messages use one `role="status"` region.
@@ -777,4 +777,10 @@ The automated suite cannot hear anything. Before step 12 merges, with VoiceOver 
 5. **Route changes:** after each page change the new heading is read once. **Check for a double announcement** from the heading taking focus and SvelteKit's route announcer (`#svelte-announcer`, which says the new page title); if it is noisy, record it so the announcer can be turned off for pages that move focus.
 6. **Sign in and two-factor:** the busy state ("Signing in…") is announced and the button stays on focus; the "About a minute left" status is announced without moving focus (leave the step open for 4 minutes); the expiry message and "Sign in again" link; the back-off countdown (needs a rate-limited account) is announced at the start and at coarse steps only.
 7. **Footer:** it is not announced while idle.
-8. **Zoom and text size:** at 200% browser zoom and the largest system text size nothing is clipped on either screen set.
+8. **Overview banners:** after a sign-in that had failed codes or an unwritten audit record, the banners are announced on load (the audit warning as an alert, the notice as a status). Each Dismiss button has its own name ("Dismiss audit warning", "Dismiss sign-in notice") and focus lands on the Overview heading afterwards.
+9. **Recovery-code toggle (sign-in):** switching between the authenticator and a recovery code moves focus to the new field and announces the change once.
+10. **Two-factor expiry:** after the step runs out, focus lands on the "This step expired" alert, which is read, and "Sign in again" is reachable next.
+11. **Wrong password:** the message is read and linked to the password field, the password field is empty, the username is kept.
+12. **Back-off countdown in browse mode:** the visible "Try again in M:SS" is readable with the virtual cursor (it is not hidden), and activating the dimmed Sign in button says how long is left.
+13. **Key and recovery-code groups:** the setup key and the `sudo cat` command are announced as labelled groups ("Setup key for admin", "Read it on the server with:") and read as text.
+14. **Zoom and text size:** at 200% browser zoom and the largest system text size nothing is clipped on either screen set.

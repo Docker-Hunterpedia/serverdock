@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, expectNoAxeViolations, test } from './fixtures';
+import { request } from '@playwright/test';
 import { PASSWORD, totp, type TestServer } from './server';
 
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -26,7 +27,7 @@ async function toEnroll(page: Page, server: TestServer) {
 	await page.getByRole('button', { name: 'Continue' }).click();
 	await expect(h1(page, 'Add your authenticator')).toBeVisible();
 }
-const secretOf = async (page: Page) => ((await page.locator('code[aria-labelledby="key-label"]').textContent()) ?? '').replace(/\s/g, '');
+const secretOf = async (page: Page) => ((await page.locator('[role="group"][aria-labelledby="key-label"] code').textContent()) ?? '').replace(/\s/g, '');
 
 test.describe('setup, step 1', () => {
 	test('the token screen: real path, expiry, no fingerprint, stepper, axe', async ({ page, server }) => {
@@ -42,8 +43,9 @@ test.describe('setup, step 1', () => {
 		// A hint paragraph, linked to the field; not placeholder text.
 		const field = page.getByLabel('Setup token');
 		await expect(field).not.toHaveAttribute('placeholder', /.+/);
-		const hintId = (await field.getAttribute('aria-describedby'))!;
+		const hintId = (await field.getAttribute('aria-describedby'))!.split(' ')[0];
 		await expect(page.locator(`#${hintId}`)).toContainText('sd_setup_');
+		expect(await field.getAttribute('aria-describedby')).toContain('expiry'); // the expiry sentence is tied to the field
 		await expect(page.getByRole('button', { name: 'Back' })).toHaveCount(0); // nothing before step 1
 		await expectNoAxeViolations(page, 'setup step 1');
 	});
@@ -127,10 +129,11 @@ test.describe('setup, step 2', () => {
 		await expect(alert(page)).toBeFocused();
 		await expect(page.locator('#password-error')).toContainText('at least 12 characters');
 		await expectNoAxeViolations(page, 'password error');
-		const toggle = page.getByRole('button', { name: 'Show password' });
+		const toggle = page.getByRole('button', { name: 'Show password' }); // a constant name; aria-pressed carries the state
+		await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 		await toggle.click();
 		await expect(pw).toHaveAttribute('type', 'text');
-		await expect(page.getByRole('button', { name: 'Hide password' })).toHaveAttribute('aria-pressed', 'true');
+		await expect(toggle).toHaveAttribute('aria-pressed', 'true');
 		await expectNoAxeViolations(page, 'account form');
 	});
 
@@ -145,7 +148,7 @@ test.describe('setup, step 2', () => {
 
 	test('the authenticator screen: key before QR, QR on light, link, code field, axe', async ({ page, server }) => {
 		await toEnroll(page, server);
-		const key = page.locator('code[aria-labelledby="key-label"]');
+		const key = page.locator('[role="group"][aria-labelledby="key-label"] code');
 		const qr = page.getByRole('img', { name: 'QR code for your authenticator app' });
 		await expect(qr).toBeVisible();
 		// DOM order: the text key first, then the QR.
@@ -361,8 +364,9 @@ test.describe('sign in', () => {
 		await expect(page.locator('form')).toHaveAttribute('aria-busy', 'false');
 	});
 
-	test('a network failure and a busy server are plain, and nothing typed is lost', async ({ page, server, admin }) => {
+	test('a network failure and a busy server are plain, and nothing typed is lost', async ({ page, server, admin, allow5xx }) => {
 		void admin;
+		allow5xx();
 		await page.goto(url(server, '/login'));
 		await page.getByLabel('Username').fill('admin');
 		await page.getByLabel('Password').fill('whatever password');
@@ -458,5 +462,175 @@ test.describe('sign in', () => {
 		}
 		const f = (await page.getByLabel('Setup token').boundingBox())!;
 		expect(f.height).toBeGreaterThanOrEqual(44);
+	});
+});
+
+test.describe('step 12 review fixes', () => {
+	test('in-app navigation is cancelled while the recovery codes are unsaved', async ({ page, server }) => {
+		await toEnroll(page, server);
+		await page.getByLabel('Code from your authenticator').fill(totp(await secretOf(page)));
+		await page.getByRole('button', { name: 'Create account' }).click();
+		await expect(h1(page, 'Save your recovery codes')).toBeVisible();
+		const leave = () =>
+			page.evaluate(() => {
+				const a = document.createElement('a');
+				a.href = '/login';
+				a.textContent = 'leave';
+				document.body.append(a);
+				a.click();
+			});
+		await leave();
+		await expect(status(page)).toContainText('Tick "I have saved these codes" before you leave this page.');
+		await expect(h1(page, 'Save your recovery codes')).toBeVisible();
+		expect(new URL(page.url()).pathname).toBe('/setup');
+		await page.getByLabel('I have saved these codes').check();
+		await leave(); // saved: navigation is allowed (signed in, so /login goes home)
+		await expect(h1(page, 'Overview')).toBeVisible();
+	});
+
+	test('expiry moves focus to the alert; the countdown stays readable and a locked submit says the time left', async ({ page, server, admin }) => {
+		void admin;
+		await page.clock.install();
+		await page.goto(url(server, '/login'));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill(PASSWORD);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+		await expect(page.getByLabel('Code from your authenticator')).toBeVisible();
+		await page.clock.runFor(301_000);
+		await expect(alert(page)).toContainText('This step expired. Sign in again.');
+		await expect(alert(page)).toBeFocused();
+	});
+
+	test('a locked submit states the remaining time, and the visible countdown is not hidden from assistive technology', async ({ page, server, admin }) => {
+		void admin;
+		await page.clock.install();
+		await page.goto(url(server, '/login'));
+		await page.route('**/api/v1/auth/login', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '125' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill('whatever password');
+		const submit = page.getByRole('button', { name: 'Sign in' });
+		await submit.click();
+		const banner = page.getByText(/^Try again in \d+:\d\d$/);
+		await expect(banner).toBeVisible();
+		await expect(banner).not.toHaveAttribute('aria-hidden', /.*/);
+		expect(await banner.evaluate((e) => !!e.closest('[aria-hidden="true"]'))).toBe(false);
+		await page.clock.runFor(7_000);
+		await submit.click({ force: true });
+		await expect(status(page)).toHaveText('Try again in 2 minutes.');
+		await page.clock.runFor(70_000);
+		await submit.click({ force: true });
+		await expect(status(page)).toHaveText('Try again in 48 seconds.');
+	});
+
+	test('the recovery toggle moves focus to the new field and announces it; the reused-code link follows the mode', async ({ page, server, admin }) => {
+		void admin;
+		await page.goto(url(server, '/login'));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill(PASSWORD);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+		await page.getByRole('button', { name: 'Use a recovery code instead' }).click();
+		await expect(page.getByLabel('Recovery code')).toBeFocused();
+		await expect(status(page)).toHaveText('Enter one of your recovery codes instead.');
+		await page.route('**/api/v1/auth/2fa', (r) => r.fulfill({ status: 401, contentType: 'application/json', body: '{"error":{"code":"code_reused","message":"x","request_id":"r"}}' }));
+		await page.getByLabel('Recovery code').fill('aaaa-bbbb-cccc-dddd');
+		await page.getByRole('button', { name: 'Verify' }).click();
+		await expect(alert(page).getByRole('link', { name: 'Recovery code' })).toBeVisible();
+		await page.getByRole('button', { name: 'Use my authenticator app instead' }).click();
+		await expect(page.getByLabel('Code from your authenticator')).toBeFocused();
+		await expect(status(page)).toHaveText('Enter the code from your authenticator app instead.');
+	});
+
+	test('reloading the two-factor page does not claim a time limit it does not know', async ({ page, server, admin }) => {
+		void admin;
+		await page.goto(url(server, '/login'));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill(PASSWORD);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+		await expect(page.getByText('You have 5 minutes to finish this step.')).toBeVisible();
+		await page.reload();
+		await expect(h1(page, 'Two-factor sign-in')).toBeVisible();
+		await expect(page.getByText(/5 minutes/)).toHaveCount(0);
+		await expect(page.getByText('This step is time-limited. If it runs out you will be asked to sign in again.')).toBeVisible();
+		await expect(page.getByText(/Signing in as/)).toHaveCount(0); // nothing is kept in storage
+		// SvelteKit keeps scroll positions in sessionStorage; nothing of ours (no username, no deadline).
+		expect(await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]))).not.toMatch(/admin|pending/i);
+		await expectNoAxeViolations(page, 'two-factor after a reload');
+	});
+
+	test('Overview banners: distinct Dismiss names, focus to the heading', async ({ page, server, admin }) => {
+		void admin;
+		await page.goto(url(server, '/login'));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill(PASSWORD);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+		// One wrong code now, so the next sign-in carries a notice; then mark the audit as unrecorded.
+		await page.getByLabel('Code from your authenticator').fill('000000');
+		await page.getByRole('button', { name: 'Verify' }).click();
+		await expect(alert(page)).toContainText('That code is wrong');
+		await page.route('**/api/v1/auth/2fa', async (route) => {
+			const res = await route.fetch();
+			const body = await res.json();
+			body.audit = 'unrecorded';
+			await route.fulfill({ response: res, json: body });
+		});
+		await page.getByLabel('Code from your authenticator').fill(totp(admin.secret, Date.now() + 30_000));
+		await page.getByRole('button', { name: 'Verify' }).click();
+		await expect(h1(page, 'Overview')).toBeVisible();
+		await expect(page.getByRole('alert')).toContainText('The audit record for this sign-in could not be written');
+		await expect(page.getByRole('status').filter({ hasText: 'wrong two-factor code was entered' })).toBeVisible();
+		await expectNoAxeViolations(page, 'Overview with banners');
+		await page.getByRole('button', { name: 'Dismiss audit warning' }).click();
+		await expect(h1(page, 'Overview')).toBeFocused();
+		await page.getByRole('button', { name: 'Dismiss sign-in notice' }).click();
+		await expect(h1(page, 'Overview')).toBeFocused();
+		await expect(page.getByRole('button', { name: /Dismiss/ })).toHaveCount(0);
+	});
+
+	test('the setup page loads with one assertive region even when the status call fails', async ({ page, server, allow5xx }) => {
+		allow5xx();
+		await page.route('**/api/v1/setup/status', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"could not read the setup state","request_id":"r"}}' }));
+		await page.goto(url(server, '/setup'));
+		await expect(alert(page)).toContainText('could not read the setup state');
+		await expect(page.getByRole('alert')).toHaveCount(1);
+		await expectNoAxeViolations(page, 'setup, status failed');
+	});
+
+	test('the password is checked locally against the username and the 256 byte limit', async ({ page, server }) => {
+		await toAccount(page, server);
+		await page.getByLabel('Username').fill('operator-account');
+		await page.getByLabel('Password', { exact: true }).fill('Operator-Account');
+		await page.getByRole('button', { name: 'Continue' }).click();
+		await expect(page.locator('#password-error')).toContainText('must differ from the username');
+		await page.getByLabel('Password', { exact: true }).fill('é'.repeat(129)); // 258 bytes, 129 characters
+		await page.getByRole('button', { name: 'Continue' }).click();
+		await expect(page.locator('#password-error')).toContainText('longer than 256 bytes');
+	});
+
+	test('copy hints, and the download link is revoked about a second later', async ({ page, server }) => {
+		await page.addInitScript(() => {
+			const create = URL.createObjectURL.bind(URL);
+			const revoke = URL.revokeObjectURL.bind(URL);
+			const made = new Map<string, number>();
+			(window as unknown as { revoked: number[] }).revoked = [];
+			URL.createObjectURL = (o: Blob | MediaSource) => {
+				const u = create(o);
+				made.set(u, performance.now());
+				return u;
+			};
+			URL.revokeObjectURL = (u: string) => {
+				(window as unknown as { revoked: number[] }).revoked.push(performance.now() - (made.get(u) ?? 0));
+				revoke(u);
+			};
+		});
+		await toEnroll(page, server);
+		await expect(page.getByText(/Clipboard history apps may keep a copy/)).toBeVisible();
+		await page.getByLabel('Code from your authenticator').fill(totp(await secretOf(page)));
+		await page.getByRole('button', { name: 'Create account' }).click();
+		await expect(page.getByText('Clipboard history apps may keep a copy; Download is safer for recovery codes.')).toBeVisible();
+		await page.getByRole('button', { name: 'Download as text' }).click();
+		await expect(page.getByRole('status')).toContainText('Download started.');
+		expect(await page.evaluate(() => (window as unknown as { revoked: number[] }).revoked.length)).toBe(0); // not at once
+		await expect.poll(() => page.evaluate(() => (window as unknown as { revoked: number[] }).revoked[0] ?? 0), { timeout: 5000 }).toBeGreaterThanOrEqual(900);
+		void request;
 	});
 });

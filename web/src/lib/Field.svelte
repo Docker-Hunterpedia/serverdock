@@ -14,10 +14,12 @@
 		inputmode?: 'numeric' | 'text';
 		maxlength?: number;
 		readonly?: boolean;
+		/** Ids of extra paragraphs that describe the field (e.g. an expiry sentence). */
+		describedby?: string;
 		el?: HTMLInputElement;
 	};
-	let { id, label, value = $bindable(), type = 'text', hint, error, autocomplete, inputmode, maxlength, readonly, el = $bindable() }: Props = $props();
-	const describedby = $derived([hint ? `${id}-hint` : '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined);
+	let { id, label, value = $bindable(), type = 'text', hint, error, autocomplete, inputmode, maxlength, readonly, describedby: extra, el = $bindable() }: Props = $props();
+	const describedBy = $derived([hint ? `${id}-hint` : '', extra ?? '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined);
 </script>
 
 <div class="field">
@@ -35,7 +37,7 @@
 		{readonly}
 		spellcheck="false"
 		autocapitalize="none"
-		aria-describedby={describedby}
+		aria-describedby={describedBy}
 		aria-invalid={error ? 'true' : undefined}
 	/>
 	{#if error}<p id="{id}-error" class="error"><span aria-hidden="true">▲</span> {error}</p>{/if}

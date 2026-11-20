@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { onDestroy, tick } from 'svelte';
 	import { ApiError, login, NETWORK_MESSAGE } from '../../../lib/api';
-	import { Countdown } from '../../../lib/countdown.svelte';
+	import { Countdown, humanDuration } from '../../../lib/countdown.svelte';
 	import { flow } from '../../../lib/flow.svelte';
 	import Alerts from '../../../lib/Alerts.svelte';
 	import Field from '../../../lib/Field.svelte';
@@ -19,6 +19,10 @@
 	const countdown = new Countdown((m) => (status = m));
 	onDestroy(() => countdown.stop());
 	const locked = $derived(busy || countdown.active);
+	function refuse(): boolean {
+		if (countdown.active) status = `Try again in ${humanDuration(countdown.remaining)}.`;
+		return locked;
+	}
 
 	async function fail(msg: string, l: { id: string; text: string }[] = []) {
 		error = msg;
@@ -29,7 +33,7 @@
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
-		if (locked) return;
+		if (refuse()) return;
 		error = null;
 		links = [];
 		fieldError = {};
@@ -74,7 +78,7 @@
 
 <Alerts bind:this={alerts} {error} {links} {status} />
 {#if countdown.active}
-	<p class="banner" aria-hidden="true">Try again in {countdown.text}</p>
+	<p class="banner">Try again in {countdown.text}</p>
 {/if}
 
 <form onsubmit={submit} aria-busy={busy} novalidate>

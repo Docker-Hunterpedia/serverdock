@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { flash } from '../../lib/flow.svelte';
 	import PageHeading from '../../lib/PageHeading.svelte';
 
@@ -7,6 +8,12 @@
 	let unrecorded = $state(flash.audit === 'unrecorded');
 	flash.notice = undefined;
 	flash.audit = undefined;
+	// A dismissed banner takes its button with it, so focus moves to the heading.
+	async function dismiss(hide: () => void) {
+		hide();
+		await tick();
+		document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
+	}
 	const failures = $derived(notice?.totp_failures ?? 0);
 	const when = $derived(notice?.last_failure_at ? new Date(notice.last_failure_at * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '');
 </script>
@@ -20,7 +27,7 @@
 {#if unrecorded}
 	<div role="alert" class="banner">
 		<p><span aria-hidden="true">▲</span> The audit record for this sign-in could not be written. You are signed in, but check the server's disk and logs.</p>
-		<button type="button" onclick={() => (unrecorded = false)}>Dismiss</button>
+		<button type="button" onclick={() => dismiss(() => (unrecorded = false))}>Dismiss audit warning</button>
 	</div>
 {/if}
 {#if failures > 0}
@@ -29,7 +36,7 @@
 			{failures} wrong two-factor {failures === 1 ? 'code was' : 'codes were'} entered since your last sign-in{when ? `, the latest at ${when}` : ''}{notice?.last_failure_ip ? ` from ${notice.last_failure_ip}` : ''}.
 			If that was not you, change your password.
 		</p>
-		<button type="button" onclick={() => (notice = undefined)}>Dismiss</button>
+		<button type="button" onclick={() => dismiss(() => (notice = undefined))}>Dismiss sign-in notice</button>
 	</div>
 {/if}
 

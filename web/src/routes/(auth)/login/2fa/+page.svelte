@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { ApiError, NETWORK_MESSAGE, twoFactor } from '../../../../lib/api';
-	import { Countdown } from '../../../../lib/countdown.svelte';
+	import { Countdown, humanDuration } from '../../../../lib/countdown.svelte';
 	import { flash, flow } from '../../../../lib/flow.svelte';
 	import Alerts from '../../../../lib/Alerts.svelte';
 	import Field from '../../../../lib/Field.svelte';
@@ -20,6 +20,10 @@
 	let alerts: Alerts | undefined = $state();
 	const countdown = new Countdown((m) => (status = m));
 	const locked = $derived(busy || countdown.active || expired);
+	function refuse(): boolean {
+		if (countdown.active) status = `Try again in ${humanDuration(countdown.remaining)}.`;
+		return locked;
+	}
 
 	// The pending step lasts 5 minutes. About a minute before it ends a polite status
 	// says so (focus never moves); at the end the page says to sign in again.
@@ -39,11 +43,23 @@
 		clearTimeout(endTimer);
 		countdown.stop();
 	});
-	function expire() {
+	async function expire() {
 		expired = true;
 		status = '';
 		error = 'This step expired. Sign in again.';
 		links = [];
+		await tick();
+		alerts?.focus(); // the form is gone, so focus must not be left on nothing
+	}
+
+	async function toggleMode() {
+		recoveryMode = !recoveryMode;
+		error = null;
+		links = [];
+		fieldError = {};
+		await tick();
+		document.getElementById(recoveryMode ? 'recovery' : 'code')?.focus();
+		status = recoveryMode ? 'Enter one of your recovery codes instead.' : 'Enter the code from your authenticator app instead.';
 	}
 
 	async function fail(msg: string, l: { id: string; text: string }[] = []) {
@@ -55,7 +71,7 @@
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
-		if (locked) return;
+		if (refuse()) return;
 		error = null;
 		links = [];
 		fieldError = {};
@@ -81,7 +97,7 @@
 			code = '';
 			recoveryCode = '';
 			if (err.code === 'network') await fail(NETWORK_MESSAGE);
-			else if (err.code === 'code_reused') await fail('That code was already used. Wait for the next one.', [{ id, text: 'Code from your authenticator' }]);
+			else if (err.code === 'code_reused') await fail('That code was already used. Wait for the next one.', [{ id, text: recoveryMode ? 'Recovery code' : 'Code from your authenticator' }]);
 			else if (err.code === 'invalid_code') {
 				const tries = err.triesLeft !== undefined ? ` ${err.triesLeft} ${err.triesLeft === 1 ? 'try' : 'tries'} left.` : '';
 				if (recoveryMode) await fail(`That recovery code is not valid or was already used.${tries}`, [{ id, text: 'Recovery code' }]);
@@ -106,12 +122,13 @@
 <PageHeading>Two-factor sign-in</PageHeading>
 
 <p>
-	{#if flow.username}Signing in as <strong>{flow.username}</strong>. {/if}You have 5 minutes to finish this step.
+	{#if flow.username}Signing in as <strong>{flow.username}</strong>. {/if}
+	{#if flow.pendingUntil > 0}You have 5 minutes to finish this step.{:else}This step is time-limited. If it runs out you will be asked to sign in again.{/if}
 </p>
 
 <Alerts bind:this={alerts} {error} {links} {status} />
 {#if countdown.active}
-	<p class="banner" aria-hidden="true">Try again in {countdown.text}</p>
+	<p class="banner">Try again in {countdown.text}</p>
 {/if}
 
 {#if expired}
@@ -141,7 +158,7 @@
 		{/if}
 		<div class="actions">
 			<button type="submit" class="primary" aria-disabled={locked}>Verify</button>
-			<button type="button" class="link" onclick={() => { recoveryMode = !recoveryMode; error = null; links = []; fieldError = {}; }}>
+			<button type="button" class="link" onclick={toggleMode}>
 				{recoveryMode ? 'Use my authenticator app instead' : 'Use a recovery code instead'}
 			</button>
 		</div>

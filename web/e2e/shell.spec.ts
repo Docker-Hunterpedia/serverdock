@@ -107,7 +107,8 @@ test.describe('shell states', () => {
 });
 
 test.describe('footer status (A12)', () => {
-	test('shows the numbers, is not a live region, and says unknown when a poll fails', async ({ page, problems }) => {
+	test('shows the numbers, is not a live region, and says unknown when a poll fails', async ({ page, problems, allow5xx }) => {
+		allow5xx();
 		await page.clock.install();
 		await openOverview(page);
 		await expect(footer(page)).toContainText(/\d+ MB RAM/);
@@ -366,7 +367,8 @@ test.describe('the footer poll maps the 401 code too', () => {
 });
 
 test.describe('error page', () => {
-	test('a server error: title matches the heading and Try again works', async ({ page, problems }) => {
+	test('a server error: title matches the heading and Try again works', async ({ page, problems, allow5xx }) => {
+		allow5xx();
 		await page.route('**/api/v1/auth/session', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"could not check the session","request_id":"r"}}' }));
 		await page.goto('/');
 		await expect(page.getByRole('heading', { level: 1, name: 'Something went wrong' })).toBeVisible();

@@ -12,11 +12,12 @@ export async function expectNoAxeViolations(page: Page, what: string) {
 }
 
 // Every test also fails on a CSP violation, a page error or a console error.
-type Fixtures = { problems: string[]; server: TestServer; admin: Admin };
+type Fixtures = { problems: string[]; server: TestServer; admin: Admin; allow5xx: () => void };
 
 // `server` is a fresh binary with nothing set up (state-changing tests own one, so
 // back-off counters and the one-time setup token are never shared); `admin` has also
 // done the first run. Use them with an empty storageState.
+const allowed = { value: false };
 export const test = base.extend<Fixtures>({
 	server: async ({}, use) => {
 		const server = await startServer();
@@ -26,9 +27,17 @@ export const test = base.extend<Fixtures>({
 	admin: async ({ server }, use) => {
 		await use(await server.firstRun());
 	},
+	allow5xx: async ({}, use) => {
+		// A test that provokes a server error on purpose calls this first.
+		await use(() => (allowed.value = true));
+	},
 	problems: [
 		async ({ page }, use) => {
 			const problems: string[] = [];
+			allowed.value = false;
+			page.on('response', (r) => {
+				if (r.status() >= 500 && r.url().includes('/api/v1/')) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
+			});
 			await page.addInitScript(() => {
 				addEventListener('securitypolicyviolation', (e) => {
 					console.error('CSP violation: ' + e.violatedDirective + ' ' + e.blockedURI);
@@ -43,6 +52,7 @@ export const test = base.extend<Fixtures>({
 				problems.push('console: ' + m.text());
 			});
 			await use(problems);
+			if (allowed.value) problems.splice(0, problems.length, ...problems.filter((p) => !p.startsWith('API 5')));
 			expect(problems, 'CSP violations, page errors or console errors').toEqual([]);
 		},
 		{ auto: true }
