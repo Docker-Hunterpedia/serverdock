@@ -136,6 +136,8 @@ type Result struct {
 	Plan *Plan // set for a dry run
 	// Audited is true when intent/outcome rows were written.
 	Audited bool
+	// AuditIntentID is the id of the intent row of this invocation (0 when none was written).
+	AuditIntentID int64
 	// AuditOutcomeRecorded is false when the action succeeded but its outcome
 	// row could not be written (the error is then audit.ErrAuditOutcome).
 	AuditOutcomeRecorded bool
@@ -520,7 +522,7 @@ func (r *Registry) invoke(ctx context.Context, actor Actor, executor, name strin
 		Risk: act.risk.String(), DryRun: opts.DryRun, ArgsJSON: p.args, RequestID: call.RequestID}
 	oc, err := audit.Execute(ctx, r.sink, r.log, p.rd, intent, run)
 	res := oc.Value
-	res.Audited, res.AuditOutcomeRecorded = oc.IntentID != 0, oc.AuditOutcomeRecorded
+	res.Audited, res.AuditOutcomeRecorded, res.AuditIntentID = oc.IntentID != 0, oc.AuditOutcomeRecorded, oc.IntentID
 	return res, err
 }
 

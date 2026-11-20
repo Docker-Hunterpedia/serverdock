@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base32"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -114,6 +115,8 @@ func fileSums(t *testing.T, data string, rels ...string) map[string]string {
 
 func TestAdminResetClearsExactlyTheAdminState(t *testing.T) {
 	a := seedAdmin(t)
+	stale := filepath.Join(a.data, "setup-token") // a leftover from before the reset
+	os.WriteFile(stale, []byte("stale\n"), 0o600)
 	keep := []string{"pki/ca.key", "pki/ca.crt", "pki/hub.pem", "agent.token", "keys/master.key"}
 	before := fileSums(t, a.data, keep...)
 	if dbCount(t, a.data, `SELECT count(*) FROM sessions`) != 1 || dbCount(t, a.data, `SELECT count(*) FROM recovery_codes`) != 10 {
@@ -127,6 +130,17 @@ func TestAdminResetClearsExactlyTheAdminState(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("the stale setup token file was not removed")
+	}
+	// The audit row id in the output is the reset's own intent row.
+	ro1, _ := store.OpenReadOnly(a.data, store.ReadOnlyOptions{})
+	var intentID int64
+	ro1.DB.QueryRow(`SELECT id FROM audit_log WHERE action = 'auth.admin_reset' AND phase = 'intent'`).Scan(&intentID)
+	ro1.Close()
+	if !strings.Contains(out, fmt.Sprintf("Audit row %d (intent)", intentID)) || intentID == 0 {
+		t.Errorf("the output does not name the intent row %d:\n%s", intentID, out)
 	}
 	// Cleared: every credential table, the setup state, the key id.
 	for _, q := range []string{`SELECT count(*) FROM sessions`, `SELECT count(*) FROM auth_pending`, `SELECT count(*) FROM auth_known_ips`,

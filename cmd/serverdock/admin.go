@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -128,13 +129,15 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 		return 1
 	}
 	out, _ := res.Out.(auth.ResetResult)
-	var rowID int64
-	_ = stor.R.QueryRow(`SELECT COALESCE(max(id), 0) FROM audit_log`).Scan(&rowID)
+	// A stale setup token file from before the reset is of no use (its row is gone).
+	if err := os.Remove(filepath.Join(*data, auth.SetupTokenFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(stderr, "serverdock admin reset: could not remove the stale setup token file: %v\n", err)
+	}
 	fmt.Fprintf(stdout, "Reset done: %d sessions deleted, %d pending sign-ins deleted, %d API tokens revoked", out.SessionsDeleted, out.PendingDeleted, out.TokensRevoked)
 	if out.KeyCreated {
 		fmt.Fprint(stdout, ", a new master key created")
 	}
-	fmt.Fprintf(stdout, ". Audit row %d.\n", rowID)
+	fmt.Fprintf(stdout, ". Audit row %d (intent).\n", res.AuditIntentID)
 	if !res.AuditOutcomeRecorded {
 		fmt.Fprintln(stdout, "Warning: the audit outcome row could not be written.")
 	}
