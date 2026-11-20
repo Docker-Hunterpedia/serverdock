@@ -13,9 +13,32 @@ import (
 
 func (e *env) user(id int64) {
 	e.t.Helper()
-	if _, err := e.st.W.Exec(`INSERT OR IGNORE INTO users (id, username, created_at) VALUES (?, ?, 1)`, id, fmt.Sprint("u", id)); err != nil {
+	// An admin-like row: password and confirmed TOTP (sessions only count for admins).
+	if _, err := e.st.W.Exec(`INSERT OR IGNORE INTO users (id, username, password_hash, totp_confirmed_at, created_at) VALUES (?, ?, 'x', 1, 1)`, id, fmt.Sprint("u", id)); err != nil {
 		e.t.Fatal(err)
 	}
+}
+
+// userWithSeed is an admin with a real sealed TOTP seed, for the 2FA step.
+func (e *env) userWithSeed(id int64) []byte {
+	e.t.Helper()
+	e.user(id)
+	seed, _ := NewTOTPSeed()
+	sealed, err := e.box.Seal(fmt.Sprintf("users/%d/totp_seed", id), seed)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := e.st.W.Exec(`UPDATE users SET totp_seed = ? WHERE id = ?`, sealed, id); err != nil {
+		e.t.Fatal(err)
+	}
+	return seed
+}
+
+// nextCode moves the clock to the next time step and returns its code, so each
+// call yields a code newer than any accepted before.
+func (e *env) nextCode(seed []byte) string {
+	e.clk.Add(31 * time.Second)
+	return TOTPCode(seed, TOTPCounter(e.clk.Now()))
 }
 
 func (e *env) newSession(userID int64) (string, Session) {
@@ -84,7 +107,7 @@ func TestExpiredSessionRefusedClearedAndDeleted(t *testing.T) {
 		t.Error("an absolute-expired session was not deleted")
 	}
 	// Unknown, empty and oversized cookies are all "no session".
-	for _, junk := range []string{"", "nope", string(make([]byte, 1000))} {
+	for _, junk := range []string{"nope", string(make([]byte, 1000))} {
 		check(junk, "revoked")
 	}
 }
@@ -359,8 +382,8 @@ func TestPendingPrunedAndCapped(t *testing.T) {
 	}
 }
 
-func completeInput(secret string, counter int64) LoginInput {
-	return LoginInput{PendingSecret: secret, TOTPCounter: counter, IPKey: "1.2.3.4", UserAgent: "ua"}
+func login(secret, code string) LoginInput {
+	return LoginInput{PendingSecret: secret, Code: code, IPKey: "1.2.3.4", UserAgent: "ua"}
 }
 
 // A pending cookie authenticates nothing: it is not in the sessions table, so it
@@ -384,12 +407,22 @@ func TestPendingIsNotASession(t *testing.T) {
 	}
 }
 
+// No credential at all is not a "revoked" session: nothing to clear.
+func TestLookupWithoutACredential(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.s.LookupSession(ctx, "")
+	var se *SessionError
+	if !errors.Is(err, ErrNoSession) || errors.As(err, &se) {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestLoginMintsNewSessionIDAndRevokesTheOldOne(t *testing.T) {
 	e := newEnv(t)
-	e.user(1)
+	seed := e.userWithSeed(1)
 	old, _ := e.newSession(1)
 	pending, _ := e.s.CreatePending(ctx, 1, "1.2.3.4")
-	in := completeInput(pending, 100)
+	in := login(pending, e.nextCode(seed))
 	in.OldSessionSecret = old
 	res, err := e.s.CompleteLogin(ctx, in)
 	if err != nil {
@@ -405,12 +438,12 @@ func TestLoginMintsNewSessionIDAndRevokesTheOldOne(t *testing.T) {
 		t.Errorf("the new session does not work: %v", err)
 	}
 	// The pending row is single use.
-	if _, err := e.s.CompleteLogin(ctx, completeInput(pending, 101)); !errors.Is(err, ErrPendingInvalid) {
+	if _, err := e.s.CompleteLogin(ctx, login(pending, e.nextCode(seed))); !errors.Is(err, ErrPendingInvalid) {
 		t.Errorf("a pending row was used twice: %v", err)
 	}
 	// A client cannot choose its session id: there is no input for it, and a
 	// pending secret that is not in the table mints nothing.
-	if _, err := e.s.CompleteLogin(ctx, completeInput("client-chosen", 102)); !errors.Is(err, ErrPendingInvalid) {
+	if _, err := e.s.CompleteLogin(ctx, login("client-chosen", e.nextCode(seed))); !errors.Is(err, ErrPendingInvalid) {
 		t.Errorf("%v", err)
 	}
 	if n := e.count(`SELECT count(*) FROM sessions`); n != 1 {
@@ -418,18 +451,100 @@ func TestLoginMintsNewSessionIDAndRevokesTheOldOne(t *testing.T) {
 	}
 }
 
+// CompleteLogin takes the raw code and checks everything itself: without a valid
+// pending row, with a wrong code, for a user who is no longer an admin, or after
+// the tries ran out, it never yields a session.
+func TestCompleteLoginNeverMintsWithoutAValidPendingAndCode(t *testing.T) {
+	e := newEnv(t)
+	seed := e.userWithSeed(1)
+	count := func() int { return e.count(`SELECT count(*) FROM sessions`) }
+
+	// No pending row at all, an unknown one, an empty one.
+	for _, p := range []string{"", "nope", string(make([]byte, 1000))} {
+		if _, err := e.s.CompleteLogin(ctx, login(p, e.nextCode(seed))); !errors.Is(err, ErrPendingInvalid) {
+			t.Errorf("pending %q: %v", p, err)
+		}
+	}
+	// Neither or both factors.
+	pending, _ := e.s.CreatePending(ctx, 1, "x")
+	if _, err := e.s.CompleteLogin(ctx, LoginInput{PendingSecret: pending}); err == nil {
+		t.Error("no code accepted")
+	}
+	if _, err := e.s.CompleteLogin(ctx, LoginInput{PendingSecret: pending, Code: "123456", RecoveryCode: "aaaa-bbbb-cccc-dddd"}); err == nil {
+		t.Error("two factors accepted")
+	}
+	// A wrong code: no session, counted for the notice, tries go down.
+	var le *LoginError
+	_, err := e.s.CompleteLogin(ctx, login(pending, "000000"))
+	if !errors.Is(err, ErrBadCode) || !errors.As(err, &le) || le.UserID != 1 {
+		t.Fatalf("%v", err)
+	}
+	if count() != 0 {
+		t.Fatal("a wrong code produced a session")
+	}
+	var fails int
+	e.st.R.QueryRow(`SELECT totp_fail_since_login FROM users WHERE id = 1`).Scan(&fails)
+	if fails != 1 {
+		t.Errorf("failure count %d", fails)
+	}
+	// Five wrong codes in all, then the pending row is gone: the right code is too late.
+	for i := 0; i < 4; i++ {
+		e.s.CompleteLogin(ctx, login(pending, "000000"))
+	}
+	if _, err := e.s.CompleteLogin(ctx, login(pending, e.nextCode(seed))); !errors.Is(err, ErrPendingInvalid) {
+		t.Fatalf("the right code after the tries ran out: %v", err)
+	}
+	if count() != 0 || e.count(`SELECT count(*) FROM auth_pending`) != 0 {
+		t.Fatal("state after the tries ran out")
+	}
+
+	// A pending row from before `admin reset`: the user has no password or TOTP any more.
+	pending, _ = e.s.CreatePending(ctx, 1, "x")
+	code := e.nextCode(seed)
+	e.st.W.Exec(`UPDATE users SET password_hash = NULL, totp_seed = NULL, totp_confirmed_at = NULL`)
+	if _, err := e.s.CompleteLogin(ctx, login(pending, code)); !errors.Is(err, ErrPendingInvalid) {
+		t.Fatalf("a pre-reset pending row completed: %v", err)
+	}
+	if count() != 0 {
+		t.Fatal("a reset user got a session")
+	}
+
+	// Concurrent attempts with one right code: one session.
+	e2 := newEnv(t)
+	seed2 := e2.userWithSeed(1)
+	p2, _ := e2.s.CreatePending(ctx, 1, "x")
+	code2 := e2.nextCode(seed2)
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := e2.s.CompleteLogin(ctx, login(p2, code2)); err == nil {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 || e2.count(`SELECT count(*) FROM sessions`) != 1 {
+		t.Fatalf("%d concurrent completions succeeded", wins.Load())
+	}
+}
+
 func TestLoginRefusesAReusedCodeAndKeepsThePending(t *testing.T) {
 	e := newEnv(t)
-	e.user(1)
-	e.s.AcceptTOTP(ctx, 1, 100)
+	seed := e.userWithSeed(1)
+	e.clk.Add(time.Minute)
+	used := TOTPCode(seed, TOTPCounter(e.clk.Now()))
+	e.s.AcceptTOTP(ctx, 1, TOTPCounter(e.clk.Now()))
 	pending, _ := e.s.CreatePending(ctx, 1, "x")
-	if _, err := e.s.CompleteLogin(ctx, completeInput(pending, 100)); !errors.Is(err, ErrCodeReused) {
+	if _, err := e.s.CompleteLogin(ctx, login(pending, used)); !errors.Is(err, ErrCodeReused) {
 		t.Fatalf("%v", err)
 	}
 	if e.count(`SELECT count(*) FROM sessions`) != 0 || e.count(`SELECT count(*) FROM auth_pending`) != 1 {
 		t.Fatal("a refused sign-in changed state")
 	}
-	if _, err := e.s.CompleteLogin(ctx, completeInput(pending, 101)); err != nil {
+	if _, err := e.s.CompleteLogin(ctx, login(pending, e.nextCode(seed))); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -451,6 +566,7 @@ func TestLoginWithARecoveryCode(t *testing.T) {
 	if _, err := e.s.CompleteLogin(ctx, in); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("a recovery code worked twice: %v", err)
 	}
+	// The row stays (one try spent) until the tries run out.
 	if e.count(`SELECT count(*) FROM auth_pending`) != 1 {
 		t.Error("the pending row was consumed by a bad recovery code")
 	}
@@ -458,12 +574,12 @@ func TestLoginWithARecoveryCode(t *testing.T) {
 
 func TestSecondFactorNoticeKnownIPsAndCap(t *testing.T) {
 	e := newEnv(t)
-	e.user(1)
+	seed := e.userWithSeed(1)
 	for i := 0; i < 3; i++ {
 		e.s.RecordSecondFactorFailure(ctx, 1, "198.51.100.9")
 	}
 	pending, _ := e.s.CreatePending(ctx, 1, "x")
-	res, err := e.s.CompleteLogin(ctx, completeInput(pending, 100))
+	res, err := e.s.CompleteLogin(ctx, login(pending, e.nextCode(seed)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +592,7 @@ func TestSecondFactorNoticeKnownIPsAndCap(t *testing.T) {
 	}
 	// The counter reset: the next sign-in has no notice.
 	pending, _ = e.s.CreatePending(ctx, 1, "x")
-	res, _ = e.s.CompleteLogin(ctx, completeInput(pending, 101))
+	res, _ = e.s.CompleteLogin(ctx, login(pending, e.nextCode(seed)))
 	if res.Session.Notice.TOTPFailures != 0 {
 		t.Errorf("the notice was not reset: %+v", res.Session.Notice)
 	}
@@ -492,9 +608,8 @@ func TestSecondFactorNoticeKnownIPsAndCap(t *testing.T) {
 		t.Error("an IP is still known after 30 days")
 	}
 	for i := 0; i < 14; i++ {
-		e.clk.Add(time.Second)
 		p, _ := e.s.CreatePending(ctx, 1, "x")
-		in := completeInput(p, int64(200+i))
+		in := login(p, e.nextCode(seed))
 		in.IPKey = fmt.Sprintf("10.0.0.%d", i)
 		if _, err := e.s.CompleteLogin(ctx, in); err != nil {
 			t.Fatal(err)
@@ -508,5 +623,54 @@ func TestSecondFactorNoticeKnownIPsAndCap(t *testing.T) {
 	}
 	if ok, _ := e.s.KnownIP(ctx, 1, "10.0.0.0"); ok {
 		t.Error("the oldest IP was kept past the cap")
+	}
+}
+
+// Revoking a user's sessions also kills their pending password-only steps.
+func TestRevokeUserSessionsAlsoDropsPendingRows(t *testing.T) {
+	e := newEnv(t)
+	e.user(1)
+	e.user(2)
+	e.newSession(1)
+	p1, _ := e.s.CreatePending(ctx, 1, "x")
+	p2, _ := e.s.CreatePending(ctx, 2, "x")
+	if _, err := e.s.RevokeUserSessions(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.PendingAttempt(ctx, p1); !errors.Is(err, ErrPendingInvalid) {
+		t.Errorf("a pending row survived revoke-all: %v", err)
+	}
+	if _, err := e.s.PendingAttempt(ctx, p2); err != nil {
+		t.Errorf("another user's pending row was removed: %v", err)
+	}
+}
+
+// Sessions of a user who is no longer an admin (after a reset) do not count.
+func TestSessionOfAResetUserIsRefused(t *testing.T) {
+	e := newEnv(t)
+	e.user(1)
+	secret, _ := e.newSession(1)
+	e.st.W.Exec(`UPDATE users SET password_hash = NULL, totp_confirmed_at = NULL`)
+	var se *SessionError
+	if _, err := e.s.LookupSession(ctx, secret); !errors.As(err, &se) {
+		t.Fatalf("%v", err)
+	}
+}
+
+// The activity write is best effort and bounded: a stuck writer costs 250 ms,
+// not the request.
+func TestLastSeenWriteIsBoundedByATimeout(t *testing.T) {
+	e := newEnv(t)
+	e.user(1)
+	secret, _ := e.newSession(1)
+	e.clk.Add(2 * time.Minute)
+	e.s.touchTx = func(c context.Context, _ func(*sql.Tx) error) error { <-c.Done(); return c.Err() }
+	t0 := time.Now()
+	sess, err := e.s.LookupSession(ctx, secret)
+	if err != nil || sess == nil {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(t0); d < 200*time.Millisecond || d > 2*time.Second {
+		t.Errorf("the lookup took %v with a stuck writer, want about 250 ms", d)
 	}
 }

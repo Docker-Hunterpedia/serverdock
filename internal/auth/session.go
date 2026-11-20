@@ -87,7 +87,10 @@ func (s *Store) createSession(ctx context.Context, tx *sql.Tx, userID int64, ipK
 // best-effort: a failed write is logged (at most once a minute) and the request
 // goes on.
 func (s *Store) LookupSession(ctx context.Context, secret string) (*Session, error) {
-	if secret == "" || len(secret) > maxTokenInput {
+	if secret == "" {
+		return nil, ErrNoSession // no credential at all: nothing to clear, nothing revoked
+	}
+	if len(secret) > maxTokenInput {
 		return nil, &SessionError{Reason: "revoked"}
 	}
 	idHash := hashSecret(secret)
@@ -97,7 +100,8 @@ func (s *Store) LookupSession(ctx context.Context, secret string) (*Session, err
 		notice                          string
 	)
 	err := s.st.R.QueryRowContext(ctx, `SELECT public_id, user_id, created_at, last_seen_at, idle_expires_at, abs_expires_at, mfa_fresh_until, reauth_failures, ip_key, user_agent, notice_json
-		FROM sessions WHERE id_hash = ?`, idHash).
+		FROM sessions WHERE id_hash = ?
+		AND user_id IN (SELECT id FROM users WHERE password_hash IS NOT NULL AND totp_confirmed_at IS NOT NULL)`, idHash).
 		Scan(&sess.PublicID, &sess.UserID, &created, &last, &idle, &abs, &fresh, &sess.ReauthFailures, &sess.IPKey, &sess.UserAgent, &notice)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &SessionError{Reason: "revoked"}
@@ -117,8 +121,10 @@ func (s *Store) LookupSession(ctx context.Context, secret string) (*Session, err
 	if reason != "" {
 		// Delete on lookup. A failed delete is not fatal: the session is refused
 		// either way and the next prune takes it.
-		if err := s.write(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, idHash)
+		dctx, cancel := context.WithTimeout(ctx, bestEffortTimeout)
+		defer cancel()
+		if err := s.write(dctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(dctx, `DELETE FROM sessions WHERE id_hash = ?`, idHash)
 			return err
 		}); err != nil {
 			s.warnOncePerMinute("could not delete an expired session", "err", err.Error())
@@ -130,8 +136,11 @@ func (s *Store) LookupSession(ctx context.Context, secret string) (*Session, err
 	_ = json.Unmarshal([]byte(notice), &sess.Notice)
 	if now.Sub(sess.LastSeenAt) >= touchEvery {
 		newIdle := min(t+int64(SessionIdle/time.Second), abs)
-		err := s.touchTx(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ?, idle_expires_at = ? WHERE id_hash = ?`, t, newIdle, idHash)
+		// Best effort: a busy writer must not stall a read, so give up after 250 ms.
+		tctx, cancel := context.WithTimeout(ctx, bestEffortTimeout)
+		defer cancel()
+		err := s.touchTx(tctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(tctx, `UPDATE sessions SET last_seen_at = ?, idle_expires_at = ? WHERE id_hash = ?`, t, newIdle, idHash)
 			return err
 		})
 		if err != nil {
@@ -153,14 +162,18 @@ func (s *Store) RevokeSession(ctx context.Context, secret string) error {
 }
 
 // RevokeUserSessions deletes every session of the user (password or TOTP change)
-// and returns how many.
+// and returns how many. Pending second-factor rows of the user go with them, in
+// the same transaction: a password-only step started before the change must not
+// finish afterwards.
 func (s *Store) RevokeUserSessions(ctx context.Context, userID int64) (int64, error) {
 	var n int64
 	err := s.write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
-		if err == nil {
-			n, _ = res.RowsAffected()
+		if err != nil {
+			return err
 		}
+		n, _ = res.RowsAffected()
+		_, err = tx.ExecContext(ctx, `DELETE FROM auth_pending WHERE user_id = ?`, userID)
 		return err
 	})
 	return n, err
@@ -237,15 +250,32 @@ func (s *Store) PendingFailed(ctx context.Context, secret string) error {
 	})
 }
 
-// LoginInput finishes a sign-in whose second factor was accepted.
+// PendingUser returns the user a pending sign-in belongs to, without counting a
+// try. The HTTP layer uses it to key the per-account back-off before the code is
+// checked; it authenticates nothing.
+func (s *Store) PendingUser(ctx context.Context, secret string) (int64, error) {
+	if secret == "" || len(secret) > maxTokenInput {
+		return 0, ErrPendingInvalid
+	}
+	var id int64
+	err := s.st.R.QueryRowContext(ctx, `SELECT user_id FROM auth_pending WHERE id_hash = ? AND expires_at > ?`, hashSecret(secret), s.now().Unix()).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrPendingInvalid
+	}
+	return id, err
+}
+
+// LoginInput finishes a sign-in. The caller passes the raw second factor and
+// never an "already verified" result: CompleteLogin counts the try, checks the
+// code and mints the session itself, so no caller can mint a session without a
+// valid pending row and a valid code.
 type LoginInput struct {
 	PendingSecret string
-	// TOTPCounter, if > 0, is the accepted time step (recorded; reuse is refused).
-	// Otherwise RecoveryCode must be a valid unused recovery code.
-	TOTPCounter  int64
+	// Exactly one of Code (a 6-digit TOTP code) and RecoveryCode is set.
+	Code         string
 	RecoveryCode string
 	// OldSessionSecret is a session cookie presented with the request, if any: it
-	// is revoked, whatever the outcome of the new sign-in.
+	// is revoked when the new session is minted.
 	OldSessionSecret string
 	IPKey, UserAgent string
 }
@@ -256,47 +286,99 @@ type LoginResult struct {
 	Session       Session
 }
 
-// CompleteLogin mints the session after a correct second factor, in one
-// transaction: the pending row is deleted (single use: it must affect one row),
-// the TOTP counter or recovery code is consumed, any old session presented is
-// revoked, a NEW session id is created (the client never chooses it), the IP is
-// remembered as known, and the count of failed second factors since the last
-// sign-in moves into the session's notice.
+// LoginError wraps ErrBadCode (or ErrPendingInvalid) with what the caller needs
+// to answer and to count: the user and the tries left after this attempt.
+type LoginError struct {
+	Err       error
+	UserID    int64
+	TriesLeft int
+}
+
+func (e *LoginError) Error() string { return e.Err.Error() }
+func (e *LoginError) Unwrap() error { return e.Err }
+
+// CompleteLogin is the 2FA step of sign-in.
+//
+//  1. It counts one try against the pending row (an atomic decrement, before the
+//     code is looked at); no pending row, a used-up or expired one is
+//     ErrPendingInvalid. The user must still be an admin (password and confirmed
+//     TOTP): after `admin reset` a pending row from before cannot complete.
+//  2. It opens the user's sealed seed and verifies the code (TOTP within +-1
+//     step, or an unused recovery code).
+//  3. In one transaction it deletes the pending row (single use: exactly one row),
+//     records the TOTP counter (a reused code is ErrCodeReused) or consumes the
+//     recovery code, revokes the old session if one was presented, creates a NEW
+//     session id (the client never chooses it), remembers the IP as known and
+//     moves the failed-second-factor notice into the session.
+//
+// A wrong code is a *LoginError wrapping ErrBadCode: the failure is counted for
+// the notice, and the pending row is deleted when no tries are left.
 func (s *Store) CompleteLogin(ctx context.Context, in LoginInput) (LoginResult, error) {
 	var out LoginResult
-	if in.PendingSecret == "" || len(in.PendingSecret) > maxTokenInput {
-		return out, ErrPendingInvalid
+	if (in.Code == "") == (in.RecoveryCode == "") {
+		return out, &LoginError{Err: ErrBadCode}
 	}
-	err := s.write(ctx, func(tx *sql.Tx) error {
-		now := s.now().Unix()
-		var userID int64
-		if err := tx.QueryRowContext(ctx, `SELECT user_id FROM auth_pending WHERE id_hash = ? AND expires_at > ?`, hashSecret(in.PendingSecret), now).Scan(&userID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrPendingInvalid
+	info, err := s.PendingAttempt(ctx, in.PendingSecret)
+	if err != nil {
+		return out, err
+	}
+	fail := func(err error) (LoginResult, error) {
+		if errors.Is(err, ErrBadCode) {
+			if ferr := s.RecordSecondFactorFailure(ctx, info.UserID, in.IPKey); ferr != nil {
+				s.warnOncePerMinute("could not record a failed second factor", "err", ferr.Error())
 			}
+		}
+		if ferr := s.PendingFailed(ctx, in.PendingSecret); ferr != nil {
+			s.warnOncePerMinute("could not clear a used-up pending sign-in", "err", ferr.Error())
+		}
+		return LoginResult{}, &LoginError{Err: err, UserID: info.UserID, TriesLeft: info.TriesLeft}
+	}
+	var counter int64
+	var norm string
+	if in.Code != "" {
+		seed, err := s.UserSeed(ctx, info.UserID)
+		if err != nil {
+			if errors.Is(err, ErrKeyMismatch) {
+				return LoginResult{}, &LoginError{Err: err, UserID: info.UserID, TriesLeft: info.TriesLeft}
+			}
+			return fail(ErrPendingInvalid) // no seed: not an admin (after a reset)
+		}
+		c, ok := VerifyTOTP(seed, in.Code, s.now())
+		if !ok {
+			return fail(ErrBadCode)
+		}
+		counter = c
+	} else {
+		n, ok := normaliseRecovery(in.RecoveryCode)
+		if !ok {
+			return fail(ErrBadCode)
+		}
+		norm = n
+	}
+	err = s.write(ctx, func(tx *sql.Tx) error {
+		now := s.now().Unix()
+		var admin bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = ? AND password_hash IS NOT NULL AND totp_confirmed_at IS NOT NULL)`, info.UserID).Scan(&admin); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM auth_pending WHERE id_hash = ?`, hashSecret(in.PendingSecret))
+		if !admin {
+			return ErrPendingInvalid
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM auth_pending WHERE id_hash = ? AND expires_at > ?`, hashSecret(in.PendingSecret), now)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrPendingInvalid
 		}
-		if in.TOTPCounter > 0 {
-			if err := acceptTOTP(ctx, tx, userID, in.TOTPCounter); err != nil {
+		if norm == "" {
+			if err := acceptTOTP(ctx, tx, info.UserID, counter); err != nil {
 				return err
 			}
-		} else {
-			norm, ok := normaliseRecovery(in.RecoveryCode)
-			if !ok {
-				return ErrBadCode
-			}
-			if used, err := useRecovery(ctx, tx, userID, norm, now); err != nil {
-				return err
-			} else if !used {
-				return ErrBadCode
-			}
+		} else if used, err := useRecovery(ctx, tx, info.UserID, norm, now); err != nil {
+			return err
+		} else if !used {
+			return ErrBadCode
 		}
 		if in.OldSessionSecret != "" {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, hashSecret(in.OldSessionSecret)); err != nil {
@@ -306,33 +388,39 @@ func (s *Store) CompleteLogin(ctx context.Context, in LoginInput) (LoginResult, 
 		var fails int
 		var failAt sql.NullInt64
 		var failIP sql.NullString
-		if err := tx.QueryRowContext(ctx, `SELECT totp_fail_since_login, totp_fail_last_at, totp_fail_last_ip FROM users WHERE id = ?`, userID).Scan(&fails, &failAt, &failIP); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT totp_fail_since_login, totp_fail_last_at, totp_fail_last_ip FROM users WHERE id = ?`, info.UserID).Scan(&fails, &failAt, &failIP); err != nil {
 			return err
 		}
 		notice := Notice{}
 		if fails > 0 {
 			notice = Notice{TOTPFailures: fails, LastFailureAt: failAt.Int64, LastFailureIP: failIP.String}
-			if _, err := tx.ExecContext(ctx, `UPDATE users SET totp_fail_since_login = 0, totp_fail_last_at = NULL, totp_fail_last_ip = NULL WHERE id = ?`, userID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET totp_fail_since_login = 0, totp_fail_last_at = NULL, totp_fail_last_ip = NULL WHERE id = ?`, info.UserID); err != nil {
 				return err
 			}
 		}
 		nj, _ := json.Marshal(notice)
-		secret, sess, err := s.createSession(ctx, tx, userID, in.IPKey, in.UserAgent, string(nj), nil)
+		secret, sess, err := s.createSession(ctx, tx, info.UserID, in.IPKey, in.UserAgent, string(nj), nil)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO auth_known_ips (user_id, ip_key, last_ok_at) VALUES (?, ?, ?)
-			ON CONFLICT(user_id, ip_key) DO UPDATE SET last_ok_at = excluded.last_ok_at`, userID, in.IPKey, now); err != nil {
+			ON CONFLICT(user_id, ip_key) DO UPDATE SET last_ok_at = excluded.last_ok_at`, info.UserID, in.IPKey, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_known_ips WHERE user_id = ? AND ip_key NOT IN
-			(SELECT ip_key FROM auth_known_ips WHERE user_id = ? ORDER BY last_ok_at DESC, rowid DESC LIMIT ?)`, userID, userID, maxKnownIPs); err != nil {
+			(SELECT ip_key FROM auth_known_ips WHERE user_id = ? ORDER BY last_ok_at DESC, rowid DESC LIMIT ?)`, info.UserID, info.UserID, maxKnownIPs); err != nil {
 			return err
 		}
 		out = LoginResult{SessionSecret: secret, Session: sess}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		if errors.Is(err, ErrBadCode) {
+			return fail(err)
+		}
+		return LoginResult{}, &LoginError{Err: err, UserID: info.UserID, TriesLeft: info.TriesLeft}
+	}
+	return out, nil
 }
 
 // RecordSecondFactorFailure counts a wrong second factor after a correct

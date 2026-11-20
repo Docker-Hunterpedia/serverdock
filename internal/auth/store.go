@@ -42,6 +42,9 @@ const (
 	knownIPLifetime = 30 * 24 * time.Hour
 	maxUserAgent    = 200
 	maxTokenInput   = 256
+
+	// bestEffortTimeout bounds the writes a read request makes on the side.
+	bestEffortTimeout = 250 * time.Millisecond
 )
 
 // Errors of the setup and sign-in transitions. The HTTP layer maps them to
@@ -56,6 +59,8 @@ var (
 	ErrCodeReused         = errors.New("auth: that code was already used")
 	ErrKeyMismatch        = errors.New("the server's encryption key doesn't match its data; see the docs (admin reset)")
 	ErrPendingInvalid     = errors.New("auth: the sign-in step is unknown, used up or expired")
+	// ErrNoSession means no session credential was presented at all.
+	ErrNoSession = errors.New("auth: no session credential")
 )
 
 // SessionError is returned by LookupSession for a session that cannot be used.

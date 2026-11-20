@@ -478,13 +478,27 @@ func TestTOTPSeedNotInDBPlaintext(t *testing.T) {
 	if len(sealed) != 1+4+12+len(seed)+16 || bytes.Contains(sealed, seed) {
 		t.Fatalf("totp_seed column: %d bytes", len(sealed))
 	}
-	// Neither the raw seed nor its base32 text is anywhere in the database or its WAL.
+	// Neither the raw seed nor its base32 text is anywhere in the WAL or the
+	// database. The WAL is read BEFORE a checkpoint (a checkpoint empties it, which
+	// would make the check vacuous) and must hold the sealed row, which proves the
+	// bytes we scan are the ones just written.
+	wal, err := os.ReadFile(filepath.Join(e.dir, "serverdock.db-wal"))
+	if err != nil || len(wal) == 0 {
+		t.Fatalf("the WAL is empty or unreadable (%v): the check would be vacuous", err)
+	}
+	if !bytes.Contains(wal, sealed) {
+		t.Fatal("the WAL does not contain the sealed seed: it is not the file the data went to")
+	}
+	if bytes.Contains(wal, seed) || bytes.Contains(wal, []byte(er.Secret)) {
+		t.Error("the TOTP seed is in the WAL in the clear")
+	}
 	e.st.W.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
-	for _, name := range []string{"serverdock.db", "serverdock.db-wal"} {
-		raw, _ := os.ReadFile(filepath.Join(e.dir, name))
-		if bytes.Contains(raw, seed) || bytes.Contains(raw, []byte(er.Secret)) {
-			t.Errorf("the TOTP seed is in %s in the clear", name)
-		}
+	db, _ := os.ReadFile(filepath.Join(e.dir, "serverdock.db"))
+	if !bytes.Contains(db, sealed) {
+		t.Fatal("the database file does not contain the sealed seed after the checkpoint")
+	}
+	if bytes.Contains(db, seed) || bytes.Contains(db, []byte(er.Secret)) {
+		t.Error("the TOTP seed is in the database file in the clear")
 	}
 	// A seed copied to another row does not open (AAD binding).
 	if _, err := e.box.Open("users/999/totp_seed", sealed); err == nil {
