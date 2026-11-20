@@ -304,3 +304,20 @@ func TestPanelRedirectHostAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// A verbose proxy log level is a test-only knob: the server says so at start.
+func TestTestProxyLogLevelIsAnnounced(t *testing.T) {
+	for level, want := range map[string]bool{"DEBUG": true, "INFO": true, "WARN": false, "ERROR": false, "": false} {
+		t.Run("level "+level, func(t *testing.T) {
+			t.Setenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL", level)
+			_, stop, logs := panelServer(t, newData(t))
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(logs.String(), "SERVERDOCK_TEST_PROXY_LOG_LEVEL is set")
+			if got != want {
+				t.Errorf("announced = %v, want %v:\n%s", got, want, logs.String())
+			}
+		})
+	}
+}

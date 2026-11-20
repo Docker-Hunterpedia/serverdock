@@ -28,7 +28,7 @@ Lasting decisions are recorded as ADRs in [docs/decisions/](docs/decisions/).
 
 - `go test ./...` also builds the real binary for a few tests (file modes, the secret-sentinel suite); `go test -short` skips them.
 - Run the suite on Linux as root and as a non-root user: some tests need root (running as another uid) and some fail only for a non-root user (privileged ports). The tests never bind `:80` or `:443`.
-- `SERVERDOCK_TEST_PROXY_LOG_LEVEL=DEBUG` makes the embedded Caddy log at DEBUG. It exists for `TestSecretsNeverLeak`, which scans Caddy's and the server's logs for secrets. It is read by the server only for that purpose: there is no flag and it is not in `--help`.
+- `SERVERDOCK_TEST_PROXY_LOG_LEVEL=DEBUG` makes the embedded Caddy log at DEBUG. It exists for `TestSecretsNeverLeak`, which scans Caddy's and the server's logs for secrets. It is read by the server only for that purpose: there is no flag and it is not in `--help`. The server logs a WARN at start when it is set to anything but WARN or ERROR. The proxy's log encoder (`redactedHeaders()` in `internal/agent/proxy/redact.go`) hides the `X-SD-CSRF` header from Caddy's logs: **extend that list for any new secret-bearing header**, and add the secret to the sentinel suite.
 
 ## Sign your commits (DCO)
 

@@ -234,7 +234,7 @@ func TestSecretsNeverLeak(t *testing.T) {
 	data := filepath.Join(base, "data")
 	httpsAddr := testbin.FreeAddr(t)
 	p := testbin.Start(t, testbin.Options{
-		Args: []string{"server", "--data", data, "--control-socket", filepath.Join(base, "c.sock"), "--listen", testbin.FreeAddr(t), "--https-listen", httpsAddr},
+		Args: []string{"server", "--data", data, "--control-socket", filepath.Join(base, "c.sock"), "--listen", testbin.FreeAddr(t), "--https-listen", httpsAddr, "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"},
 		Env:  []string{"SERVERDOCK_TEST_PROXY_LOG_LEVEL=DEBUG"},
 	})
 	for _, w := range []string{"control plane listening", "proxy listening"} {
@@ -246,6 +246,7 @@ func TestSecretsNeverLeak(t *testing.T) {
 	var records []recorded
 	var sentHeaders []string
 	var S sentinels
+	var SP sentinels // the argon2 hashes: the database stores them, so only responses, logs and audit rows are scanned for these
 	snaps := map[string]map[string][]byte{}
 	snap := func(label string) { snaps[label] = snapDB(t, data) }
 	newClient := func() *sclient {
@@ -311,6 +312,8 @@ func TestSecretsNeverLeak(t *testing.T) {
 	S.str("session id", sess1)
 	S.str("CSRF token", csrf1)
 	snap("after setup")
+	phc1 := readPHC(t, data)
+	SP.str("password hash (PHC) 1", phc1)
 	c.do("GET", "/api/v1/auth/session", nil, nil, al(&csrf1))
 	c.do("POST", "/api/v1/auth/logout", map[string]string{}, nil, al())
 
@@ -428,6 +431,8 @@ func TestSecretsNeverLeak(t *testing.T) {
 		t.Fatalf("password change: %d %v", code, r)
 	}
 	snap("after password change")
+	phc2 := readPHC(t, data)
+	SP.str("password hash (PHC) 2", phc2)
 	var pend3, sess4, csrf4 string
 	login("admin", P2, &pend3)
 	code, r4 := c.do("POST", "/api/v1/auth/2fa", map[string]string{"recovery_code": rec2[0]}, nil, al(&sess4, &csrf4))
@@ -493,6 +498,28 @@ func TestSecretsNeverLeak(t *testing.T) {
 		}
 	}
 
+	// The agent token and the hub CA's private key.
+	agentTok, err := os.ReadFile(filepath.Join(data, "agent.token"))
+	if err != nil {
+		t.Fatalf("agent token: %v", err)
+	}
+	S.str("agent token", strings.TrimSpace(string(agentTok)))
+	caPEM, err := os.ReadFile(filepath.Join(data, "pki", "ca.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rest := caPEM; ; {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			break
+		}
+		S.bytes("hub CA private key", blk.Bytes)
+		for _, ln := range strings.Split(strings.TrimSpace(string(pem.EncodeToMemory(blk))), "\n") {
+			S.str("hub CA private key (PEM line)", ln)
+		}
+	}
+
 	// ---- stop the server, then the console reset ----
 	if code := p.Stop(); code != 0 {
 		t.Fatalf("server exit %d", code)
@@ -519,11 +546,15 @@ func TestSecretsNeverLeak(t *testing.T) {
 			allowed = r.allow()
 		}
 		report("response "+r.what, S.find(r.text, allowed))
+		report("response "+r.what+" (PHC)", SP.find(r.text, allowed))
 	}
 	report("the OpenAPI document", S.find(openapi, nil))
+	report("the OpenAPI document (PHC)", SP.find(openapi, nil))
 	// 2. Server and Caddy logs (DEBUG) and the reset's output.
 	report("the server and Caddy logs at DEBUG", S.find([]byte(logs), nil))
+	report("the server and Caddy logs at DEBUG (PHC)", SP.find([]byte(logs), nil))
 	report("the admin reset output", S.find([]byte(res.Stdout+res.Stderr), nil))
+	report("the admin reset output (PHC)", SP.find([]byte(res.Stdout+res.Stderr), nil))
 	if !strings.Contains(logs, `"level":"debug"`) {
 		t.Error("Caddy did not log at DEBUG: the test would prove nothing about its logs")
 	}
@@ -536,27 +567,32 @@ func TestSecretsNeverLeak(t *testing.T) {
 	if wal := snaps["after tokens"]["serverdock.db-wal"]; len(wal) == 0 {
 		t.Error("the mid-flow WAL snapshot is empty: the WAL check would be vacuous")
 	}
-	// 4. Every file under DATA that is not a secret path.
-	secret := datadir.SecretPaths()
-	scanned := 0
-	filepath.WalkDir(data, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(data, path)
-		for _, sp := range secret {
-			if rel == sp || strings.HasSuffix(sp, "/") && strings.HasPrefix(rel, sp) {
+	// 4. Every file under DATA that is not a secret path: a file the server creates
+	// that holds a secret must live under datadir.SecretPaths(). (Also run as the
+	// subtest TestSecretsNeverLeak/SecretPathsCoverEverySecretFile; plan 0003 names
+	// it TestSecretPathsCoverEverySecretFile.)
+	t.Run("SecretPathsCoverEverySecretFile", func(t *testing.T) {
+		secret := datadir.SecretPaths()
+		scanned := 0
+		filepath.WalkDir(data, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
 				return nil
 			}
+			rel, _ := filepath.Rel(data, path)
+			for _, sp := range secret {
+				if rel == sp || strings.HasSuffix(sp, "/") && strings.HasPrefix(rel, sp) {
+					return nil
+				}
+			}
+			b, _ := os.ReadFile(path)
+			scanned++
+			report("DATA/"+rel, S.find(b, nil))
+			return nil
+		})
+		if scanned < 2 {
+			t.Errorf("only %d DATA files scanned", scanned)
 		}
-		b, _ := os.ReadFile(path)
-		scanned++
-		report("DATA/"+rel, S.find(b, nil))
-		return nil
 	})
-	if scanned < 2 {
-		t.Errorf("only %d DATA files scanned", scanned)
-	}
 	// 5. The audit log: every column of every row.
 	ro, err := store.OpenReadOnly(data, store.ReadOnlyOptions{})
 	if err != nil {
@@ -580,6 +616,7 @@ func TestSecretsNeverLeak(t *testing.T) {
 		t.Errorf("only %d audit rows: the flows did not run", n)
 	}
 	report("the audit log", S.find([]byte(auditText.String()), nil))
+	report("the audit log (PHC)", SP.find([]byte(auditText.String()), nil))
 
 	// ---- the sentinels did flow where they were meant to ----
 	meant := map[string][]string{"enrol": {seed2B32, eid2}, "token": {tok1}, "recovery codes": {rec1[0], rec2[0]}, "session": {sess1, sess4}}
@@ -595,6 +632,21 @@ func TestSecretsNeverLeak(t *testing.T) {
 		}
 	}
 	t.Logf("scanned %d responses, %d snapshots, %d patterns, %d audit rows; %d leaks", len(records), len(snaps), len(S.pats), n, fails)
+}
+
+// readPHC reads the stored argon2 PHC string of the first user (read-only, while the server runs).
+func readPHC(t *testing.T, data string) string {
+	t.Helper()
+	ro, err := store.OpenReadOnly(data, store.ReadOnlyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	var phc string
+	if err := ro.DB.QueryRow(`SELECT password_hash FROM users ORDER BY id LIMIT 1`).Scan(&phc); err != nil || !strings.HasPrefix(phc, "$argon2id$") {
+		t.Fatalf("password hash: %q %v", phc, err)
+	}
+	return phc
 }
 
 func addRecovery(S *sentinels, display string) {

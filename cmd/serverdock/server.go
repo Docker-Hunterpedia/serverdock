@@ -237,6 +237,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if keyCreated {
 		log.Info("master key created", "path", secretbox.KeyPath(cfg.Data))
 	}
+	if lvl := os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"); lvl != "" && lvl != "WARN" && lvl != "ERROR" {
+		// Test-only knob: a verbose proxy log is not for production use.
+		log.Warn("SERVERDOCK_TEST_PROXY_LOG_LEVEL is set: the embedded proxy logs at a verbose level, which is for tests only", "level", lvl)
+	}
 	// The panel leaf is only needed when the proxy serves the panel.
 	var panel *pki.Panel
 	if cfg.Proxy {

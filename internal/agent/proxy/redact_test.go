@@ -63,3 +63,50 @@ type errTest struct{}
 func (errTest) Error() string { return "boom" }
 
 func caddyhttpRequest(r *http.Request) *http.Request { return r }
+
+// The hardening cases: a header map inside a slice, and reflected header values
+// (http.Header and map[string][]string), are redacted without being mutated.
+func TestRedactEncoderHardening(t *testing.T) {
+	e := &redactEncoder{}
+	if err := e.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "csrf-sentinel-value-0123456789"
+	encode := func(fields ...zapcore.Field) string {
+		buf, err := e.Clone().EncodeEntry(zapcore.Entry{Level: zapcore.DebugLevel, Message: "m"}, fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	hdr := http.Header{"X-Sd-Csrf": {secret}, "Origin": {"https://x"}}
+	plain := map[string][]string{"x-sd-csrf": {secret}, "Accept": {"*/*"}}
+	cases := map[string]string{
+		"http.Header":         encode(zap.Reflect("h", hdr)),
+		"map[string][]string": encode(zap.Reflect("h", plain)),
+		"zap.Any header":      encode(zap.Any("h", hdr)),
+		"in a slice":          encode(zap.Reflect("reqs", []any{map[string]any{"headers": map[string]any{"X-Sd-Csrf": []any{secret}}}})),
+		"slice of headers":    encode(zap.Reflect("hs", []http.Header{hdr})),
+	}
+	for name, out := range cases {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s: the secret is in the line: %s", name, out)
+		}
+	}
+	if out := cases["http.Header"]; !strings.Contains(out, `"Origin":["https://x"]`) || !strings.Contains(out, "REDACTED") {
+		t.Errorf("other headers must survive: %s", out)
+	}
+	// The caller's values are not mutated.
+	if hdr["X-Sd-Csrf"][0] != secret || plain["x-sd-csrf"][0] != secret {
+		t.Error("the encoder changed the caller's map")
+	}
+	// A With field that is reflected goes through AddReflected.
+	w := e.Clone()
+	if err := w.AddReflected("h", hdr); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := w.EncodeEntry(zapcore.Entry{Message: "m"}, nil)
+	if strings.Contains(b.String(), secret) {
+		t.Errorf("a With reflected field leaked: %s", b.String())
+	}
+}
