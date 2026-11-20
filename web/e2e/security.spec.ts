@@ -599,4 +599,17 @@ test.describe('step 13 review fixes', () => {
 		await expect(step.locator('#stepup-code-error')).toHaveCount(0); // the red error goes when the wait ends
 		await expectNoAxeViolations(page, 'step-up after the countdown');
 	});
+
+	test('step-up: the local "6 digits" check is also announced through the status region', async ({ page, server, admin }) => {
+		await signIn(page, server, admin, 0);
+		await openSecurity(page, server);
+		server.sql('UPDATE sessions SET mfa_fresh_until = 1');
+		await page.getByRole('button', { name: 'Make new recovery codes…' }).click();
+		await dialog(page, 'Make new recovery codes?').getByRole('button', { name: 'Make new codes' }).click();
+		const step = dialog(page, 'Confirm it is you');
+		await step.getByLabel('Code from your authenticator').fill('12');
+		await step.getByRole('button', { name: 'Confirm' }).click();
+		await expect(step.getByRole('status')).toHaveText('Enter the 6 digits from your app.');
+		await expect(step.getByLabel('Code from your authenticator')).toBeFocused();
+	});
 });

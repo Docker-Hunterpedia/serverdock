@@ -62,6 +62,7 @@
 		if (!/^\d{6}$/.test(c)) {
 			error = 'Enter the 6 digits from your app.';
 			field?.focus();
+			void say(error);
 			return;
 		}
 		busy = true;

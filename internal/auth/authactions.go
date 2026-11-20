@@ -104,7 +104,7 @@ type RevokedOut struct {
 type PasswordChangeIn struct {
 	CurrentPassword string `json:"current_password" sd:"secret"`
 	NewPassword     string `json:"new_password" sd:"secret"`
-	KeepTokens      bool   `json:"keep_tokens,omitempty" doc:"keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise"`
+	KeepTokens      bool   `json:"keep_tokens,omitempty" doc:"keep API tokens; set this only when rotating routinely, not after a suspected compromise"`
 }
 
 // Validate implements actions.Validator.
@@ -133,7 +133,7 @@ type ReenrollConfirmIn struct {
 	EnrollmentID string `json:"enrollment_id" sd:"secret"`
 	Code         string `json:"code" sd:"secret"`
 	// KeepTokens is deliberately untagged, so it is recorded in the audit row.
-	KeepTokens bool `json:"keep_tokens,omitempty" doc:"keep API tokens; tick this only if you are rotating routinely, not after a suspected compromise"`
+	KeepTokens bool `json:"keep_tokens,omitempty" doc:"keep API tokens; set this only when rotating routinely, not after a suspected compromise"`
 }
 
 // Validate implements actions.Validator.
