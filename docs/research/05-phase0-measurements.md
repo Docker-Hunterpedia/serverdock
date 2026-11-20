@@ -1,6 +1,6 @@
 # 05 — Phase 0 measurements
 
-Status: **incomplete.** Only a local, quick, informational run exists. The official numbers (CI and a real 1 GB VPS) are pending. Nothing here proves or disproves the Phase 0 exit criterion.
+Status: **CI done, VPS pending.** The full CI bench passed every gate on 2026-11-20. The required run on a real 1 GB VPS is still pending, so the Phase 0 exit criterion is not yet met.
 
 Written by the implementer agent (AI), 2026-11-20, from plan 0001 steps 1-7. Not confirmed by the maintainer.
 
@@ -28,9 +28,20 @@ Observations:
 - Idle CPU reads 0.00% in all four; the 60 s window is too short to say more.
 - Whether `RssFile` behaves the same on a real Linux host is unknown. File-backed pages can be reclaimed under pressure, but the plan gates on VmRSS.
 
-## CI ubuntu-latest (gate): pending first CI run
+## CI (gate): full run, 2026-11-20
 
-No CI run has happened. The workflow (`.github/workflows/ci.yml`) has not been executed on GitHub, and the Linux "direct" path of `bench/measure.sh` has not been exercised. Fill in amd64 and arm64 numbers for scenarios 1-4 here after the first run.
+[Run 44715013248](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44715013248) on PR #1. Full method: 3 runs per scenario, 2 min warm-up, 500-request burst, 5 min idle at 10 s intervals (31 samples), `--memory 1g --cpus 1`, Linux direct measurement path. VmRSS is the median of the per-run medians; RssFile is from the middle run. ubuntu-latest (amd64) gates; arm64 reports only.
+
+| Scenario | amd64 VmRSS | amd64 RssFile | arm64 VmRSS | Idle CPU | Gate (ADR 0008) |
+|---|---|---|---|---|---|
+| 1 server, `--proxy=false` | 44.8 MB | 34.6 | 42.4 MB | 0.00% | report only (target 40): above |
+| 2 single node | **47.6 MB** | 36.5 | 45.1 MB | 0.00% | ≤ 80 MB (+5%): **pass** |
+| 3 remote agent, no proxy | 40.6 MB | 33.0 | 38.1 MB | 0.00% | report only (target 20): above |
+| 4 remote node, agent + Caddy | **44.1 MB** | 35.1 | 43.0 MB | ≤ 0.01% | ≤ 50 MB (+5%): **pass** |
+
+Binary gzip -9: 18.8 MB amd64, 16.9 MB arm64 (gate 40 MB): pass.
+
+Reading: anonymous memory (RssAnon) is only 7–11 MB in every scenario. The rest is file-backed pages of the shared binary, which matches the local run and the reasoning in ADR 0008. Embedded Caddy costs about +2.8 MB VmRSS (scenario 2 minus scenario 1, amd64). The slim agent should bring scenario 3 close to its 20 MB target mainly by shrinking RssFile.
 
 ## Real 1 GB VPS (required exit): pending
 
