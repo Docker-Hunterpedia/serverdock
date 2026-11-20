@@ -23,8 +23,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, "serverdock", version)
 		return 0
-	case "server", "agent":
-		fmt.Fprintf(stderr, "serverdock: %q is not implemented yet\n", args[0])
+	case "server":
+		return serverMain(args[1:], stderr)
+	case "agent":
+		fmt.Fprintln(stderr, "serverdock: \"agent\" is not implemented yet")
 		return 1
 	case "-h", "--help", "help":
 		usage(stdout)
