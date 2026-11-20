@@ -1203,7 +1203,9 @@ Panics are recovered and recorded as an `error` outcome.
 - **Q7:** Docker Engine 25+ (API 1.44), as recommended.
 - **Branch protection:** yes. `bench-gate` becomes a required check pinned to GitHub Actions, with code-owner review on `.github/`. It is set up once step 1 has added the check.
 - **M1 scope:** accepted, including goleak as a test-only dependency, removing `--debug-allow-remote`, the debug unix socket and CODEOWNERS. Start M1.
-- Q2–Q6 and Q8 are still open and will be asked before the milestone that needs each one.
+- **Q2 (2026-11-20):** HTTPS on the server IP with a self-signed panel certificate whose fingerprint is compared against the console. The user can add a panel domain afterwards; once it has a real certificate, the IP address redirects to it.
+- **Q8 (2026-11-20):** no. API tokens can't run destructive, sensitive or SessionOnly actions, and can never manage tokens, auth settings or users.
+- Q3–Q6 are still open and will be asked before the milestone that needs each one.
 
 ## Must be settled before M1 starts (settled 2026-11-20)
 
