@@ -2,24 +2,28 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
-	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
 )
@@ -30,37 +34,51 @@ const (
 )
 
 type serverConfig struct {
-	Data        string
-	Listen      string
-	Internal    string
-	Proxy       bool
-	DebugListen string
-	// DebugAllowRemote permits a non-loopback --debug-listen address.
-	DebugAllowRemote bool
-	// AgentToken is the shared spike token (SD_AGENT_TOKEN); empty disables
-	// remote agents. It is never logged.
+	Data     string
+	Listen   string
+	Internal string
+	Proxy    bool
+	// DebugSocket, if set, serves /debug/* on a unix socket (mode 0600 inside
+	// a 0700 directory). There is no TCP debug listener.
+	DebugSocket string
+	// AgentListen, if set, serves GET /agent/connect over TLS 1.3 on its own
+	// listener (ADR 0009). Off by default. AgentSANs are required with it.
+	AgentListen string
+	AgentSANs   []string
+	// AgentToken is the shared agent token (SD_AGENT_TOKEN), at least 43
+	// characters. If empty and AgentListen is set, one is generated into
+	// DATA/agent.token. It is never logged.
 	AgentToken string
 	// DockerSocket is used by the in-process local agent for log streams.
 	DockerSocket string
 }
 
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ",") }
+func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
+
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	var c serverConfig
+	var sans stringList
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.Data, "data", "/var/lib/serverdock", "data directory")
 	fs.StringVar(&c.Listen, "listen", ":80", "public listen address (served by the embedded proxy)")
 	fs.StringVar(&c.Internal, "internal", "127.0.0.1:7070", "control-plane listen address (loopback)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
-	fs.StringVar(&c.DebugListen, "debug-listen", "", "serve /debug/mem on this address (off by default)")
+	fs.StringVar(&c.DebugSocket, "debug-socket", "", "serve /debug/* on this unix socket path (0600, inside a 0700 directory; off by default)")
+	fs.StringVar(&c.AgentListen, "agent-listen", "", "accept remote (read-only, experimental) agents over TLS on this address, e.g. :7443 (off by default)")
+	fs.Var(&sans, "agent-san", "DNS name or IP address agents dial the hub at; repeatable; required with --agent-listen")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
-	fs.BoolVar(&c.DebugAllowRemote, "debug-allow-remote", false, "allow --debug-listen on a non-loopback address (unauthenticated; bench networks only)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
 	if fs.NArg() != 0 {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
+	c.AgentSANs = sans
 	return c, nil
 }
 
@@ -96,43 +114,103 @@ func serverMain(args []string, stderr io.Writer) int {
 // tests can use random free ports.
 type serverAddrs struct {
 	Internal string
-	Debug    string
+	Debug    string // debug unix socket path; empty when off
 	Listen   string // public proxy address; empty when --proxy=false
+	Agent    string // agent TLS listener address; empty when off
+	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
+	// agent listener is off.
+	CAFingerprint string
 }
 
-// checkDebugAddr refuses debug listeners that are not loopback unless the
-// operator explicitly allows remote access.
-func checkDebugAddr(addr string, allowRemote bool) error {
-	if addr == "" || allowRemote {
-		return nil
+// validate checks the agent flags and the token before anything is started.
+func (c serverConfig) validate() error {
+	if c.AgentListen == "" && len(c.AgentSANs) > 0 {
+		return errors.New("--agent-san requires --agent-listen")
 	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("debug-listen %q: %w", addr, err)
+	if c.AgentListen != "" {
+		if _, _, err := net.SplitHostPort(c.AgentListen); err != nil {
+			return fmt.Errorf("--agent-listen %q: %w", c.AgentListen, err)
+		}
+		if len(c.AgentSANs) == 0 {
+			return errors.New("--agent-san is required with --agent-listen: name the DNS names or IP addresses agents dial the hub at (there is no default, because auto-detected addresses would include Docker bridge IPs)")
+		}
 	}
-	if host == "localhost" {
-		return nil
+	if c.AgentToken != "" {
+		if err := hub.ValidateToken(c.AgentToken); err != nil {
+			return fmt.Errorf("SD_AGENT_TOKEN: %w", err)
+		}
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	return fmt.Errorf("debug-listen %q is not a loopback address; pass --debug-allow-remote to expose it (bench networks only)", addr)
+	return nil
 }
 
 // runServer runs the control plane until ctx is cancelled. Shutdown order:
 // the local agent (and with it Caddy) stops first, then the control plane.
-func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready func(serverAddrs)) error {
-	if err := checkDebugAddr(cfg.DebugListen, cfg.DebugAllowRemote); err != nil {
+func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready func(serverAddrs)) (retErr error) {
+	if err := cfg.validate(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(cfg.Data, 0o750); err != nil {
 		return fmt.Errorf("data dir: %w", err)
+	}
+	token := cfg.AgentToken
+	var mgr *pki.Manager
+	if cfg.AgentListen != "" {
+		if token == "" {
+			var path string
+			var err error
+			if token, path, err = hub.LoadOrCreateToken(cfg.Data); err != nil {
+				return err
+			}
+			log.Info("agent token is in a file (the token is not logged)", "path", path)
+		}
+		var err error
+		mgr, err = pki.Open(pki.Options{Dir: filepath.Join(cfg.Data, "pki"), SANs: cfg.AgentSANs, Log: log})
+		if err != nil {
+			return err
+		}
+		log.Info("hub CA ready; agents pin this fingerprint with --ca-fingerprint", "fingerprint", mgr.CAFingerprint())
 	}
 	st, err := store.Open(ctx, cfg.Data)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+
+	// Open every listener first, so a failure leaves nothing half-started.
+	var opened []io.Closer
+	started := false
+	defer func() {
+		if !started {
+			for _, c := range opened {
+				_ = c.Close()
+			}
+		}
+	}()
+	addrs := serverAddrs{}
+	ln, err := net.Listen("tcp", cfg.Internal)
+	if err != nil {
+		return fmt.Errorf("listen internal: %w", err)
+	}
+	opened = append(opened, ln)
+	addrs.Internal = ln.Addr().String()
+	var agentLn, debugLn net.Listener
+	if mgr != nil {
+		raw, err := net.Listen("tcp", cfg.AgentListen)
+		if err != nil {
+			return fmt.Errorf("listen agent: %w", err)
+		}
+		opened = append(opened, raw)
+		agentLn = tls.NewListener(raw, mgr.TLSConfig())
+		addrs.Agent, addrs.CAFingerprint = raw.Addr().String(), mgr.CAFingerprint()
+	}
+	if cfg.DebugSocket != "" {
+		if debugLn, err = listenDebugSocket(cfg.DebugSocket); err != nil {
+			return err
+		}
+		opened = append(opened, debugLn)
+		addrs.Debug = cfg.DebugSocket
+		log.Warn("debug socket enabled", "path", cfg.DebugSocket)
+	}
 
 	// cpCtx bounds the control plane (HTTP servers); it outlives the agent.
 	cpCtx, cpCancel := context.WithCancel(context.Background())
@@ -141,32 +219,23 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	defer agentCancel()
 
 	srv := api.New(web.FS())
-	h := hub.New(cpCtx, cfg.AgentToken, log)
-	srv.Handle("GET "+proxy.AgentConnectPath, h)
-	ln, err := net.Listen("tcp", cfg.Internal)
-	if err != nil {
-		return fmt.Errorf("listen internal: %w", err)
-	}
-	addrs := serverAddrs{Internal: ln.Addr().String()}
-	cpErr := make(chan error, 2)
+	h := hub.New(cpCtx, token, log)
+	started = true
+	cpErr := make(chan error, 3)
 	cpRunning := 1
 	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace) }()
-
-	if cfg.DebugListen != "" {
-		dl, err := net.Listen("tcp", cfg.DebugListen)
-		if err != nil {
-			cpCancel()
-			<-cpErr
-			return fmt.Errorf("listen debug: %w", err)
-		}
-		addrs.Debug = dl.Addr().String()
-		if cfg.DebugAllowRemote {
-			log.Warn("DEBUG LISTENER ALLOWED ON A NON-LOOPBACK ADDRESS (--debug-allow-remote); it is unauthenticated", "addr", addrs.Debug)
-		} else {
-			log.Warn("debug listener enabled", "addr", addrs.Debug)
-		}
+	if agentLn != nil {
+		// Only GET /agent/connect is served here; it is not behind Caddy, so a
+		// proxy reload cannot drop agents (ADR 0009).
+		mux := http.NewServeMux()
+		mux.Handle("GET "+agent.ConnectPath, h)
 		cpRunning++
-		go func() { cpErr <- api.Serve(cpCtx, dl, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
+		go func() { cpErr <- api.Serve(cpCtx, agentLn, mux, shutdownGrace) }()
+		log.Info("agent listener (TLS 1.3, experimental, logs only)", "addr", addrs.Agent)
+	}
+	if debugLn != nil {
+		cpRunning++
+		go func() { cpErr <- api.Serve(cpCtx, debugLn, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
 	}
 	log.Info("control plane listening", "internal", addrs.Internal)
 

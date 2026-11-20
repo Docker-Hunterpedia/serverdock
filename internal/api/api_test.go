@@ -131,3 +131,21 @@ func TestServeGracefulShutdown(t *testing.T) {
 		t.Error("listener still accepting")
 	}
 }
+
+// Agents connect to the hub's own TLS listener; the control plane must answer
+// 404 for /agent/*, not the SPA fallback.
+func TestAgentPathsAre404(t *testing.T) {
+	srv := New(fstest.MapFS{"index.html": {Data: []byte("<html>spa</html>")}})
+	for _, p := range []string{"/agent/connect", "/agent/", "/agent/x/y"} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/some/route", nil))
+	if rec.Code != 200 {
+		t.Errorf("SPA fallback broken: %d", rec.Code)
+	}
+}

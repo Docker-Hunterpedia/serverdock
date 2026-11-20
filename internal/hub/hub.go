@@ -179,7 +179,8 @@ func (s *Session) Logs(ctx context.Context, container string, tail int) (io.Read
 	if err := op.Validate(); err != nil {
 		return nil, err
 	}
-	st, err := s.ys.OpenStream()
+	spec, _ := agent.SpecFor(agent.OpLogs)
+	st, err := s.open(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +193,20 @@ func (s *Session) Logs(ctx context.Context, container string, tail int) (io.Read
 	rc := &stream{Stream: st}
 	rc.stop = context.AfterFunc(ctx, func() { st.Close() })
 	return rc, nil
+}
+
+// ErrLocalOnly is returned when a LocalOnly op is requested on a remote session.
+var ErrLocalOnly = errors.New("hub: this operation is only available on the local server (remote agents are read-only)")
+
+// open starts a stream for spec. Every op goes through here, so the rule
+// "remote agents are read-only until Phase 2" is enforced in one place: a
+// LocalOnly op is refused unless the session is the in-process local agent
+// (LocalID is reserved, and only runServer attaches it, over the in-memory pipe).
+func (s *Session) open(spec agent.OpSpec) (*yamux.Stream, error) {
+	if spec.LocalOnly && s.ID != LocalID {
+		return nil, ErrLocalOnly
+	}
+	return s.ys.OpenStream()
 }
 
 type stream struct {

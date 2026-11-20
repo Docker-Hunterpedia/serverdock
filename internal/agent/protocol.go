@@ -20,6 +20,34 @@ const (
 	MaxTail = 5000
 )
 
+// OpSpec describes one stream op. LocalOnly ops are refused on remote agent
+// sessions by the hub (docs/security.md rule 9: remote agents are read-only
+// until Phase 2); only the in-process local agent may serve them.
+type OpSpec struct {
+	Name      string
+	LocalOnly bool
+}
+
+// OpSpecs is the table of every op the agent protocol knows. `logs` is the only
+// op that is not LocalOnly. New ops must be LocalOnly unless they are read-only
+// and security-reviewed (a test enforces this).
+var opSpecs = []OpSpec{
+	{Name: OpLogs, LocalOnly: false},
+}
+
+// Specs returns a copy of the op table.
+func Specs() []OpSpec { return append([]OpSpec(nil), opSpecs...) }
+
+// SpecFor returns the spec of a known op.
+func SpecFor(name string) (OpSpec, bool) {
+	for _, s := range opSpecs {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return OpSpec{}, false
+}
+
 var containerIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 
 // ValidContainerID reports whether id is a safe Docker container ID or name.
@@ -34,7 +62,7 @@ type Op struct {
 
 // Validate checks the op fields.
 func (o Op) Validate() error {
-	if o.Op != OpLogs {
+	if _, ok := SpecFor(o.Op); !ok || o.Op != OpLogs {
 		return fmt.Errorf("unknown op %q", o.Op)
 	}
 	if !ValidContainerID(o.Container) {

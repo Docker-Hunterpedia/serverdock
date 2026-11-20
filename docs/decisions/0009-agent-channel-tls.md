@@ -1,0 +1,24 @@
+# 0009 — Agent channel: its own TLS listener and a hub CA
+
+**Status:** proposed (plan 0002, M1 step 5; to be accepted with the M1 review) · **Date:** 2026-11-20
+
+**Context.** In Phase 0 the agent's bearer token travelled over plain `ws://` through the embedded Caddy on `:80`, and a Caddy reload dropped every remote agent once `stream_close_delay` expired (security open items #1 and #2). Phase 1 needs the channel encrypted and independent of the proxy. Phase 2 (enrollment) will bind each agent to its own client certificate, so the CA should be one that can grow into that role without changing what agents already trust. Maintainer decision Q1: remote agents are experimental, off by default, and read-only (logs only) in Phase 1.
+
+**Decision.**
+
+1. **Own listener.** `--agent-listen ADDR` (off by default; 7443 suggested) serves only `GET /agent/connect`, over TLS 1.3. It is not behind Caddy, so a proxy reload cannot touch it. The Caddy route and `StreamCloseDelay` are removed; `/agent/*` on the control plane and on `:80` answers 404.
+2. **Hub CA (`internal/pki`).** On first start, `DATA/pki/` (0700) holds an ECDSA P-256 CA (`ca.key` 0600, `ca.crt`, 10 years) and the hub leaf (`hub.pem`, key and chain in one file replaced atomically; 1 year). The CA has `BasicConstraints` CA with **`MaxPathLenZero`**: it can sign leaves but never another CA. ECDSA P-256 rather than Ed25519, because Ed25519 certificates have weak support in TLS clients. A half-written CA is refused, never replaced, so pinned agents are not silently orphaned.
+3. **What the CA signs.** Only hub server leaves now. In Phase 2 it also signs agent client certificates, with the **`clientAuth` EKU only**. The M2 panel certificate is a separate self-signed leaf and is **never** issued by this CA.
+4. **Hub leaf identity.** `--agent-san` (repeatable; DNS names or IPs) is **required** with `--agent-listen`; there is no default, because auto-detected addresses would pick up `docker0` and `br-*` bridge IPs. The leaf also carries the URI SAN `urn:serverdock:role:hub`, so a leaf the CA issues for another purpose can never be accepted as the hub.
+5. **Agent verification.** The agent pins the CA by fingerprint (`--ca-fingerprint sha256:<hex>`, required for `wss`; the server prints it at startup and writes `DATA/pki/ca.fingerprint`; it is public). In `VerifyConnection` it (a) finds the CA in the peer chain whose SHA-256 matches, (b) verifies the leaf against that CA only, for the dialed host (IP hosts against IP SANs) and the `serverAuth` EKU, (c) requires the role URI. System roots are never consulted. `ws://` is accepted only for loopback literals.
+6. **Lazy renewal, no timer and no goroutine.** `GetCertificate` ignores SNI and returns the cached leaf. On each handshake it checks `NotAfter` against an injectable clock and whether the SAN set still matches the flags. With under 30 days left, or a changed SAN set, it re-issues under a mutex and writes atomically (temp file, fsync, rename, directory fsync). If re-issuing fails it keeps serving the current leaf while that leaf is valid, retries no sooner than one minute later, and logs once per back-off. If the leaf has expired and re-issue fails, the handshake fails.
+7. **Token.** `SD_AGENT_TOKEN` must be at least 43 characters of base64url or hex (256 bits). With `--agent-listen` and no token, the server generates one into `DATA/agent.token` (0600) and logs the path, never the token.
+8. **Read-only remote agents (rule 9).** The agent protocol keeps a table of op specs `{Name, LocalOnly}`; `logs` is the only op that is not `LocalOnly`. The hub refuses any `LocalOnly` op unless the session is the in-process local agent (`LocalID` is reserved and attached only over the in-memory pipe). New ops default to `LocalOnly`; a test fails otherwise.
+9. **Debug access.** `--debug-allow-remote` and the TCP debug listener are removed. `--debug-socket PATH` serves `/debug/*` on a unix socket (0600) inside a directory that must be 0700 and owned by the service user.
+
+**Consequences.**
+- Agents need the hub's address in `--agent-san` and the CA fingerprint out of band (printed at start, readable from `DATA/pki/ca.fingerprint`). Changing the SANs re-issues the leaf at the next handshake; the CA, and so every pin, stays.
+- Losing `ca.key` means every agent must be re-pinned; backing up `DATA/pki/` is part of the state backup (M7b).
+- The shared token still gives no per-agent identity (open item #3, Phase 2); until then remote agents can only read logs.
+- The bench measures the real shape: agents over `wss`, a generated token, and the debug socket on a shared volume read by a helper container as the same uid.
+- Cost is startup work only (key generation on first start, a TLS server on an opt-in listener); no new background work.

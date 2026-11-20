@@ -3,25 +3,24 @@ package hub
 import (
 	"context"
 	"net"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 )
 
 // Caddy keeps global state: this is the only test in the package that uses it.
 //
-// Observed behaviour asserted here: a Caddy reload (forced, with a new config)
-// while an agent is connected through /agent/connect does not drop the agent
-// IMMEDIATELY, thanks to stream_close_delay on that route: the same hub session
-// survives the reload (same Seq), a log stream opened before it keeps flowing,
-// and a new log stream works after it. Caddy still closes the old upgraded
-// connection when the delay (5m) expires, after which the agent reconnects with
-// backoff; this test only covers the first 2 seconds.
+// The hub serves /agent/connect on its own TLS listener (ADR 0009), which Caddy
+// does not own, so a Caddy reload cannot touch agent sessions at all: the same
+// hub session survives (same Seq), a log stream opened before the reload keeps
+// flowing, and a new stream works after it. (Before ADR 0009 the route sat
+// behind Caddy and a reload dropped agents after stream_close_delay.)
 func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
-	e := newEnv(t)
+	e := newEnv(t) // plain control plane: the upstream Caddy proxies to
+	te := newTLSEnv(t)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
 	ln.Close()
@@ -39,9 +38,9 @@ func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
 	defer stopProxy()
 
 	logs := newFakeLogs()
-	stopAgent := startAgent(t, "ws://"+addr+"/agent/connect", "viaCaddy", logs, nil)
+	stopAgent := startAgent(t, te.url, "viaTLS", logs, func(c *agent.ClientConfig) { c.CAFingerprint = te.fp })
 	defer stopAgent()
-	s1 := waitSession(t, e.hub, "viaCaddy", 0)
+	s1 := waitSession(t, te.hub, "viaTLS", 0)
 
 	// A log stream open across the reload.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -56,23 +55,18 @@ func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
 		t.Fatalf("pre-reload read: %q %v", buf[:n], err)
 	}
 
-	// Reload with a different config (a bogus-but-valid second upstream is not
-	// needed; Load forces a reload, and the route is rebuilt).
-	reloadDone := time.Now()
+	// Reload (Load forces one) and give a drop time to show up.
 	if err := proxy.Load(cfg); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	// Give a drop the whole first backoff window plus slack to show up.
 	time.Sleep(2 * time.Second)
 
-	s2, ok := e.hub.Get("viaCaddy")
+	s2, ok := te.hub.Get("viaTLS")
 	switch {
 	case !ok:
-		t.Fatal("agent session gone after reload and not reconnected within 2s")
-	case s2.Seq == s1.Seq:
-		t.Logf("RESULT: agent kept its session through the Caddy reload (%v after reload); Caddy will still close it when stream_close_delay expires", time.Since(reloadDone).Round(time.Millisecond))
-	default:
-		t.Fatalf("RESULT: agent was dropped by the reload and reconnected (seq %d -> %d); stream_close_delay did not hold the connection", s1.Seq, s2.Seq)
+		t.Fatal("agent session gone after the Caddy reload")
+	case s2.Seq != s1.Seq:
+		t.Fatalf("agent was dropped and reconnected by the reload (seq %d -> %d)", s1.Seq, s2.Seq)
 	}
 
 	// The long-lived stream still works: opening a second stream proves the
@@ -89,12 +83,6 @@ func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
 	defer rc2.Close()
 	if n, err := rc2.Read(buf); err != nil || !strings.HasPrefix(string(buf[:n]), "hello after-reload") {
 		t.Fatalf("post-reload read: %q %v", buf[:n], err)
-	}
-
-	// New agent connections work through the reloaded proxy.
-	resp, err := http.Get("http://" + addr + "/healthz-not-found")
-	if err == nil {
-		resp.Body.Close()
 	}
 
 	cancel()

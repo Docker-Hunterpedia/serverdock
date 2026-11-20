@@ -18,19 +18,13 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/filestorage"
 )
 
-// AgentConnectPath is the WebSocket endpoint remote agents dial.
-const AgentConnectPath = "/agent/connect"
-
 // GracePeriod bounds how long Caddy waits for in-flight requests on shutdown
 // and reload; it matches the control plane's shutdown grace.
 const GracePeriod = 10 * time.Second
 
-// StreamCloseDelay keeps proxied WebSocket (agent) connections open for this
-// long after a config reload instead of dropping them immediately.
-const StreamCloseDelay = 5 * time.Minute
-
-// Config describes the Phase 0 proxy: one HTTP listener, everything proxied
-// to the control plane.
+// Config describes the proxy: one HTTP listener, everything proxied to the
+// control plane. Remote agents do not come through here: the hub serves
+// /agent/connect on its own TLS listener, which a Caddy reload cannot touch.
 type Config struct {
 	// DataDir is the ServerDock data directory; Caddy storage lives in DataDir/caddy.
 	DataDir string
@@ -80,10 +74,6 @@ func BuildConfig(c Config) ([]byte, error) {
 			"listen":          []string{c.Listen},
 			"automatic_https": m{"disable": true},
 			"routes": []m{
-				{
-					"match":  []m{{"path": []string{AgentConnectPath}}},
-					"handle": []m{reverseProxy(c.Upstream, m{"flush_interval": -1, "stream_close_delay": StreamCloseDelay.String()})},
-				},
 				{"handle": []m{reverseProxy(c.Upstream, nil)}},
 			},
 		}}}},

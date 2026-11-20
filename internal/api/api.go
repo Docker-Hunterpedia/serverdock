@@ -27,6 +27,9 @@ func New(spa fs.FS) *Server {
 	s := &Server{mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", healthz)
 	s.mux.Handle("GET /", spaHandler(spa))
+	// Remote agents connect to the hub's own TLS listener, never here: without
+	// this the SPA fallback would answer 200 for /agent/connect.
+	s.mux.Handle("GET /agent/", http.NotFoundHandler())
 	return s
 }
 
@@ -82,8 +85,8 @@ func spaHandler(spa fs.FS) http.Handler {
 }
 
 // DebugHandler serves /debug/mem plus any extra routes (for example the hub's
-// /debug/agents). It is only started when --debug-listen is set (loopback unless
-// --debug-allow-remote) and exposes no secrets.
+// /debug/agents). It is only served on the --debug-socket unix socket (0600 in a
+// 0700 directory) and exposes no secrets.
 func DebugHandler(extra ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
 	for _, f := range extra {

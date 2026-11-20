@@ -5,18 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 )
+
+// ConnectPath is the WebSocket endpoint the hub serves and agents dial.
+const ConnectPath = "/agent/connect"
 
 // ClientConfig configures the dial-out client of a remote agent.
 type ClientConfig struct {
-	// URL is ws://host/agent/connect (wss:// once TLS exists).
+	// URL is wss://host:port/agent/connect, or ws:// for loopback literals only.
 	URL string
+	// CAFingerprint is "sha256:<hex>" of the hub CA; required for wss.
+	CAFingerprint string
 	// Token is the shared spike token. It is never logged.
 	Token string
 	// ID names this agent; sent as ?id=.
@@ -31,13 +39,16 @@ type ClientConfig struct {
 	ResetAfter time.Duration
 
 	// Now and Sleep are injectable for tests.
-	Now   func() time.Time
-	Sleep func(ctx context.Context, d time.Duration) error
+	Now        func() time.Time
+	Sleep      func(ctx context.Context, d time.Duration) error
+	httpClient *http.Client
+
 	// OnConnect, if set, is called after each successful handshake.
 	OnConnect func()
 }
 
-// ValidateURL checks the dial URL scheme.
+// ValidateURL checks the dial URL: wss:// with any host, or ws:// only for a
+// loopback literal (127.0.0.0/8, ::1, localhost).
 func ValidateURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -45,6 +56,33 @@ func ValidateURL(raw string) error {
 	}
 	if (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
 		return fmt.Errorf("agent url must be ws:// or wss:// with a host")
+	}
+	if u.Scheme == "ws" && !loopbackHost(u.Hostname()) {
+		return fmt.Errorf("ws:// is only allowed for loopback addresses; use wss:// with --ca-fingerprint")
+	}
+	return nil
+}
+
+func loopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// Validate checks the URL and, for wss, the CA fingerprint.
+func (c *ClientConfig) Validate() error {
+	if err := ValidateURL(c.URL); err != nil {
+		return err
+	}
+	if u, _ := url.Parse(c.URL); u.Scheme == "wss" {
+		if c.CAFingerprint == "" {
+			return errors.New("wss:// requires --ca-fingerprint sha256:<hex> (printed by the server at startup)")
+		}
+		if _, err := pki.ParseFingerprint(c.CAFingerprint); err != nil {
+			return fmt.Errorf("--ca-fingerprint: %w", err)
+		}
 	}
 	return nil
 }
@@ -87,10 +125,16 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // RunClient connects, serves streams, and reconnects with backoff until ctx is
 // cancelled. It returns nil on cancellation.
 func RunClient(ctx context.Context, cfg ClientConfig) error {
-	if err := ValidateURL(cfg.URL); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	cfg.defaults()
+	hc, err := httpClient(&cfg)
+	if err != nil {
+		return err
+	}
+	defer hc.CloseIdleConnections()
+	cfg.httpClient = hc
 	for ctx.Err() == nil {
 		connectedAt, err := runOnce(ctx, &cfg)
 		if ctx.Err() != nil {
@@ -124,6 +168,7 @@ func runOnce(ctx context.Context, cfg *ClientConfig) (connectedAt time.Time, err
 	q.Set("id", cfg.ID)
 	u.RawQuery = q.Encode()
 	c, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{
+		HTTPClient: cfg.httpClient,
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + cfg.Token}},
 	})
 	dcancel()
@@ -140,6 +185,21 @@ func runOnce(ctx context.Context, cfg *ClientConfig) (connectedAt time.Time, err
 	defer cancel()
 	nc := websocket.NetConn(sctx, c, websocket.MessageBinary)
 	return connectedAt, ServeSession(sctx, nc, cfg.Logs, cfg.KeepAlive, cfg.Log)
+}
+
+// httpClient returns the client used for the WebSocket handshake. For wss it
+// pins the hub CA; the system roots are never consulted.
+func httpClient(cfg *ClientConfig) (*http.Client, error) {
+	u, _ := url.Parse(cfg.URL)
+	tr := &http.Transport{DisableKeepAlives: true}
+	if u.Scheme == "wss" {
+		tc, err := pki.ClientTLSConfig(u.Hostname(), cfg.CAFingerprint, cfg.Now)
+		if err != nil {
+			return nil, err
+		}
+		tr.TLSClientConfig = tc
+	}
+	return &http.Client{Transport: tr}, nil
 }
 
 func redact(err error, token string) error {
