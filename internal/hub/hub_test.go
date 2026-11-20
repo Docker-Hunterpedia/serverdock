@@ -134,8 +134,12 @@ func TestAuthAndValidation(t *testing.T) {
 	disabled := httptest.NewServer(New(context.Background(), "", quiet))
 	defer disabled.Close()
 	resp, err := http.Get(disabled.URL)
-	if err != nil || resp.StatusCode != 503 {
-		t.Errorf("disabled hub: %v %v", resp, err)
+	if err != nil {
+		t.Fatalf("disabled hub: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Errorf("disabled hub: %d", resp.StatusCode)
 	}
 }
 

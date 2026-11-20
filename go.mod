@@ -6,6 +6,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/coder/websocket v1.8.15
 	github.com/hashicorp/yamux v0.1.2
+	go.uber.org/goleak v1.3.0
 	modernc.org/sqlite v1.62.0
 )
 

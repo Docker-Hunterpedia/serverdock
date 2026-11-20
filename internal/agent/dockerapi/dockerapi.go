@@ -43,6 +43,10 @@ func New(socket string) *Client {
 	return &Client{hc: &http.Client{Transport: tr}}
 }
 
+// Close releases the client's idle connections. In-flight calls are not
+// interrupted (cancel their contexts); the client stays usable afterwards.
+func (c *Client) Close() { c.hc.CloseIdleConnections() }
+
 // Logs streams a container's logs (stdout and stderr, following) into w until
 // ctx is cancelled or the container's log stream ends. For non-TTY containers
 // the 8-byte-header multiplexed stream is demultiplexed; for TTY containers

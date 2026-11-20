@@ -91,8 +91,10 @@ func runAgent(ctx context.Context, cfg agentConfig, log *slog.Logger) error {
 		}
 		defer proxy.Stop()
 	}
+	docker := dockerapi.New(cfg.DockerSocket)
+	defer docker.Close()
 	return agent.RunClient(ctx, agent.ClientConfig{
 		URL: cfg.Server, Token: cfg.Token, ID: cfg.ID, Log: log,
-		Logs: dockerapi.New(cfg.DockerSocket),
+		Logs: docker,
 	})
 }

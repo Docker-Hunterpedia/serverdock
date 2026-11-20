@@ -43,7 +43,9 @@ func TestServerCloseCancelsDockerRequest(t *testing.T) {
 	defer ds.Close()
 
 	e := newEnv(t)
-	startAgent(t, e.wsURL(), "dk", dockerapi.New(sock), nil)
+	dc := dockerapi.New(sock)
+	t.Cleanup(dc.Close)
+	startAgent(t, e.wsURL(), "dk", dc, nil)
 	s := waitSession(t, e.hub, "dk", 0)
 	rc, err := s.Logs(context.Background(), "web-1", 10)
 	if err != nil {

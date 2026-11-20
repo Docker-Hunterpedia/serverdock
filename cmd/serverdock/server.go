@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -175,13 +176,17 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
+	// Both session goroutines are joined before runServer returns.
+	var session sync.WaitGroup
+	docker := dockerapi.New(cfg.DockerSocket)
+	defer docker.Close()
 	pipeHub, pipeAgent := net.Pipe()
-	go func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) }()
+	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
+	session.Go(func() {
+		_ = agent.ServeSession(agentCtx, pipeAgent, docker, 0, log)
+	})
 	agentDone := make(chan error, 1)
 	go func() {
-		go func() {
-			_ = agent.ServeSession(agentCtx, pipeAgent, localLogs(cfg.DockerSocket), 0, log)
-		}()
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
 		}, log, func() {
@@ -213,6 +218,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			first = err
 		}
 	}
+	session.Wait()
 	return first
 }
 
@@ -222,5 +228,3 @@ type noLogs struct{}
 func (noLogs) Logs(context.Context, string, int, io.Writer) error {
 	return errors.New("docker logs are not available")
 }
-
-func localLogs(socket string) agent.LogSource { return dockerapi.New(socket) }
