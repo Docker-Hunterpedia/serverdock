@@ -356,34 +356,11 @@ type SetupResult struct {
 // and twenty concurrent completions produce exactly one admin.
 func (s *Store) SetupComplete(ctx context.Context, in SetupComplete) (SetupResult, error) {
 	var zero SetupResult
-	r, err := s.readSetup(ctx, in.Token)
+	chk, err := s.checkSetupComplete(ctx, &in)
 	if err != nil {
 		return zero, err
 	}
-	if len(in.EnrollmentID) > maxTokenInput || r.enrollHash == nil || r.seed == nil ||
-		subtle.ConstantTimeCompare(hashSecret(in.EnrollmentID), r.enrollHash) != 1 {
-		return zero, ErrEnrollmentReplaced
-	}
-	seed, err := s.openSeed("setup_state", "pending_seed", "setup_state/1/pending_seed", r.seed)
-	if err != nil {
-		return zero, err
-	}
-	counter, ok := VerifyTOTP(seed, in.Code, s.now())
-	if !ok {
-		return zero, ErrBadCode
-	}
-	if err := ValidateUsername(in.Username); err != nil {
-		return zero, err
-	}
-	if err := CheckPassword(in.Username, in.Password); err != nil {
-		return zero, err
-	}
-	switch in.HostKind {
-	case "ip", "localhost", "name":
-	default:
-		in.HostKind = "name"
-	}
-
+	r, seed, counter := chk.row, chk.seed, chk.counter
 	phc, err := s.hasher.Hash(ctx, in.Password) // outside any transaction
 	if err != nil {
 		return zero, err
@@ -545,4 +522,89 @@ func (s *Store) RecoveryCodesLeft(ctx context.Context, userID int64) (int, error
 	var n int
 	err := s.st.R.QueryRowContext(ctx, `SELECT count(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL`, userID).Scan(&n)
 	return n, err
+}
+
+// TokenFile is where the setup token is written (the path is not secret).
+func (s *Store) TokenFile() string { return s.tokenFilePath() }
+
+// UserRecord is what the sign-in handler needs about a user name.
+type UserRecord struct {
+	ID           int64
+	Username     string // as stored
+	PasswordHash string // PHC; empty when the user has none (reset)
+	// Admin: a password and a confirmed TOTP. A reset user is not one, and signs
+	// in like a user that does not exist.
+	Admin bool
+}
+
+// UserByName looks a user up case-insensitively. ok is false for no such user.
+func (s *Store) UserByName(ctx context.Context, name string) (u UserRecord, ok bool, err error) {
+	var ph sql.NullString
+	var confirmed sql.NullInt64
+	err = s.st.R.QueryRowContext(ctx, `SELECT id, username, password_hash, totp_confirmed_at FROM users WHERE username = ?`, name).Scan(&u.ID, &u.Username, &ph, &confirmed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserRecord{}, false, nil
+	}
+	if err != nil {
+		return UserRecord{}, false, err
+	}
+	u.PasswordHash = ph.String
+	u.Admin = ph.Valid && confirmed.Valid
+	return u, true, nil
+}
+
+// Username returns a user's name.
+func (s *Store) Username(ctx context.Context, id int64) (string, error) {
+	var n string
+	err := s.st.R.QueryRowContext(ctx, `SELECT username FROM users WHERE id = ?`, id).Scan(&n)
+	return n, err
+}
+
+type setupChecked struct {
+	row     setupRow
+	seed    []byte
+	counter int64
+}
+
+// checkSetupComplete is the read-only half of SetupComplete: admin exists, token,
+// expiry, enrolment, the TOTP code from the server-generated seed, the user name
+// and the password rules. It hashes nothing and writes nothing.
+func (s *Store) checkSetupComplete(ctx context.Context, in *SetupComplete) (setupChecked, error) {
+	var zero setupChecked
+	r, err := s.readSetup(ctx, in.Token)
+	if err != nil {
+		return zero, err
+	}
+	if len(in.EnrollmentID) > maxTokenInput || r.enrollHash == nil || r.seed == nil ||
+		subtle.ConstantTimeCompare(hashSecret(in.EnrollmentID), r.enrollHash) != 1 {
+		return zero, ErrEnrollmentReplaced
+	}
+	seed, err := s.openSeed("setup_state", "pending_seed", "setup_state/1/pending_seed", r.seed)
+	if err != nil {
+		return zero, err
+	}
+	counter, ok := VerifyTOTP(seed, in.Code, s.now())
+	if !ok {
+		return zero, ErrBadCode
+	}
+	if err := ValidateUsername(in.Username); err != nil {
+		return zero, err
+	}
+	if err := CheckPassword(in.Username, in.Password); err != nil {
+		return zero, err
+	}
+	switch in.HostKind {
+	case "ip", "localhost", "name":
+	default:
+		in.HostKind = "name"
+	}
+	return setupChecked{row: r, seed: seed, counter: counter}, nil
+}
+
+// PrecheckSetupComplete runs the read-only checks of SetupComplete, so a caller
+// can refuse (and rate-limit, and audit as a denial) a bad request before it
+// writes an audit intent or hashes anything.
+func (s *Store) PrecheckSetupComplete(ctx context.Context, in SetupComplete) error {
+	_, err := s.checkSetupComplete(ctx, &in)
+	return err
 }

@@ -257,6 +257,28 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
+// ClientIP48 is ClientIP's counterpart for the coarse per-/48 limiter: the same
+// source of the client address (X-Forwarded-For only on a marked connection),
+// keyed by Key48.
+func ClientIP48(r *http.Request) string {
+	var ip net.IP
+	if FromProxy(r.Context()) {
+		if a, err := ParseForwarded(r.Header); err == nil {
+			ip = net.IP(a.AsSlice())
+		}
+	}
+	if ip == nil {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if ip = net.ParseIP(host); ip == nil {
+			return host
+		}
+	}
+	return Key48(ip)
+}
+
 // Listener caps concurrent connections: at most global in total (Accept waits
 // when full) and at most perIP per client address (a connection over the cap is
 // accepted and closed at once, inside Accept, before any handler or TLS

@@ -442,3 +442,94 @@ func (s *Store) KnownIP(ctx context.Context, userID int64, ipKey string) (bool, 
 		userID, ipKey, s.now().Add(-knownIPLifetime).Unix()).Scan(&ok)
 	return ok, err
 }
+
+// MaxReauthFailures is how many wrong step-up codes revoke a session.
+const MaxReauthFailures = 5
+
+// ErrSessionRevoked: the session was just revoked (too many wrong step-up codes).
+var ErrSessionRevoked = errors.New("auth: session revoked after too many wrong codes")
+
+// ReauthError wraps ErrBadCode with the failures left before the session is revoked.
+type ReauthError struct {
+	Err          error
+	UserID       int64
+	FailuresLeft int
+}
+
+func (e *ReauthError) Error() string { return e.Err.Error() }
+func (e *ReauthError) Unwrap() error { return e.Err }
+
+// Reauth is the step-up: it checks a TOTP code (never a recovery code) for the
+// session's user, records the counter (a code is never reused) and moves the
+// session's mfa_fresh_until to now + 5 minutes. A wrong code is counted on the
+// session and for the sign-in notice; the 5th wrong code deletes the session
+// (ErrSessionRevoked) and the caller clears the cookie.
+func (s *Store) Reauth(ctx context.Context, sessionSecret, code string) (time.Time, error) {
+	idHash := hashSecret(sessionSecret)
+	var userID int64
+	var failures int
+	if err := s.st.R.QueryRowContext(ctx, `SELECT user_id, reauth_failures FROM sessions WHERE id_hash = ?`, idHash).Scan(&userID, &failures); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, &SessionError{Reason: "revoked"}
+		}
+		return time.Time{}, err
+	}
+	seed, err := s.UserSeed(ctx, userID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	counter, ok := VerifyTOTP(seed, code, s.now())
+	if !ok {
+		var revoked bool
+		var left int
+		err := s.write(ctx, func(tx *sql.Tx) error {
+			now := s.now().Unix()
+			res, err := tx.ExecContext(ctx, `UPDATE sessions SET reauth_failures = reauth_failures + 1 WHERE id_hash = ?`, idHash)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return &SessionError{Reason: "revoked"}
+			}
+			var f int
+			if err := tx.QueryRowContext(ctx, `SELECT reauth_failures FROM sessions WHERE id_hash = ?`, idHash).Scan(&f); err != nil {
+				return err
+			}
+			left = MaxReauthFailures - f
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET totp_fail_since_login = totp_fail_since_login + 1, totp_fail_last_at = ?, totp_fail_last_ip = (SELECT ip_key FROM sessions WHERE id_hash = ?) WHERE id = ?`, now, idHash, userID); err != nil {
+				return err
+			}
+			if f >= MaxReauthFailures {
+				revoked = true
+				_, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, idHash)
+			}
+			return err
+		})
+		if err != nil {
+			return time.Time{}, err
+		}
+		if revoked {
+			return time.Time{}, &ReauthError{Err: ErrSessionRevoked, UserID: userID}
+		}
+		return time.Time{}, &ReauthError{Err: ErrBadCode, UserID: userID, FailuresLeft: left}
+	}
+	var fresh time.Time
+	err = s.write(ctx, func(tx *sql.Tx) error {
+		if err := acceptTOTP(ctx, tx, userID, counter); err != nil {
+			return err
+		}
+		fresh = s.now().Add(MFAFresh)
+		res, err := tx.ExecContext(ctx, `UPDATE sessions SET mfa_fresh_until = ?, reauth_failures = 0 WHERE id_hash = ?`, fresh.Unix(), idHash)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return &SessionError{Reason: "revoked"}
+		}
+		return nil
+	})
+	if errors.Is(err, ErrCodeReused) {
+		return time.Time{}, &ReauthError{Err: err, UserID: userID, FailuresLeft: MaxReauthFailures - failures}
+	}
+	return fresh, err
+}

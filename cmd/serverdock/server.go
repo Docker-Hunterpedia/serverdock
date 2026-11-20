@@ -267,7 +267,8 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	// The setup token (server, no admin yet only): written at every start while
 	// no admin exists. Only its path is logged, never the token.
-	authStore := auth.NewStore(st, box, auth.NewHasher(), auth.Options{Log: log})
+	hasher := auth.NewHasher() // one per process: every password check shares its semaphore
+	authStore := auth.NewStore(st, box, hasher, auth.Options{Log: log})
 	setup, err := authStore.PrepareSetup(ctx)
 	if err != nil {
 		return err
@@ -343,6 +344,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, PanelHosts: cfg.PanelHosts,
+		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: api.NewLimits(nil), Log: log}),
 		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
 	})
 	started = true
