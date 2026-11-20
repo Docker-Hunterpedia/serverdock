@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review is not in the default set; it starts the bench when a draft is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *" # nightly full bench on main, amd64 + arm64
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -131,17 +136,28 @@ jobs:
           AFTER: ${{ github.event.after }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           SHA: ${{ github.sha }}
-        run: .github/scripts/bench-needed.sh
+        run: |
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            echo "bench=true" >> "$GITHUB_OUTPUT"
+            echo "reason=scheduled or manual full bench" >> "$GITHUB_OUTPUT"
+          else
+            .github/scripts/bench-needed.sh
+          fi
 
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
-  # reports only. Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
+  # reports only and runs nightly (schedule) or on manual dispatch, not per push.
+  # Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
+  # Draft PRs skip the bench: it runs when the PR is marked ready and on every
+  # push after that, on every push to main, and nightly.
   bench:
     needs: [lint-test, changes, web]
-    if: needs.changes.outputs.bench == 'true'
+    if: >-
+      needs.changes.outputs.bench == 'true' &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        runner: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest","ubuntu-24.04-arm"]') || fromJSON('["ubuntu-latest"]') }}
         scenario: ["1", "2", "3", "4"]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -173,9 +189,14 @@ jobs:
   # skipped, cancelled or failed dependency can never read as a pass. (The
   # expanded "bench (...)" checks do not exist when the matrix is skipped, so
   # they cannot be required.)
+  # On a draft PR the gate is skipped on purpose: a draft cannot be merged, and a
+  # skipped gate is never "success", so the docs-only reuse rule
+  # (bench-needed.sh) can never reuse a draft run. Marking the PR ready
+  # (ready_for_review) runs the full bench against the whole PR diff.
   bench-gate:
     needs: [changes, bench]
-    if: always() # never !cancelled(): a skipped gate counts as passing
+    # never !cancelled(): a skipped gate counts as passing
+    if: always() && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     permissions:
       contents: read
