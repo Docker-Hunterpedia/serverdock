@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/Docker-Hunterpedia/serverdock/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -21,7 +23,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, "serverdock", version)
+		// ui=spa|placeholder says whether the real app is embedded: the release and the
+		// bench assert ui=spa, so a binary built without the web build cannot ship.
+		fmt.Fprintln(stdout, "serverdock", version, "ui="+web.UI)
 		return 0
 	case "server":
 		return serverMain(args[1:], stderr)

@@ -49,3 +49,12 @@ Do not open public issues for vulnerabilities. See [SECURITY.md](SECURITY.md).
 ## Code of conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## The web app
+
+The single-page app lives in `web/` (SvelteKit, static output). Node (see `web/.nvmrc`) is needed only to build it: `go build` and `go test` work without it and embed a placeholder page (`serverdock version` prints `ui=placeholder`).
+
+- `make web` installs the pinned dependencies (`npm ci`), runs svelte-check and builds `web/build` (gzip twins, 250 KB JavaScript budget). `make build` then embeds it (`-tags spa`, `ui=spa`).
+- `make dev` runs a throwaway server and Vite over HTTPS (self-signed certificate) at https://localhost:5173, proxying `/api`. The Host allowlist and Origin rule are not loosened; `web/scripts/dev-proxy-check.sh` verifies that.
+- `make web-types` regenerates `web/src/lib/api/types.ts` from `docs/api/openapi.json`; CI fails if it is stale.
+- npm dependencies are pinned exactly and kept minimal; add one only with a plan that names it.

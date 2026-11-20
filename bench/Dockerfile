@@ -7,8 +7,13 @@ ARG VERSION=bench
 # No separate `go mod download`: it fetches every module in the graph, while
 # `go build` only fetches the modules the binary imports. Cache mounts keep
 # repeat builds fast.
+# The shipped binary embeds the real app (-tags spa): web/build must exist in the
+# context (CI downloads the web job's artifact; locally run `make web`), and the
+# build fails unless the binary reports ui=spa.
+RUN test -f web/build/index.html || { echo "web/build is missing: run 'make web' (or download the web artifact)"; exit 1; }
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/serverdock ./cmd/serverdock \
+    CGO_ENABLED=0 go build -tags spa -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/serverdock ./cmd/serverdock \
+ && /out/serverdock version | grep -q ' ui=spa$' \
  && mkdir -p /out/data /out/debug && chmod 700 /out/debug
 
 FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931

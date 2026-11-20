@@ -31,8 +31,44 @@ jobs:
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@"${GOVULNCHECK_VERSION}" ./...
 
+  # The single-page app (Node is needed here and in `make web` only). Its output,
+  # web/build, is uploaded once; the build and bench jobs embed it with -tags spa.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: svelte-check
+        run: npm run check
+      - name: build, gzip and check the 250 KB JavaScript budget
+        run: npm run build
+      - name: generated API types match docs/api/openapi.json
+        run: |
+          npm run types
+          git diff --exit-code -- src/lib/api/types.ts || { echo "run 'make web-types' and commit"; exit 1; }
+      - name: npm audit (runtime dependencies)
+        run: npm audit --omit=dev
+      - name: report sizes
+        run: |
+          js=$(find build -name '*.js' -exec gzip -9 -c {} + | wc -c)
+          echo "web build: JavaScript gzip-9 total $js bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-build
+          path: web/build
+          if-no-files-found: error
+          retention-days: 7
+
   build:
-    needs: lint-test
+    needs: [lint-test, web]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -42,12 +78,21 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
       - name: build
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" -o serverdock-linux-${{ matrix.goarch }} ./cmd/serverdock
+        run: go build -tags spa -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" -o serverdock-linux-${{ matrix.goarch }} ./cmd/serverdock
+      - name: assert the app is embedded (ui=spa)
+        run: |
+          f=serverdock-linux-${{ matrix.goarch }}
+          go version -m "$f" | grep -q -- '-tags=spa' || { echo "built without -tags spa"; exit 1; }
+          if [ "${{ matrix.goarch }}" = amd64 ]; then ./"$f" version | tee /dev/stderr | grep -q ' ui=spa$'; fi
       - name: report sizes
         run: |
           f=serverdock-linux-${{ matrix.goarch }}
@@ -88,7 +133,7 @@ jobs:
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
   # reports only. Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
   bench:
-    needs: [lint-test, changes]
+    needs: [lint-test, changes, web]
     if: needs.changes.outputs.bench == 'true'
     strategy:
       fail-fast: false
@@ -102,6 +147,10 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
       - name: bench scenario ${{ matrix.scenario }}
         # The arm64 runner only reports; the ubuntu-latest job gates.
         continue-on-error: ${{ matrix.runner != 'ubuntu-latest' }}

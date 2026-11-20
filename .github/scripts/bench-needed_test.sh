@@ -158,7 +158,7 @@ run "force-push after Go change -> full diff" true "bench-relevant" EVENT=pull_r
 nl='
 '
 tab=$(printf '\t')
-for name in 'cmd/ü.go' 'bench/a"b' "bench/tab${tab}x" "cmd/nl${nl}x" 'cmd/ü' go.work vendor/x tool.s docs/x.go; do
+for name in 'cmd/ü.go' 'bench/a"b' "bench/tab${tab}x" "cmd/nl${nl}x" 'cmd/ü' go.work vendor/x tool.s docs/x.go web/src/routes/+page.svelte web/package-lock.json web/package.json; do
 	P=$(commit "$name" odd)
 	echo "ci.yml success" >"$GATE_DIR/$P"
 	sync "odd path $(printf '%s' "$name" | tr '\t\n' '??') (increment)" true "bench-relevant" "$C" "$P"
