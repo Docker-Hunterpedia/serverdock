@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
@@ -285,6 +286,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
 	logDockerVersion(ctx, docker, log)
+	// The action registry: built-ins only, and no HTTP route reaches it in M1
+	// (M2 adds them). The SystemInvoker is deliberately not taken here.
+	reg := actions.New(auditLog, log)
+	actions.RegisterBuiltins(reg, actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R})
+	_ = reg
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
