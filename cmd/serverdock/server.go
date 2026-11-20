@@ -25,6 +25,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
+	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
 	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
@@ -225,9 +226,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return err
 	}
 	defer st.Close()
-	// The master key is used by the auth code from M2 step 5; creating it (or
-	// refusing to start without it) belongs to this point of the startup order.
-	_, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
+	// The master key seals TOTP seeds; creating it (or refusing to start without
+	// it) belongs to this point of the startup order.
+	box, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
 		return secretbox.CiphertextsExist(ctx, st.R, secretbox.Columns())
 	})
 	if err != nil {
@@ -263,6 +264,21 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			return err
 		}
 		log.Info("hub CA ready; agents pin this fingerprint with --ca-fingerprint", "fingerprint", mgr.CAFingerprint())
+	}
+	// The setup token (server, no admin yet only): written at every start while
+	// no admin exists. Only its path is logged, never the token.
+	authStore := auth.NewStore(st, box, auth.NewHasher(), auth.Options{Log: log})
+	setup, err := authStore.PrepareSetup(ctx)
+	if err != nil {
+		return err
+	}
+	if setup != nil {
+		fp := ""
+		if panel != nil {
+			fp = panel.Fingerprint
+		}
+		_, port, _ := net.SplitHostPort(cfg.HTTPSListen)
+		log.Info(auth.StartupNotice(*setup, fp, port))
 	}
 	auditLog, err := audit.New(st, log)
 	if err != nil {

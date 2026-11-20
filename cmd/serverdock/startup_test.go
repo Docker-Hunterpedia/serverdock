@@ -53,7 +53,7 @@ func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 	addrs, stop := startServer(t, serverConfig{Data: data, ControlSocket: sock,
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}})
 	before := dataFingerprint(t, data)
-	for _, want := range []string{"agent.token", "pki/ca.key", "pki/hub.pem", "keys/master.key"} {
+	for _, want := range []string{"agent.token", "pki/ca.key", "pki/hub.pem", "keys/master.key", "setup-token"} {
 		if _, ok := before[want]; !ok {
 			t.Fatalf("first server did not create %s: %v", want, before)
 		}
@@ -76,6 +76,11 @@ func TestSecondServerFailsOnLockAndFirstStillAnswers(t *testing.T) {
 		if after[k] != v {
 			t.Errorf("%s changed by the second server", k)
 		}
+	}
+	// The setup token the first server issued is still the one on disk (a second
+	// server that got past the lock would have written a new one).
+	if after["setup-token"] != before["setup-token"] {
+		t.Error("the setup token file was rewritten by the second server")
 	}
 	// The second server did not replace the first one's control socket.
 	if sockAfter, err := os.Lstat(sock); err != nil || !os.SameFile(sockBefore, sockAfter) {
