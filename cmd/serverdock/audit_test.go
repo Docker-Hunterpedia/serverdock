@@ -13,9 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
+	"github.com/Docker-Hunterpedia/serverdock/internal/testbin"
 )
 
 func listDir(t *testing.T, dir string) []string {
@@ -242,5 +244,58 @@ func copyDB(t *testing.T, from, to string) {
 	}
 	if err := os.WriteFile(filepath.Join(to, "serverdock.db"), b, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The production case: the server runs as the service user on a real 0700 DATA,
+// and an operator runs `audit verify` with sudo (root). Verify must succeed and
+// must not leave a root-owned file (a -shm, say) that would later stop the
+// service user's server from opening its own database.
+func TestAuditVerifyAsRootOnServiceOwnedData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary")
+	}
+	if os.Getuid() != 0 {
+		t.Skip("needs root (run it in a container: docker run --rm -v $PWD:/src -w /src golang:1.27 go test ./cmd/serverdock -run AuditVerifyAsRoot)")
+	}
+	const svc = 65534
+	base, err := os.MkdirTemp("", "sdar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
+	os.Chmod(base, 0o755)
+	data := filepath.Join(base, "data")
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(data, svc, svc); err != nil {
+		t.Fatal(err)
+	}
+	p := testbin.Start(t, testbin.Options{Uid: svc, Args: []string{"server", "--data", data, "--internal", testbin.FreeAddr(t), "--proxy=false"}})
+	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	before := listDir(t, data)
+	res := testbin.Run(t, testbin.Options{Args: []string{"audit", "verify", "--data", data}})
+	if res.Code != 0 || !strings.HasPrefix(res.Stdout, "ok:") {
+		t.Fatalf("verify as root: exit %d\n%s%s", res.Code, res.Stdout, res.Stderr)
+	}
+	if after := listDir(t, data); !reflect.DeepEqual(before, after) {
+		t.Errorf("verify created files: %v -> %v", before, after)
+	}
+	filepath.WalkDir(data, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if st, err := d.Info(); err == nil {
+			if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Uid == 0 {
+				t.Errorf("%s is owned by root", path)
+			}
+		}
+		return nil
+	})
+	if code := p.Stop(); code != 0 {
+		t.Fatalf("server exit %d\n%s", code, p.Logs())
 	}
 }

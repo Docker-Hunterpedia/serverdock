@@ -14,7 +14,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=build /out/serverdock /serverdock
 # Writable data dir for the nonroot user (distroless has no usable HOME).
-COPY --from=build --chown=65532:65532 /out/data /data
+# ServerDock refuses to start unless DATA is 0700 and owned by the running uid.
+COPY --from=build --chown=65532:65532 --chmod=0700 /out/data /data
 # Mount point for the debug unix socket's directory (0700, nonroot-owned): a
 # named volume mounted here inherits these permissions.
 COPY --from=build --chown=65532:65532 --chmod=0700 /out/debug /debug

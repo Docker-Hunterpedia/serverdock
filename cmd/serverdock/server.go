@@ -24,9 +24,11 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
+	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
+	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
 )
@@ -104,6 +106,7 @@ func applyMemLimit(limit int64) {
 }
 
 func serverMain(args []string, stderr io.Writer) int {
+	restrictUmask() // before any file is created: new files are 0600, new directories 0700
 	cfg, err := parseServerFlags(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -163,8 +166,28 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.Data, 0o750); err != nil {
-		return fmt.Errorf("data dir: %w", err)
+	// Startup order (plan 0003): Prepare, then the data-directory lock inside
+	// store.Open, then keys, certificates and the agent token, then every
+	// listener. Nothing writes under DATA before the lock, so a second server on
+	// the same DATA fails here without touching the first one's files.
+	if err := datadir.Prepare(cfg.Data); err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, cfg.Data)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	// The master key is used by the auth code from M2 step 5; creating it (or
+	// refusing to start without it) belongs to this point of the startup order.
+	_, keyCreated, err := secretbox.LoadOrCreate(cfg.Data, func() (bool, error) {
+		return secretbox.CiphertextsExist(ctx, st.R, secretbox.Columns())
+	})
+	if err != nil {
+		return err
+	}
+	if keyCreated {
+		log.Info("master key created", "path", secretbox.KeyPath(cfg.Data))
 	}
 	token := cfg.AgentToken
 	var mgr *pki.Manager
@@ -184,11 +207,6 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 		log.Info("hub CA ready; agents pin this fingerprint with --ca-fingerprint", "fingerprint", mgr.CAFingerprint())
 	}
-	st, err := store.Open(ctx, cfg.Data)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
 	auditLog, err := audit.New(st, log)
 	if err != nil {
 		return err

@@ -72,7 +72,7 @@ func TestParseServerFlags(t *testing.T) {
 }
 
 func TestServerDebugOffByDefault(t *testing.T) {
-	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0"})
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), Internal: "127.0.0.1:0"})
 	if addrs.Debug != "" {
 		t.Fatal("debug listener started without flag")
 	}
@@ -116,7 +116,7 @@ func unixClient(sock string) *http.Client {
 
 func TestServerDebugSocket(t *testing.T) {
 	sock := filepath.Join(sockDir(t), "dbg", "d.sock")
-	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", DebugSocket: sock})
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), Internal: "127.0.0.1:0", DebugSocket: sock})
 	if addrs.Debug != sock {
 		t.Fatalf("Debug = %q", addrs.Debug)
 	}
@@ -178,7 +178,7 @@ func TestServerWithProxy(t *testing.T) {
 	}
 	listen := ln.Addr().String()
 	ln.Close()
-	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", Listen: listen, Proxy: true})
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), Internal: "127.0.0.1:0", Listen: listen, Proxy: true})
 	if addrs.Listen != listen {
 		t.Fatalf("Listen = %q", addrs.Listen)
 	}
@@ -201,7 +201,7 @@ var testToken = "Zq7-Xw2_Lm9KpR4tVb8NcY1HdJ5sFg3AeUo6iTxWz0QyB" // 45 distinct-r
 
 func TestServerHubLocalAndRemoteAgentsOverTLS(t *testing.T) {
 	sock := filepath.Join(sockDir(t), "d.sock")
-	data := t.TempDir()
+	data := newData(t)
 	addrs, stop := startServer(t, serverConfig{Data: data, Internal: "127.0.0.1:0", DebugSocket: sock,
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
 	if addrs.Agent == "" || !strings.HasPrefix(addrs.CAFingerprint, "sha256:") {
@@ -277,7 +277,7 @@ func TestAgentConnectIs404OnControlPlaneAndProxy(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	listen := ln.Addr().String()
 	ln.Close()
-	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", Listen: listen, Proxy: true,
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), Internal: "127.0.0.1:0", Listen: listen, Proxy: true,
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
 	for _, base := range []string{"http://" + addrs.Internal, "http://" + listen} {
 		for _, p := range []string{"/agent/connect", "/agent/", "/agent/anything"} {
@@ -299,7 +299,7 @@ func TestAgentConnectIs404OnControlPlaneAndProxy(t *testing.T) {
 // The 5th concurrent TCP connection from one IP to the agent listener is closed
 // by the server in Accept (before any TLS work); the other four stay open.
 func TestAgentListenerPerIPConnectionCap(t *testing.T) {
-	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0",
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), Internal: "127.0.0.1:0",
 		AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
 	var conns []net.Conn
 	for i := 0; i < agentMaxConnsPerIP+1; i++ {
@@ -346,12 +346,12 @@ func TestAgentMaxSessionsFlag(t *testing.T) {
 func TestAgentListenNeedsSANAndToken(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// No SAN: refuses to start, and nothing is bound.
-	err := runServer(context.Background(), serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", AgentListen: "127.0.0.1:0"}, quiet, nil)
+	err := runServer(context.Background(), serverConfig{Data: newData(t), Internal: "127.0.0.1:0", AgentListen: "127.0.0.1:0"}, quiet, nil)
 	if err == nil || !strings.Contains(err.Error(), "--agent-san") {
 		t.Fatalf("agent-listen without SAN: %v", err)
 	}
 	// SAN without a listener is a mistake, not silently ignored.
-	err = runServer(context.Background(), serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", AgentSANs: []string{"x.example"}}, quiet, nil)
+	err = runServer(context.Background(), serverConfig{Data: newData(t), Internal: "127.0.0.1:0", AgentSANs: []string{"x.example"}}, quiet, nil)
 	if err == nil || !strings.Contains(err.Error(), "--agent-listen") {
 		t.Fatalf("agent-san without listen: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestAgentListenNeedsSANAndToken(t *testing.T) {
 		{AgentListen: "nope", AgentSANs: []string{"x.example"}},
 		{AgentListen: "127.0.0.1:0", AgentSANs: []string{"bad name"}},
 	} {
-		c.Data, c.Internal = t.TempDir(), "127.0.0.1:0"
+		c.Data, c.Internal = newData(t), "127.0.0.1:0"
 		if err := runServer(context.Background(), c, quiet, nil); err == nil {
 			t.Errorf("%+v accepted", c)
 		}
@@ -370,7 +370,7 @@ func TestAgentListenNeedsSANAndToken(t *testing.T) {
 		{AgentToken: "short-secret-value"},
 		{AgentToken: "short-secret-value", AgentListen: "127.0.0.1:0", AgentSANs: []string{"127.0.0.1"}},
 	} {
-		c.Data, c.Internal = t.TempDir(), "127.0.0.1:0"
+		c.Data, c.Internal = newData(t), "127.0.0.1:0"
 		err := runServer(context.Background(), c, quiet, nil)
 		if err == nil || !strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "short-secret-value") {
 			t.Errorf("short token: %v", err)
@@ -379,7 +379,7 @@ func TestAgentListenNeedsSANAndToken(t *testing.T) {
 }
 
 func TestGeneratedAgentTokenFile(t *testing.T) {
-	data := t.TempDir()
+	data := newData(t)
 	var logs bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan serverAddrs, 1)
@@ -419,4 +419,15 @@ func TestGeneratedAgentTokenFile(t *testing.T) {
 			t.Errorf("%s: %v %v", name, st, err)
 		}
 	}
+}
+
+// newData returns an empty data directory the way the server wants it: 0700
+// (t.TempDir is 0755, which the server refuses).
+func newData(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	if err := os.Chmod(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

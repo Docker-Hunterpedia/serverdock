@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"go.uber.org/goleak"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/testbin"
 )
 
 // closeIdle drops the keep-alive connections tests leave in the shared
@@ -13,6 +15,7 @@ type closeIdle struct{ m *testing.M }
 
 func (c closeIdle) Run() int {
 	code := c.m.Run()
+	testbin.Cleanup()
 	http.DefaultClient.CloseIdleConnections()
 	return code
 }
