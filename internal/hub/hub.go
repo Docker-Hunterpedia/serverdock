@@ -39,8 +39,12 @@ func reservedID(id string) bool { return strings.EqualFold(id, LocalID) }
 const (
 	// DefaultMaxSessions is the default cap on remote agent sessions.
 	DefaultMaxSessions = 16
-	// MaxServerStreams bounds the streams the hub has open to one agent.
+	// MaxServerStreams bounds the streams the hub has open to the local
+	// in-process session.
 	MaxServerStreams = 32
+	// MaxRemoteStreams bounds the streams the hub has open to one remote agent
+	// session: 16 sessions x 8 x 256 KiB (yamux's minimum window) = 32 MiB worst case.
+	MaxRemoteStreams = 8
 	// MaxHandshakesPerIP bounds in-flight WebSocket handshakes per client IP.
 	MaxHandshakesPerIP = 4
 	// AuthFailuresPerMinute and AuthFailureBurst shape the per-IP limiter on
@@ -70,6 +74,13 @@ type Hub struct {
 	sessions map[string]*Session
 	slots    map[string]int // remote session slots in use, per agent id
 	hs       map[string]int // in-flight handshakes per client IP
+}
+
+func streamCap(id string) int {
+	if id == LocalID {
+		return MaxServerStreams
+	}
+	return MaxRemoteStreams
 }
 
 // Option configures New.
@@ -234,7 +245,7 @@ func (h *Hub) Attach(ctx context.Context, id string, conn net.Conn, keepAlive ti
 	}
 	h.mu.Lock()
 	h.seq++
-	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, MaxServerStreams)}
+	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, streamCap(id))}
 	old := h.sessions[id]
 	h.sessions[id] = s
 	h.mu.Unlock()

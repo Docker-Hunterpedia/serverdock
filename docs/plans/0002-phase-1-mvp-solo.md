@@ -802,10 +802,10 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
 - **yamux, hub side:**
   - `AcceptBacklog` 8;
   - agent-opened streams are accepted and closed at once;
-  - a per-session semaphore of 32 server-opened streams (when full, calls error);
-  - **`MaxStreamWindowSize` 64 KiB**;
+  - a per-session semaphore of server-opened streams, **8 for a remote session and 32 for the local one** (when full, calls error);
+  - **`MaxStreamWindowSize` stays at yamux's 256 KiB minimum** (yamux rejects 64 KiB; decision 2026-11-20);
   - explicit open and close timeouts.
-  - Worst-case pinned memory: 16 sessions × 40 streams × 64 KiB ≈ **40 MiB**, reachable only by authenticated agents; recorded in `docs/security.md`.
+  - Worst-case pinned memory: 16 sessions × 8 streams × 256 KiB = **32 MiB**, reachable only by authenticated agents; recorded in `docs/security.md`.
 - **yamux, agent side:** 32 concurrent streams.
 - **Op request lines** stay capped at `MaxOpLine`.
 - **HTTP servers:**

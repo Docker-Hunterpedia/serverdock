@@ -240,3 +240,31 @@ func TestThirtyThirdStreamErrors(t *testing.T) {
 		rc.Close()
 	}
 }
+
+// A remote session is capped at 8 streams (the local session keeps 32).
+func TestNinthRemoteStreamErrors(t *testing.T) {
+	e := newEnv(t)
+	startAgent(t, e.wsURL(), "r1", holdLogs{}, nil)
+	s := waitSession(t, e.hub, "r1", 0)
+	ctx := context.Background()
+	var open []io.ReadCloser
+	for i := 0; i < MaxRemoteStreams; i++ {
+		rc, err := s.Logs(ctx, fmt.Sprintf("c%d", i), 5)
+		if err != nil {
+			t.Fatalf("stream %d: %v", i+1, err)
+		}
+		open = append(open, rc)
+	}
+	if _, err := s.Logs(ctx, "ninth", 5); !errors.Is(err, ErrTooManyStreams) {
+		t.Fatalf("9th remote stream: %v, want ErrTooManyStreams", err)
+	}
+	open[0].Close()
+	rc, err := s.Logs(ctx, "after-close", 5)
+	if err != nil {
+		t.Fatalf("after freeing a slot: %v", err)
+	}
+	open = append(open, rc)
+	for _, rc := range open {
+		rc.Close()
+	}
+}
