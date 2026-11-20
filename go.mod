@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/coder/websocket v1.8.15
+	github.com/hashicorp/yamux v0.1.2
 	modernc.org/sqlite v1.62.0
 )
 

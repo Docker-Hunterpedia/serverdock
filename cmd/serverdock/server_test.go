@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 )
 
 func startServer(t *testing.T, cfg serverConfig) (serverAddrs, func() error) {
@@ -144,5 +147,48 @@ func TestServerRefusesRemoteDebug(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil {
 		t.Fatal("expected refusal")
+	}
+}
+
+func TestServerHubLocalAndRemoteAgents(t *testing.T) {
+	addrs, stop := startServer(t, serverConfig{Data: t.TempDir(), Internal: "127.0.0.1:0", DebugListen: "127.0.0.1:0", AgentToken: "tok"})
+	list := func() string {
+		resp, err := http.Get("http://" + addrs.Debug + "/debug/agents")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	waitFor := func(sub string) {
+		t.Helper()
+		for i := 0; i < 100; i++ {
+			if strings.Contains(list(), sub) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("agents list never contained %s: %s", sub, list())
+	}
+	waitFor(`"local"`) // in-process agent registered over the in-memory pipe
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = agent.RunClient(ctx, agent.ClientConfig{URL: "ws://" + addrs.Internal + "/agent/connect", Token: "tok", ID: "remote1",
+			Logs: noLogs{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	}()
+	defer func() { cancel(); <-done }()
+	waitFor(`"remote1"`)
+
+	// Shutdown must complete promptly even with a hijacked WebSocket session open.
+	t0 := time.Now()
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(t0); d > 5*time.Second {
+		t.Fatalf("shutdown with a connected agent took %v", d)
 	}
 }

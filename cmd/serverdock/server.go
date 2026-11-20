@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
+	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
 )
@@ -33,6 +35,9 @@ type serverConfig struct {
 	DebugListen string
 	// DebugAllowRemote permits a non-loopback --debug-listen address.
 	DebugAllowRemote bool
+	// AgentToken is the shared spike token (SD_AGENT_TOKEN); empty disables
+	// remote agents. It is never logged.
+	AgentToken string
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -70,6 +75,7 @@ func serverMain(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "serverdock server:", err)
 		return 2
 	}
+	cfg.AgentToken = os.Getenv("SD_AGENT_TOKEN")
 	applyMemLimit(serverMemLimit)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -130,6 +136,8 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	defer agentCancel()
 
 	srv := api.New(web.FS())
+	h := hub.New(cpCtx, cfg.AgentToken, log)
+	srv.Handle("GET "+proxy.AgentConnectPath, h)
 	ln, err := net.Listen("tcp", cfg.Internal)
 	if err != nil {
 		return fmt.Errorf("listen internal: %w", err)
@@ -153,7 +161,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			log.Warn("debug listener enabled", "addr", addrs.Debug)
 		}
 		cpRunning++
-		go func() { cpErr <- api.Serve(cpCtx, dl, api.DebugHandler(), shutdownGrace) }()
+		go func() { cpErr <- api.Serve(cpCtx, dl, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
 	}
 	log.Info("control plane listening", "internal", addrs.Internal)
 
@@ -161,8 +169,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen = cfg.Listen
 	}
+	// The local agent registers with the hub over an in-memory pipe, so the
+	// same session code path runs as for remote agents.
+	pipeHub, pipeAgent := net.Pipe()
+	go func() { _ = h.Attach(cpCtx, "local", pipeHub, 0) }()
 	agentDone := make(chan error, 1)
 	go func() {
+		go func() {
+			_ = agent.ServeSession(agentCtx, pipeAgent, localLogs(), 0, log)
+		}()
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
 		}, log, func() {
@@ -196,3 +211,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	return first
 }
+
+type noLogs struct{}
+
+func (noLogs) Logs(context.Context, string, int, io.Writer) error {
+	return errors.New("docker logs are not available yet")
+}
+
+func localLogs() agent.LogSource { return noLogs{} }

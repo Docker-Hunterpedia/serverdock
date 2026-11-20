@@ -81,10 +81,14 @@ func spaHandler(spa fs.FS) http.Handler {
 	})
 }
 
-// DebugHandler serves /debug/mem. It is only started when --debug-listen is
-// set, and exposes no secrets.
-func DebugHandler() http.Handler {
+// DebugHandler serves /debug/mem plus any extra routes (for example the hub's
+// /debug/agents). It is only started when --debug-listen is set (loopback unless
+// --debug-allow-remote) and exposes no secrets.
+func DebugHandler(extra ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
+	for _, f := range extra {
+		f(mux)
+	}
 	mux.HandleFunc("GET /debug/mem", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(memstat.Read())
