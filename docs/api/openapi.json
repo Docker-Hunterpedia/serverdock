@@ -1,0 +1,3663 @@
+{
+  "components": {
+    "schemas": {
+      "AuditVerifyInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "AuditVerifyOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "broken_id": {
+            "type": "integer"
+          },
+          "head": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "AuthPasswordChangeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "current_password": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "keep_tokens": {
+            "type": "boolean"
+          },
+          "new_password": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "type": "object"
+      },
+      "AuthPasswordChangeOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions_revoked": {
+            "type": "integer"
+          },
+          "tokens_revoked": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions_revoked",
+          "tokens_revoked"
+        ],
+        "type": "object"
+      },
+      "AuthRecoveryRegenerateInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "AuthRecoveryRegenerateOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "codes"
+        ],
+        "type": "object"
+      },
+      "AuthSessionInfoInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "AuthSessionInfoOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "abs_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "idle_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "mfa_fresh_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "notice": {
+            "additionalProperties": false,
+            "properties": {
+              "last_failure_at": {
+                "type": "integer"
+              },
+              "last_failure_ip": {
+                "type": "string"
+              },
+              "totp_failures": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "recovery_codes_left": {
+            "type": "integer"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "public_id",
+          "mfa_fresh_until",
+          "idle_expires_at",
+          "abs_expires_at",
+          "notice",
+          "recovery_codes_left"
+        ],
+        "type": "object"
+      },
+      "AuthSessionsListInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "AuthSessionsListOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "current": {
+                  "type": "boolean"
+                },
+                "ip_key": {
+                  "type": "string"
+                },
+                "last_seen_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "public_id": {
+                  "type": "string"
+                },
+                "user_agent": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "public_id",
+                "created_at",
+                "last_seen_at",
+                "ip_key",
+                "user_agent",
+                "current"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "AuthSessionsRevokeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "all_others": {
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AuthSessionsRevokeOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "revoked": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
+      "AuthTotpReenrollBeginInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "AuthTotpReenrollBeginOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "enrollment_id": {
+            "type": "string"
+          },
+          "otpauth_uri": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enrollment_id",
+          "secret",
+          "otpauth_uri"
+        ],
+        "type": "object"
+      },
+      "AuthTotpReenrollConfirmInput": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "enrollment_id": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "keep_tokens": {
+            "description": "keep API tokens (only when rotating routinely, not after a suspected compromise)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enrollment_id",
+          "code"
+        ],
+        "type": "object"
+      },
+      "AuthTotpReenrollConfirmOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions_revoked": {
+            "type": "integer"
+          },
+          "tokens_revoked": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions_revoked",
+          "tokens_revoked"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "request_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "request_id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "SystemDockerInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "SystemDockerOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "api": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "type": "object"
+      },
+      "SystemInfoInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "SystemInfoOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "audit_head": {
+            "type": "string"
+          },
+          "audit_rows": {
+            "type": "integer"
+          },
+          "cpu_seconds": {
+            "type": "number"
+          },
+          "goroutines": {
+            "type": "integer"
+          },
+          "rss_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uptime_seconds": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "uptime_seconds",
+          "rss_bytes",
+          "cpu_seconds",
+          "goroutines",
+          "audit_head",
+          "audit_rows"
+        ],
+        "type": "object"
+      },
+      "SystemPanelCertInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "SystemPanelCertOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "not_after": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "renew_soon": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "created",
+          "not_after",
+          "renew_soon"
+        ],
+        "type": "object"
+      },
+      "TokensCreateInput": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "description": "1 to 365; default 90",
+            "type": "integer"
+          },
+          "name": {
+            "description": "what the token is for",
+            "type": "string"
+          },
+          "scope": {
+            "description": "read, write or admin",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "TokensCreateOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "token": {
+            "description": "shown once",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "token",
+          "prefix",
+          "scope",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "TokensListInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "TokensListOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "tokens": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "expires_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "integer"
+                },
+                "last_used_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "revoked": {
+                  "type": "boolean"
+                },
+                "scope": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "prefix",
+                "scope",
+                "created_at",
+                "expires_at",
+                "revoked"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "TokensRevokeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "TokensRevokeOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "revoked": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "API token (sd_...). Never accepted in a cookie or query string.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "cookieAuth": {
+        "description": "Session cookie. Unsafe methods also need the X-SD-CSRF header (from the sign-in response or GET /api/v1/auth/session) and an Origin equal to https://\u003cHost\u003e.",
+        "in": "cookie",
+        "name": "__Host-sd_session",
+        "type": "apiKey"
+      },
+      "pendingAuth": {
+        "description": "The pending-2FA cookie set by auth.login (valid 5 minutes, 5 tries). It is not a session.",
+        "in": "cookie",
+        "name": "__Host-sd_pending",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated from the action registry. Unsafe session requests need the X-SD-CSRF header and a matching Origin; API tokens are sent as Authorization: Bearer and can only run non-sensitive, non-destructive, non-session-only actions.",
+    "title": "ServerDock API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/actions/audit.verify": {
+      "post": {
+        "operationId": "audit.verify",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditVerifyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuditVerifyOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Walk the audit chain and report the first broken row.",
+        "tags": [
+          "audit"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/auth.password_change": {
+      "post": {
+        "operationId": "auth.password_change",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthPasswordChangeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthPasswordChangeOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Change the admin password. Ends every session and, unless keep_tokens, revokes every API token.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": true,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.recovery_regenerate": {
+      "post": {
+        "operationId": "auth.recovery_regenerate",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthRecoveryRegenerateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthRecoveryRegenerateOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Replace all ten recovery codes; the new ones are returned once.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": true,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.session_info": {
+      "post": {
+        "operationId": "auth.session_info",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthSessionInfoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthSessionInfoOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "The signed-in user, the session's expiry, the step-up window, the sign-in notice and the recovery codes left.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.sessions_list": {
+      "post": {
+        "operationId": "auth.sessions_list",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthSessionsListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthSessionsListOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "The signed-in user's sessions.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.sessions_revoke": {
+      "post": {
+        "operationId": "auth.sessions_revoke",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthSessionsRevokeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthSessionsRevokeOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Sign out one session by its public id, or every session but this one.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": true,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.totp_reenroll_begin": {
+      "post": {
+        "operationId": "auth.totp_reenroll_begin",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthTotpReenrollBeginInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthTotpReenrollBeginOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Start replacing the authenticator: returns a new key and QR link (valid 10 minutes).",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": true,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/auth.totp_reenroll_confirm": {
+      "post": {
+        "operationId": "auth.totp_reenroll_confirm",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthTotpReenrollConfirmInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AuthTotpReenrollConfirmOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Finish replacing the authenticator with a code from the new one. Ends every session and, unless keep_tokens, revokes every API token.",
+        "tags": [
+          "auth"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": true,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/system.docker": {
+      "post": {
+        "operationId": "system.docker",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemDockerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/SystemDockerOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Docker engine version and the negotiated API version.",
+        "tags": [
+          "system"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/system.info": {
+      "post": {
+        "operationId": "system.info",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemInfoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/SystemInfoOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Version, uptime, own memory and CPU, and the audit log head.",
+        "tags": [
+          "system"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/system.panel_cert": {
+      "post": {
+        "operationId": "system.panel_cert",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemPanelCertInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/SystemPanelCertOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The panel certificate's fingerprint and dates.",
+        "tags": [
+          "system"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/tokens.create": {
+      "post": {
+        "operationId": "tokens.create",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokensCreateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TokensCreateOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Create an API token. The token is shown once.",
+        "tags": [
+          "tokens"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": true,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/tokens.list": {
+      "post": {
+        "operationId": "tokens.list",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokensListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TokensListOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "The user's API tokens (never the token itself).",
+        "tags": [
+          "tokens"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/tokens.revoke": {
+      "post": {
+        "operationId": "tokens.revoke",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokensRevokeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TokensRevokeOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Revoke an API token.",
+        "tags": [
+          "tokens"
+        ],
+        "x-sd-removes-access": true,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": true
+      }
+    },
+    "/api/v1/auth/2fa": {
+      "post": {
+        "operationId": "auth.2fa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "recovery_code": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "csrf": {
+                      "type": "string"
+                    },
+                    "mfa_fresh_until": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "notice": {
+                      "type": "object"
+                    },
+                    "username": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "username",
+                    "csrf"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Signed in."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_code, code_reused or unauthenticated)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable)."
+          }
+        },
+        "security": [
+          {
+            "pendingAuth": []
+          }
+        ],
+        "summary": "Second factor: a TOTP code or a recovery code; sets the session cookie.",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "auth.login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "password": {
+                    "format": "password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expires_in": {
+                      "type": "integer"
+                    },
+                    "two_factor_required": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "two_factor_required",
+                    "expires_in"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Second factor required."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_credentials)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [],
+        "summary": "Password step: sets the pending-2FA cookie (never a session).",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "auth.logout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "audit": {
+                      "type": "string"
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Signed out."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Sign out (always runs, even if the audit log is down).",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/reauth": {
+      "post": {
+        "operationId": "auth.reauth",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "mfa_fresh_until": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mfa_fresh_until"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The new window."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_code or code_reused)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Step-up: a TOTP code extends the fresh-2FA window by 5 minutes.",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "auth.session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The session."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, idle_expired, absolute_expired or revoked)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "The signed-in user, the CSRF token and the sign-in notice.",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 document."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "This document.",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/v1/setup/complete": {
+      "post": {
+        "operationId": "setup.complete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "enrollment_id": {
+                    "format": "password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "password": {
+                    "format": "password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "token": {
+                    "format": "password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token",
+                  "enrollment_id",
+                  "username",
+                  "password",
+                  "code"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "audit": {
+                      "type": "string"
+                    },
+                    "csrf": {
+                      "type": "string"
+                    },
+                    "recovery_codes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "username": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "username",
+                    "recovery_codes",
+                    "csrf"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Signed in (session cookie set). The recovery codes are shown once."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_token or invalid_code)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (setup_token_expired)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (token_consumed or enrollment_replaced)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable or busy)."
+          }
+        },
+        "security": [],
+        "summary": "Create the admin with a password and a confirmed authenticator; signs in.",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/v1/setup/enroll": {
+      "post": {
+        "operationId": "setup.enroll",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "token": {
+                    "format": "password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token",
+                  "username"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "enrollment_id": {
+                      "type": "string"
+                    },
+                    "otpauth_uri": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "enrollment_id",
+                    "secret",
+                    "otpauth_uri"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The key and the otpauth URI, shown once."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_token)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (setup_token_expired)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (token_consumed)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          }
+        },
+        "security": [],
+        "summary": "Check the setup token and start the authenticator enrolment (404 once an admin exists).",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/v1/setup/status": {
+      "get": {
+        "operationId": "setup.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "server_time": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "setup_required": {
+                      "type": "boolean"
+                    },
+                    "token_expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "token_file": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "setup_required",
+                    "server_time"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Setup state. Once an admin exists only setup_required (false) and server_time are returned."
+          }
+        },
+        "security": [],
+        "summary": "Whether first-run setup is open, and until when.",
+        "tags": [
+          "setup"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}

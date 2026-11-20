@@ -286,8 +286,18 @@ func (a *authAPI) rejectTokenInURL(w http.ResponseWriter, r *http.Request) bool 
 	return false
 }
 
+// adminExists answers 404 for the setup endpoints once an admin exists, before
+// anything else about the request is looked at.
+func (a *authAPI) adminExists(w http.ResponseWriter, r *http.Request) bool {
+	if ok, err := a.Auth.AdminExists(r.Context()); err == nil && ok {
+		WriteError(w, http.StatusNotFound, "not_found", "no such route")
+		return true
+	}
+	return false
+}
+
 func (a *authAPI) setupEnroll(w http.ResponseWriter, r *http.Request) {
-	if a.rejectTokenInURL(w, r) {
+	if a.adminExists(w, r) || a.rejectTokenInURL(w, r) {
 		return
 	}
 	var in struct {
@@ -314,7 +324,7 @@ func (a *authAPI) setupEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *authAPI) setupComplete(w http.ResponseWriter, r *http.Request) {
-	if a.rejectTokenInURL(w, r) {
+	if a.adminExists(w, r) || a.rejectTokenInURL(w, r) {
 		return
 	}
 	p := PrincipalFrom(r.Context())

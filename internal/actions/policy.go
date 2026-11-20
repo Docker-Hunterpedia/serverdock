@@ -98,11 +98,11 @@ func (r *Registry) authorize(a Actor, act *action, target string, opts Options) 
 		}
 		if act.sensitive || act.risk == RiskDestructive {
 			if !a.mfaFreshUntil.After(r.now()) {
-				return denied("fresh two-factor confirmation required")
+				return &DeniedError{Reason: "fresh two-factor confirmation required", Code: "mfa_required"}
 			}
 		}
 		if act.risk == RiskDestructive && (target == "" || opts.Confirm != target) {
-			return denied("type the exact target to confirm")
+			return &DeniedError{Reason: "type the exact target to confirm", Code: "confirm"}
 		}
 	case KindToken:
 		if act.sensitive {

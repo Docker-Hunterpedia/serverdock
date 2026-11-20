@@ -10,6 +10,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +23,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
+	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
@@ -60,6 +64,32 @@ type fixture struct {
 	pending  string
 	hasAdmin bool
 	tokens   map[string]string // case name -> bearer token
+	sink     *downSink
+	reg      *actions.Registry
+	rec      *recordingRunner
+}
+
+// matrixHasher is the password hasher of the matrix: a password is right when it
+// equals testPassword (argon2 would make 336 requests slow).
+type matrixHasher struct{}
+
+func (matrixHasher) Verify(_ context.Context, _, pw string) (bool, error) {
+	return pw == testPassword, nil
+}
+func (matrixHasher) VerifyDummy(context.Context, string) error         { return nil }
+func (matrixHasher) Hash(_ context.Context, pw string) (string, error) { return "$fake$" + pw, nil }
+
+// downSink is an audit sink that can start failing.
+type downSink struct {
+	*audit.Logger
+	down atomic.Bool
+}
+
+func (d *downSink) Append(c context.Context, e audit.Entry) (int64, error) {
+	if d.down.Load() {
+		return 0, errors.New("disk full")
+	}
+	return d.Logger.Append(c, e)
 }
 
 const testPassword = "correct horse battery staple"
@@ -119,8 +149,23 @@ func newFixture(t *testing.T, withAdmin bool) *fixture {
 		f.st.W.Exec(`UPDATE api_tokens SET revoked_at = ? WHERE name = 'token revoked'`, f.clk.Now().Unix()-3600)
 	}
 	okh := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { WriteJSON(w, 200, map[string]bool{"ok": true}) })
+	al, err := audit.New(st, slog.New(slog.NewTextHandler(io.Discard, nil)), audit.WithClock(f.clk.Now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sink = &downSink{Logger: al}
+	f.reg = actions.New(f.sink, slog.New(slog.NewTextHandler(io.Discard, nil)), actions.WithClock(f.clk.Now))
+	actions.RegisterBuiltins(f.reg, actions.Deps{Version: "t", Started: f.clk.Now(), Audit: al, DB: st.R,
+		PanelCert: func() actions.PanelCert { return actions.PanelCert{Fingerprint: "AB:CD"} }})
+	big := func(n int) *limits.Backoff { return limits.NewBackoff(n, time.Second, time.Hour, f.clk.Now) }
+	auth.RegisterAuthActions(f.reg, f.as, auth.ActionDeps{Hasher: matrixHasher{}, PasswordGate: big(1000000)})
+	registerTestCells(f.reg)
+	f.rec = &recordingRunner{ActionRunner: f.reg}
 	f.srv = New(Config{
 		SPA: fstest.MapFS{"index.html": {Data: []byte(`<html><body>spa</body></html>`)}}, Sessions: f.as,
+		Actions: f.rec,
+		Auth: NewAuthHandlers(AuthDeps{Auth: f.as, Hasher: matrixHasher{}, Audit: f.sink, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Limits: &Limits{IP64: big(1000000), IP48: big(1000000), AccountPassword: big(1000000), Account2FA: big(1000000)}}),
 		Tokens: NewTokenVerifier(f.as), BadTokens: limits.NewKeyed(100000, 100000, 0, nil),
 		PanelHosts: []string{"panel.example.com"},
 		ExtraRoutes: []Route{
@@ -308,6 +353,28 @@ func expect(rt Route, c string) (status int, code string) {
 	panic("unreachable")
 }
 
+// realBehaviour is what a request that gets PAST the middleware (status 200 in
+// expect) really answers now that the routes run their real handlers: the matrix
+// sends `{}` bodies, an admin exists, and the fixture's limits are huge.
+func realBehaviour(rt Route, status int, code string) (int, string) {
+	if status != 200 {
+		return status, code
+	}
+	switch rt.Method + " " + rt.Pattern {
+	case "POST /api/v1/setup/enroll", "POST /api/v1/setup/complete":
+		return 404, "not_found" // an admin exists
+	case "POST /api/v1/auth/login":
+		return 401, "invalid_credentials"
+	case "POST /api/v1/auth/2fa":
+		return 400, "invalid_input" // neither code nor recovery_code
+	case "POST /api/v1/auth/reauth":
+		return 403, "invalid_code"
+	case "POST /api/v1/actions/{name}":
+		return 404, "unknown_action"
+	}
+	return status, code
+}
+
 // known is every route this matrix covers. A route in the table that is missing
 // here fails TestEveryRouteIsInTheMatrix: extend this file with the new route.
 func known() map[string]AuthKind {
@@ -323,6 +390,8 @@ func known() map[string]AuthKind {
 		"GET /api/v1/auth/session":                Session,
 		"POST /api/v1/auth/reauth":                Session,
 		"POST /api/v1/auth/logout":                Session,
+		"POST /api/v1/actions/{name}":             SessionOrToken,
+		"GET /api/v1/openapi.json":                SessionOrToken,
 		"GET /debug/mem":                          DebugSocket,
 		"GET /debug/agents":                       DebugSocket,
 		"GET /debug/agents/{id}/logs/{container}": DebugSocket,
@@ -372,6 +441,10 @@ func TestRouteMatrix(t *testing.T) {
 		}
 		for _, c := range f.cases() {
 			t.Run(rt.Method+" "+rt.Pattern+" / "+c.name, func(t *testing.T) {
+				// A fresh session and pending step for every case: logout and reauth
+				// really revoke, and the pending step expires.
+				f.session = f.login()
+				f.pending, _ = f.as.CreatePending(context.Background(), f.userID, "203.0.113.5")
 				var body *strings.Reader
 				if rt.Method == "POST" {
 					body = strings.NewReader(`{}`)
@@ -387,6 +460,7 @@ func TestRouteMatrix(t *testing.T) {
 				rec := httptest.NewRecorder()
 				f.h.ServeHTTP(rec, r)
 				wantStatus, wantCode := expect(rt, c.name)
+				wantStatus, wantCode = realBehaviour(rt, wantStatus, wantCode)
 				// Prefix routes with no real content: the SPA root is 200, /agent/... is 404.
 				if rt.Pattern == "/agent/" && wantStatus == 200 {
 					wantStatus = 404
@@ -412,7 +486,13 @@ func TestRouteMatrix(t *testing.T) {
 						t.Errorf("a stale session cookie was not cleared")
 					}
 				} else if cleared {
-					t.Errorf("a session cookie was cleared on a request where it was not stale (%s)", c.name)
+					// The real handlers clear a stale cookie on login (and a signed-out
+					// session's on logout); nowhere else does a cookie get cleared.
+					staleName := c.name == "unknown session cookie" || c.name == "expired session cookie" || c.name == "revoked session cookie" || c.name == "token in a cookie"
+					okClear := rt.Pattern == "/api/v1/auth/login" && staleName || rt.Pattern == "/api/v1/auth/logout" && wantStatus == 200
+					if !okClear {
+						t.Errorf("a session cookie was cleared on a request where it was not stale (%s)", c.name)
+					}
 				}
 				_ = staleCookie
 				_ = onSessionRoute

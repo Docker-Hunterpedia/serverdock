@@ -120,7 +120,13 @@ var (
 )
 
 // DeniedError says why the policy refused (the reason is safe to show the actor).
-type DeniedError struct{ Reason string }
+type DeniedError struct {
+	Reason string
+	// Code is a machine-readable cause the HTTP layer can act on: "mfa_required"
+	// (fresh two-factor needed: the SPA asks for a code and retries), "confirm"
+	// (the exact target must be confirmed), or "" for any other refusal.
+	Code string
+}
 
 func (e *DeniedError) Error() string   { return "actions: denied: " + e.Reason }
 func (e *DeniedError) Is(t error) bool { return t == ErrDenied }
@@ -174,6 +180,7 @@ type action struct {
 	system        string
 	webhookOK     bool
 	inType        reflect.Type
+	outType       reflect.Type
 	prepare       func(raw []byte) (*prepared, error)
 }
 
@@ -266,7 +273,7 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 	}
 
 	a := &action{name: d.Name, summary: d.Summary, risk: d.Risk, scope: d.Scope, sensitive: d.Sensitive,
-		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, removesAccess: d.RemovesAccess, system: d.System, webhookOK: d.WebhookAllowed, inType: inType}
+		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, removesAccess: d.RemovesAccess, system: d.System, webhookOK: d.WebhookAllowed, inType: inType, outType: reflect.TypeFor[Out]()}
 	a.prepare = func(raw []byte) (*prepared, error) {
 		var in In
 		if err := decodeStrict(raw, &in); err != nil {
@@ -426,6 +433,7 @@ type Info struct {
 	System        string
 	WebhookOK     bool
 	InputType     reflect.Type
+	OutputType    reflect.Type
 }
 
 // List returns every action sorted by name.
@@ -435,10 +443,20 @@ func (r *Registry) List() []Info {
 	out := make([]Info, 0, len(r.actions))
 	for _, a := range r.actions {
 		out = append(out, Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
-			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType})
+			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// Lookup returns the Info of one action.
+func (r *Registry) Lookup(name string) (Info, bool) {
+	a, err := r.lookup(name)
+	if err != nil {
+		return Info{}, false
+	}
+	return Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
+		SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType}, true
 }
 
 func (r *Registry) lookup(name string) (*action, error) {

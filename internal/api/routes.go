@@ -66,6 +66,10 @@ type Config struct {
 	Sessions Sessions
 	// Tokens verifies API tokens (M2 step 8); nil means every bearer token is refused.
 	Tokens TokenVerifier
+	// Actions is the action registry behind POST /api/v1/actions/{name} and the
+	// OpenAPI document; nil means those two routes do not exist. The api package
+	// never receives the one-time system invoker.
+	Actions ActionRunner
 	// BadTokens limits failed bearer-token lookups per client IP (5 a minute, burst
 	// 10, like the hub's agent token); nil means that default.
 	BadTokens *limits.Keyed
@@ -94,6 +98,8 @@ type Server struct {
 	log    *slog.Logger
 	// badTokens is the failed-token limiter.
 	badTokens *limits.Keyed
+	// verifyLimiter is audit.verify's hard-coded REST limit (2 a minute per actor).
+	verifyLimiter *limits.Keyed
 }
 
 // New builds the route table and the servers' muxes from it.
@@ -102,6 +108,7 @@ func New(cfg Config) *Server {
 	if s.badTokens == nil {
 		s.badTokens = limits.NewKeyed(5, 10, 0, nil)
 	}
+	s.verifyLimiter = limits.NewKeyed(verifyLimitPerMinute, verifyLimitPerMinute, 0, nil)
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -152,6 +159,7 @@ func (s *Server) table() []Route {
 		{Method: "GET", Pattern: "/debug/agents", Auth: DebugSocket, Handler: debugMux},
 		{Method: "GET", Pattern: "/debug/agents/{id}/logs/{container}", Auth: DebugSocket, Handler: debugMux},
 	}
+	rs = append(rs, s.restRoutes()...)
 	return append(rs, s.cfg.ExtraRoutes...)
 }
 

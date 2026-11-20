@@ -169,7 +169,7 @@ Full threat model: [security.md](security.md).
 
 ```
 cmd/serverdock/           * main: server | agent | version; + audit verify (cli later)
-internal/api/             * control-plane HTTP: the route table (every route and its AuthKind), Host/Origin/content-type/CSRF middleware, credential resolution, SPA serving with CSP, debug handlers; + header/body limits, /agent/* answers 404, the "from our proxy" connection mark (`WithTrustedProxy`)
+internal/api/             * control-plane HTTP: the REST handler over the action registry (`/api/v1/actions/{name}`) and the generated OpenAPI 3.1 document (`docs/api/openapi.json` is its golden file, `make openapi`), the route table (every route and its AuthKind), Host/Origin/content-type/CSRF middleware, credential resolution, SPA serving with CSP, debug handlers; + header/body limits, /agent/* answers 404, the "from our proxy" connection mark (`WithTrustedProxy`)
 internal/hub/             * server side of agent connections (WebSocket + yamux); + sessions cap, auth-failure limiter, stream caps, token rules
 internal/agent/           * agent runtime: dial-out client, backoff, stream handlers; also used in-process by `server`; + op-spec table (RemoteOK), ping guard
 internal/agent/proxy/     * embedded Caddy, owned by the agent runtime (ADR 0004)
@@ -183,7 +183,7 @@ internal/auth/            + argon2id hasher (bounded semaphore, fast 503), PHC p
 internal/datadir/         + creates and checks DATA (0700, owned by the running uid), the secret-path list, atomic file writes
 internal/secretbox/       + AES-256-GCM sealing under DATA/keys/master.key, with the missing-key and wrong-key refusals
 internal/testbin/         + test-only harness: builds and runs the real binary (umask, file modes, exit codes, other uids)
-internal/actions/         + action registry: risk tiers, policy, SystemInvoker, built-in read actions (shared by API, MCP, AI)
+internal/actions/         + action registry (with the JSON Schema reflector, `schema.go`): risk tiers, policy, SystemInvoker, built-in read actions (shared by API, MCP, AI)
 internal/memstat/         * /proc/self/status + Go runtime stats (convenience only)
 internal/mcp/             MCP server
 internal/ai/              assistant loop, redaction, approvals

@@ -343,8 +343,22 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
 	lim := api.NewLimits(nil)
+	docker := dockerapi.New(cfg.DockerSocket)
+	defer docker.Close()
+	logDockerVersion(ctx, docker, log)
+	// The action registry behind the REST handler: built-ins and the session-only
+	// auth actions, never auth.admin_reset. The one-time system invoker is
+	// deliberately not taken here, and the api package never receives it.
+	deps := actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R}
+	if panel != nil {
+		deps.PanelCert = func() actions.PanelCert {
+			return actions.PanelCert{Fingerprint: panel.Fingerprint, Created: panel.NotBefore, NotAfter: panel.NotAfter,
+				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
+		}
+	}
+	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
 	srv := api.New(api.Config{
-		SPA: web.FS(), Sessions: authStore, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
+		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
 		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
 		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
 	})
@@ -382,19 +396,6 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
 	var session sync.WaitGroup
-	docker := dockerapi.New(cfg.DockerSocket)
-	defer docker.Close()
-	logDockerVersion(ctx, docker, log)
-	// The action registry: built-ins only, and no HTTP route reaches it in M1
-	// (M2 adds them). The SystemInvoker is deliberately not taken here.
-	deps := actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R}
-	if panel != nil {
-		deps.PanelCert = func() actions.PanelCert {
-			return actions.PanelCert{Fingerprint: panel.Fingerprint, Created: panel.NotBefore, NotAfter: panel.NotAfter,
-				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
-		}
-	}
-	_ = newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {

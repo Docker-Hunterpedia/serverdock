@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOVULNCHECK_VERSION := v1.10.0
 
-.PHONY: build test lint vuln fmt bench
+.PHONY: build test lint vuln fmt bench openapi
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/serverdock ./cmd/serverdock
 
@@ -21,3 +21,7 @@ fmt:
 
 bench:
 	bench/run.sh
+
+# Regenerate docs/api/openapi.json (the golden file TestOpenAPIGolden compares against).
+openapi:
+	go test ./internal/api -run TestOpenAPIGolden -update
