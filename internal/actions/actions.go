@@ -283,7 +283,9 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 			return nil, fmt.Errorf("%w: input is required", ErrInvalidInput)
 		}
 		if err := in.Validate(); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+			// A Validate that echoes a field (a password in a message) must not leak it
+			// into the error the caller sees or the denial row: redact before wrapping.
+			return nil, fmt.Errorf("%w: %s", ErrInvalidInput, redact.ForInput(in).Err(err))
 		}
 		args, err := redact.ArgsJSON(in)
 		if err != nil {

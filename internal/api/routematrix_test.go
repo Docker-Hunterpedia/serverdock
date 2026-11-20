@@ -360,17 +360,24 @@ func realBehaviour(rt Route, status int, code string) (int, string) {
 	if status != 200 {
 		return status, code
 	}
-	switch rt.Method + " " + rt.Pattern {
-	case "POST /api/v1/setup/enroll", "POST /api/v1/setup/complete":
-		return 404, "not_found" // an admin exists
-	case "POST /api/v1/auth/login":
-		return 401, "invalid_credentials"
-	case "POST /api/v1/auth/2fa":
-		return 400, "invalid_input" // neither code nor recovery_code
-	case "POST /api/v1/auth/reauth":
-		return 403, "invalid_code"
-	case "POST /api/v1/actions/{name}":
-		return 404, "unknown_action"
+	type exception struct {
+		status int
+		code   string
+		why    string
+	}
+	exceptions := map[string]exception{
+		"POST /api/v1/setup/enroll":   {404, "not_found", "an admin exists in this fixture, and setup endpoints answer 404 first"},
+		"POST /api/v1/setup/complete": {404, "not_found", "an admin exists in this fixture, and setup endpoints answer 404 first"},
+		"POST /api/v1/auth/login":     {401, "invalid_credentials", "the matrix sends {}: an empty user name is treated as unknown and the dummy hash says no"},
+		"POST /api/v1/auth/2fa":       {400, "invalid_input", "the matrix sends {}: neither code nor recovery_code is given"},
+		"POST /api/v1/auth/reauth":    {403, "invalid_code", "the matrix sends {}: an empty code is a wrong code"},
+		"POST /api/v1/actions/{name}": {404, "unknown_action", "the matrix asks for the action named x, which does not exist"},
+	}
+	if ex, ok := exceptions[rt.Method+" "+rt.Pattern]; ok {
+		if ex.why == "" {
+			panic("every exception names its reason")
+		}
+		return ex.status, ex.code
 	}
 	return status, code
 }

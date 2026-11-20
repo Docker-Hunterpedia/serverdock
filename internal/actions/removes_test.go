@@ -96,3 +96,29 @@ func TestExecutionErrorsAreRedactedBeforeInvokeReturnsThem(t *testing.T) {
 		}
 	}
 }
+
+type echoIn struct {
+	Name string `json:"name"`
+	Pass string `json:"pass" sd:"secret"`
+}
+
+// Validate echoes the secret field in its message (a careless validator).
+func (i echoIn) Validate() error { return errors.New("the password " + i.Pass + " is too short") }
+
+func TestValidateErrorsAreRedactedBeforeTheyAreWrapped(t *testing.T) {
+	e := newEnv(t)
+	r := New(e.log, quiet, WithClock(e.clk.Now))
+	Register(r, Def[echoIn, string]{Name: "t.echo", Summary: "x", Risk: RiskMutate, Scope: ScopeWrite,
+		Target:  func(i echoIn) string { return i.Name },
+		Execute: func(context.Context, Call, echoIn) (string, error) { return "", nil }})
+	_, err := r.Invoke(ctx, UserActor("1", ScopeAdmin, e.fresh()), "t.echo", []byte(`{"name":"n","pass":"hunter2-sentinel"}`), Options{})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("%v", err)
+	}
+	if strings.Contains(err.Error(), "hunter2-sentinel") {
+		t.Fatalf("the Validate message leaked a secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "too short") {
+		t.Errorf("the useful part of the message is gone: %v", err)
+	}
+}

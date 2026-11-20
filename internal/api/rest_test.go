@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
@@ -72,6 +74,9 @@ func (r *recordingRunner) assertClean(t *testing.T) {
 	}
 }
 
+// cellRuns counts executions of the test cells (a refused request must not run one).
+var cellRuns atomic.Int32
+
 // ---- the test cells: one stub action per policy cell -------------------------------------
 
 type cellIn struct {
@@ -82,7 +87,10 @@ func (cellIn) Validate() error { return nil }
 
 func registerTestCells(r *actions.Registry) {
 	ok := func(name string) func(context.Context, actions.Call, cellIn) (string, error) {
-		return func(context.Context, actions.Call, cellIn) (string, error) { return "ran " + name, nil }
+		return func(context.Context, actions.Call, cellIn) (string, error) {
+			cellRuns.Add(1)
+			return "ran " + name, nil
+		}
 	}
 	tgt := func(cellIn) string { return "the-target" }
 	add := func(name string, d actions.Def[cellIn, string]) {
@@ -603,3 +611,79 @@ func TestOpenAPIGolden(t *testing.T) {
 }
 
 func slogDiscard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// SD-Dry-Run: absent executes, exactly "1" dry-runs, anything else is a 400 and
+// nothing runs. SD-Confirm may be sent once.
+func TestSDDryRunIsStrict(t *testing.T) {
+	f := newFixture(t, true)
+	s := f.freshSession()
+	send := func(values ...string) (restResp, int32) {
+		before := cellRuns.Load()
+		r := httptest.NewRequest("POST", actionPath("t.write"), strings.NewReader(`{}`))
+		r.Host, r.RemoteAddr = "127.0.0.1:8443", "192.0.2.9:1"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "https://"+r.Host)
+		r.Header.Set(CSRFHeader, CSRFToken(s))
+		cookie(r, SessionCookie, s)
+		for _, v := range values {
+			r.Header.Add("SD-Dry-Run", v)
+		}
+		rec := httptest.NewRecorder()
+		f.h.ServeHTTP(rec, r)
+		out := restResp{Code: rec.Code, Raw: rec.Body.String()}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out.Body)
+		return out, cellRuns.Load() - before
+	}
+	if r, ran := send(); r.Code != 200 || ran != 1 || r.Body["data"] == nil {
+		t.Fatalf("absent: %d ran %d %s", r.Code, ran, r.Raw)
+	}
+	if r, ran := send("1"); r.Code != 200 || ran != 0 || r.Body["plan"] == nil {
+		t.Fatalf("1: %d ran %d %s", r.Code, ran, r.Raw)
+	}
+	for _, bad := range [][]string{{"true"}, {"yes"}, {"1 "}, {" 1"}, {"0"}, {""}, {"True"}, {"1", "1"}, {"1", "0"}, {"0", "1"}} {
+		r, ran := send(bad...)
+		if r.Code != 400 || r.errCode() != "invalid_input" || ran != 0 {
+			t.Errorf("SD-Dry-Run %q: %d ran %d %s", bad, r.Code, ran, r.Raw)
+		}
+	}
+	// SD-Confirm repeated is refused too.
+	c := restCred{session: s, headers: map[string]string{}}
+	req := httptest.NewRequest("POST", actionPath("t.destroy"), strings.NewReader(`{}`))
+	req.Host, req.RemoteAddr = "127.0.0.1:8443", "192.0.2.9:1"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://"+req.Host)
+	req.Header.Set(CSRFHeader, CSRFToken(c.session))
+	cookie(req, SessionCookie, c.session)
+	req.Header.Add("SD-Confirm", "the-target")
+	req.Header.Add("SD-Confirm", "the-target")
+	rec := httptest.NewRecorder()
+	f.h.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("repeated SD-Confirm: %d", rec.Code)
+	}
+}
+
+type busyActionHasher struct{}
+
+func (busyActionHasher) Hash(context.Context, string) (string, error) { return "", auth.ErrBusy }
+func (busyActionHasher) Verify(context.Context, string, string) (bool, error) {
+	return false, auth.ErrBusy
+}
+
+// A busy hasher inside an action is a 503 busy with Retry-After 2, not a 500.
+func TestRESTBusyHasherIs503(t *testing.T) {
+	f := newFixture(t, true)
+	reg := actions.New(f.sink, slogDiscard(), actions.WithClock(f.clk.Now))
+	auth.RegisterAuthActions(reg, f.as, auth.ActionDeps{Hasher: busyActionHasher{}})
+	f.srv = New(Config{SPA: fstest.MapFS{"index.html": {Data: []byte("x")}}, Sessions: f.as, Actions: reg})
+	f.h = f.srv.Handler()
+	s := f.freshSession()
+	r := f.rest("POST", actionPath("auth.password_change"), validInput("auth.password_change"), restCred{session: s})
+	if r.Code != 503 || r.errCode() != "busy" || r.Header.Get("Retry-After") != "2" {
+		t.Fatalf("%d %s (Retry-After %q)", r.Code, r.Raw, r.Header.Get("Retry-After"))
+	}
+	// The session was not revoked by the failed change.
+	if g := f.rest("GET", "/api/v1/auth/session", ``, restCred{session: s}); g.Code == 401 {
+		t.Error("a busy hasher ended the session")
+	}
+}

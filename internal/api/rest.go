@@ -116,8 +116,24 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		raw = []byte("{}")
 	}
+	// SD-Dry-Run: absent means execute, exactly "1" means dry run, anything else
+	// ("true", "yes", "1 ", a repeated header) is refused: a typo must never turn
+	// a dry run into a real run, nor the reverse.
+	dry := false
+	switch v := r.Header.Values("SD-Dry-Run"); {
+	case len(v) == 0:
+	case len(v) == 1 && v[0] == "1":
+		dry = true
+	default:
+		fail(http.StatusBadRequest, "invalid_input", "SD-Dry-Run must be absent or exactly 1")
+		return
+	}
+	if len(r.Header.Values("SD-Confirm")) > 1 { // the target is free text, but one value only
+		fail(http.StatusBadRequest, "invalid_input", "send SD-Confirm once")
+		return
+	}
 	opts := actions.Options{
-		DryRun:    r.Header.Get("SD-Dry-Run") == "1",
+		DryRun:    dry,
 		Confirm:   r.Header.Get("SD-Confirm"),
 		RequestID: reqID, // always generated here, never taken from the client
 	}
@@ -210,6 +226,9 @@ func (s *Server) actionError(w http.ResponseWriter, reqID string, err error) {
 		send(http.StatusServiceUnavailable, "busy", "that agent has too many requests open; try again in a moment", nil)
 	case errors.Is(err, hub.ErrLocalOnly):
 		send(http.StatusForbidden, "denied", "that operation is only available on the local server (remote agents are read-only)", nil)
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", "2")
+		send(http.StatusServiceUnavailable, "busy", "the server is busy checking passwords; try again in a moment", nil)
 	case errors.Is(err, auth.ErrRateLimited):
 		w.Header().Set("Retry-After", "30")
 		send(http.StatusTooManyRequests, "rate_limited", "too many attempts; try again later", nil)
