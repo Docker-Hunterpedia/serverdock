@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
+	import { signedOutReason } from '../../lib/api';
 	import { startStatusPolling, type Status } from '../../lib/status';
 
 	let { children } = $props();
@@ -38,13 +39,12 @@
 	onMount(() => {
 		const poller = startStatusPolling(
 			(s) => (status = s),
-			() => void goto('/signed-out?reason=ended')
+			(code) => void goto(`/signed-out?reason=${signedOutReason(code)}`)
 		);
 		return () => poller.stop();
 	});
 
-	const cpuText = (p: number | null) => (p === null ? '' : ` · ${p.toFixed(1)}% CPU`);
-</script>
+	</script>
 
 <svelte:window onkeydown={onKeydown} />
 
@@ -84,7 +84,8 @@
 		<p>
 			ServerDock itself ·
 			{#if status.state === 'ok'}
-				{status.rssMB.toFixed(0)} MB RAM{cpuText(status.cpuPercent)} · {status.version}
+				{status.rssMB.toFixed(0)} MB RAM ·
+				{#if status.cpuPercent === null}CPU <span aria-hidden="true">◌</span> measuring{:else}{status.cpuPercent.toFixed(1)}% CPU{/if} · {status.version}
 			{:else}
 				<span class="unknown"><span aria-hidden="true">◌</span> unknown</span>
 			{/if}
@@ -198,7 +199,7 @@
 			position: sticky;
 			top: 0;
 			z-index: 10;
-			height: var(--bar-height);
+			min-height: var(--bar-height);
 			padding: 0 0.75rem 0 1rem;
 			background: var(--surface);
 			border-bottom: 1px solid var(--border);

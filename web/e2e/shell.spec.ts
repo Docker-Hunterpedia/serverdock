@@ -1,5 +1,7 @@
 import type { Page } from '@playwright/test';
+import { request } from '@playwright/test';
 import { expect, expectNoAxeViolations, test } from './fixtures';
+import { signInWithRecoveryCode, type TestServer } from './server';
 
 const INFO = '**/api/v1/actions/system.info';
 const isPhone = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
@@ -19,7 +21,7 @@ test.describe('shell states', () => {
 		await openOverview(page);
 		await expect(page.getByRole('heading', { level: 2, name: 'No services yet' })).toBeVisible();
 		await expect(page.getByText('Deploying from an image arrives in the next version')).toBeVisible();
-		await expect(page.getByRole('link', { name: 'Read the documentation' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Read the documentation (opens GitHub)' })).toBeVisible();
 		await expect(page.locator('main')).toHaveCount(1);
 		await expect(page.locator('h1')).toHaveCount(1);
 		await expect(page.locator('html')).toHaveAttribute('lang', 'en');
@@ -216,8 +218,8 @@ test.describe('keyboard, focus and targets', () => {
 		const barBottom = (await page.getByRole('banner').boundingBox())!.y + (await page.getByRole('banner').boundingBox())!.height;
 		const pad = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop));
 		expect(pad).toBeGreaterThanOrEqual(barBottom);
-		await page.getByRole('link', { name: 'Read the documentation' }).focus();
-		const top = (await page.getByRole('link', { name: 'Read the documentation' }).boundingBox())!.y;
+		await page.getByRole('link', { name: /Read the documentation/ }).focus();
+		const top = (await page.getByRole('link', { name: /Read the documentation/ }).boundingBox())!.y;
 		expect(top).toBeGreaterThanOrEqual(barBottom);
 	});
 
@@ -256,6 +258,8 @@ test.describe('presentation preferences', () => {
 					.map((e) => e.tagName + ':' + (e.textContent ?? '').slice(0, 20))
 			);
 			expect(clipped).toEqual([]);
+			const vertical = await page.evaluate(() => [...document.querySelectorAll('header')].filter((e) => e.scrollHeight > e.clientHeight + 1).length);
+			expect(vertical, 'the phone bar grows with the text instead of clipping').toBe(0);
 			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 			await expectNoAxeViolations(page, 'text spacing');
 		});
@@ -294,5 +298,172 @@ test.describe('presentation preferences', () => {
 			);
 			expect(long).toBe(0);
 		}
+	});
+});
+
+// A fresh binary's first-run admin signs in with a recovery code (never colliding
+// with TOTP counters) and the session is then ended in a specific way.
+async function sessionState(server: TestServer, recovery: string[], n: number) {
+	return signInWithRecoveryCode(server, recovery[n]);
+}
+
+test.describe('Signed-out reasons come from the 401 code', () => {
+	test.beforeEach(({}, info) => {
+		test.skip(!['desktop', 'webkit'].includes(info.project.name), 'server-side behaviour, checked in two projects');
+	});
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	async function expectReason(browser: import('@playwright/test').Browser, server: TestServer, state: Awaited<ReturnType<typeof sessionState>>, reason: string, text: string) {
+		const ctx = await browser.newContext({ baseURL: server.baseURL, ignoreHTTPSErrors: true, storageState: state });
+		const page = await ctx.newPage();
+		await page.goto('/');
+		await expect(page).toHaveURL(new RegExp(`/signed-out\\?reason=${reason}$`));
+		await expect(page.locator('#why')).toContainText(text);
+		await expectNoAxeViolations(page, `signed out (${reason})`);
+		await ctx.close();
+	}
+
+	test('idle expiry', async ({ browser, server, admin }) => {
+		const state = await sessionState(server, admin.recoveryCodes, 0);
+		server.sql('UPDATE sessions SET idle_expires_at = 1');
+		await expectReason(browser, server, state, 'idle', '12 hours');
+	});
+
+	test('absolute expiry', async ({ browser, server, admin }) => {
+		const state = await sessionState(server, admin.recoveryCodes, 0);
+		server.sql('UPDATE sessions SET abs_expires_at = 1');
+		await expectReason(browser, server, state, 'expired', '7-day');
+	});
+
+	test('revoked from another session', async ({ browser, server, admin }) => {
+		const a = await sessionState(server, admin.recoveryCodes, 0);
+		const b = await sessionState(server, admin.recoveryCodes, 1);
+		const ctx = await request.newContext({ baseURL: server.baseURL, ignoreHTTPSErrors: true, storageState: b, extraHTTPHeaders: { Origin: server.baseURL } });
+		const sess = await (await ctx.get('/api/v1/auth/session')).json();
+		const res = await ctx.post('/api/v1/actions/auth.sessions_revoke', { data: { all_others: true }, headers: { 'X-SD-CSRF': sess.csrf } });
+		expect(res.ok(), await res.text()).toBe(true);
+		await ctx.dispose();
+		await expectReason(browser, server, a, 'revoked', 'another device');
+	});
+
+	test('no cookie at all is "ended"', async ({ browser, server, admin }) => {
+		void admin;
+		await expectReason(browser, server, { cookies: [], origins: [] }, 'ended', 'not signed in');
+	});
+});
+
+test.describe('the footer poll maps the 401 code too', () => {
+	for (const [code, reason] of [['idle_expired', 'idle'], ['absolute_expired', 'expired'], ['revoked', 'revoked'], ['mystery', 'ended']]) {
+		test(`${code} -> ${reason}`, async ({ page, problems }) => {
+			await page.clock.install();
+			await openOverview(page);
+			await page.route(INFO, (r) => r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code, message: 'x', request_id: 'r' } }) }));
+			await page.clock.runFor(15_000);
+			await expect(page).toHaveURL(new RegExp(`/signed-out\\?reason=${reason}$`));
+			problems.splice(0, problems.length, ...problems.filter((p) => !p.includes('status of 401')));
+		});
+	}
+});
+
+test.describe('error page', () => {
+	test('a server error: title matches the heading and Try again works', async ({ page, problems }) => {
+		await page.route('**/api/v1/auth/session', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"could not check the session","request_id":"r"}}' }));
+		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1, name: 'Something went wrong' })).toBeVisible();
+		await expect(page).toHaveTitle('Something went wrong · ServerDock');
+		await expectNoAxeViolations(page, 'error page (500)');
+		const retry = page.getByRole('button', { name: 'Try again' });
+		const box = (await retry.boundingBox())!;
+		expect(box.height).toBeGreaterThanOrEqual(44);
+		const link = (await page.getByRole('link', { name: 'Go to the Overview' }).boundingBox())!;
+		expect(link.height).toBeGreaterThanOrEqual(44);
+		await page.unroute('**/api/v1/auth/session');
+		await retry.click();
+		await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
+		problems.splice(0, problems.length, ...problems.filter((p) => !p.includes('status of 500')));
+	});
+
+	test('not found: title matches the heading, no Try again', async ({ page }) => {
+		await page.goto('/no/such/page');
+		await expect(page).toHaveTitle('Page not found · ServerDock');
+		await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+	});
+});
+
+test.describe('route announcer and headings', () => {
+	test('the announcer has no inline style, is at most 1x1, and says the new title', async ({ page }) => {
+		await openOverview(page);
+		if (isPhone(page)) await page.getByRole('button', { name: 'Menu' }).click();
+		await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings' }).click();
+		await expect(page).toHaveTitle('Security · ServerDock');
+		const a = page.locator('#svelte-announcer');
+		await expect(a).toHaveClass(/sd-announcer/);
+		await expect(a).not.toHaveAttribute('style', /.*/);
+		await expect(a).toHaveText('Security · ServerDock');
+		const box = (await a.boundingBox())!;
+		expect(box.width).toBeLessThanOrEqual(1);
+		expect(box.height).toBeLessThanOrEqual(1);
+	});
+
+	test('every route has exactly one focusable h1 and a title ending in ServerDock', async ({ page }) => {
+		for (const [path, title] of [['/', 'Overview'], ['/settings/security', 'Security'], ['/signed-out', 'Signed out'], ['/no/such/page', 'Page not found']]) {
+			await page.goto(path);
+			const h1 = page.getByRole('heading', { level: 1 });
+			await expect(h1).toHaveCount(1);
+			await expect(h1).toHaveText(title);
+			await expect(h1).toHaveAttribute('tabindex', '-1');
+			await expect(page).toHaveTitle(`${title} · ServerDock`);
+		}
+	});
+});
+
+test.describe('targets, zoom and reflow', () => {
+	test('the Signed-out button is at least 44 px', async ({ page }) => {
+		await page.goto('/signed-out');
+		const box = (await page.getByRole('link', { name: 'Sign in again' }).boundingBox())!;
+		expect(box.height).toBeGreaterThanOrEqual(44);
+		expect(box.width).toBeGreaterThanOrEqual(44);
+	});
+
+	test('the sticky bar never covers a focused element after a real scroll', async ({ page }) => {
+		test.skip(!isPhone(page), 'the sticky bar is a phone layout');
+		await openOverview(page);
+		await page.evaluate(() => {
+			const spacer = document.createElement('div');
+			spacer.id = 'spacer';
+			spacer.style.height = '200vh';
+			document.querySelector('main')!.insertBefore(spacer, document.querySelector('.empty'));
+		});
+		await page.evaluate(() => scrollTo(0, 0));
+		const link = page.getByRole('link', { name: /Read the documentation/ });
+		await link.focus();
+		await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(100); // it really scrolled (smooth scrolling takes a moment)
+		await expect.poll(async () => (await link.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+		await page.waitForTimeout(600); // let a smooth scroll settle
+		const bar = (await page.getByRole('banner').boundingBox())!;
+		const top = (await link.boundingBox())!.y;
+		expect(top).toBeGreaterThanOrEqual(bar.y + bar.height);
+	});
+
+	test('a root font size of 200% keeps everything reachable', async ({ page }) => {
+		await openOverview(page);
+		await page.evaluate(() => (document.documentElement.style.fontSize = '200%'));
+		if (isPhone(page)) await page.getByRole('button', { name: 'Menu' }).click();
+		await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings' })).toBeVisible();
+		expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+		const overflow = await page.evaluate(() =>
+			[...document.querySelectorAll('header, nav, main, footer')].filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => e.tagName)
+		);
+		expect(overflow).toEqual([]);
+		await expectNoAxeViolations(page, 'root font size 200%');
+	});
+
+	test('400% zoom (320 x 256) reflows without two-dimensional scrolling', async ({ page }) => {
+		await page.setViewportSize({ width: 320, height: 256 });
+		await openOverview(page);
+		expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+		await page.getByRole('button', { name: 'Menu' }).click();
+		await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
+		await expectNoAxeViolations(page, '320 x 256');
 	});
 });

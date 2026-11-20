@@ -35,6 +35,20 @@ export class ApiError extends Error {
 	}
 }
 
+/** The Signed-out screen's reason for a 401 error code (anything unknown is "ended"). */
+export function signedOutReason(code: string | undefined): string {
+	switch (code) {
+		case 'idle_expired':
+			return 'idle';
+		case 'absolute_expired':
+			return 'expired';
+		case 'revoked':
+			return 'revoked';
+		default:
+			return 'ended';
+	}
+}
+
 let csrf = '';
 
 type Options = { signal?: AbortSignal; body?: unknown };

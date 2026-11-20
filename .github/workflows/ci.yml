@@ -226,8 +226,9 @@ jobs:
           name: bench-${{ matrix.runner }}-s${{ matrix.scenario }}
           path: bench/results/
 
-  # The one required check for the bench. It always runs and fails closed: a
-  # skipped, cancelled or failed dependency can never read as a pass. (The
+  # The one required check for the bench. It always runs (on a draft PR it fails on
+  # purpose, below) and fails closed: a skipped, cancelled or failed dependency
+  # can never read as a pass. (The
   # expanded "bench (...)" checks do not exist when the matrix is skipped, so
   # they cannot be required.)
   # On a draft PR the bench is skipped and the gate FAILS on purpose ("the bench

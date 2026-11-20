@@ -1,13 +1,17 @@
+<script lang="ts">
+	import PageHeading from '../../lib/PageHeading.svelte';
+</script>
+
 <svelte:head>
 	<title>Overview · ServerDock</title>
 </svelte:head>
 
-<h1 tabindex="-1">Overview</h1>
+<PageHeading>Overview</PageHeading>
 
 <section class="empty" aria-labelledby="empty-title">
 	<h2 id="empty-title">No services yet</h2>
 	<p>Deploying from an image arrives in the next version.</p>
-	<p><a href="https://github.com/Docker-Hunterpedia/serverdock/tree/main/docs" rel="noopener">Read the documentation</a></p>
+	<p><a href="https://github.com/Docker-Hunterpedia/serverdock/tree/main/docs" rel="noopener">Read the documentation (opens GitHub)</a></p>
 </section>
 
 <style>

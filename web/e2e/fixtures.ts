@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test as base, type Page } from '@playwright/test';
+import { startServer, type Admin, type TestServer } from './server';
 
 export const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
@@ -11,7 +12,20 @@ export async function expectNoAxeViolations(page: Page, what: string) {
 }
 
 // Every test also fails on a CSP violation, a page error or a console error.
-export const test = base.extend<{ problems: string[] }>({
+type Fixtures = { problems: string[]; server: TestServer; admin: Admin };
+
+// `server` is a fresh binary with nothing set up (state-changing tests own one, so
+// back-off counters and the one-time setup token are never shared); `admin` has also
+// done the first run. Use them with an empty storageState.
+export const test = base.extend<Fixtures>({
+	server: async ({}, use) => {
+		const server = await startServer();
+		await use(server);
+		await server.stop();
+	},
+	admin: async ({ server }, use) => {
+		await use(await server.firstRun());
+	},
 	problems: [
 		async ({ page }, use) => {
 			const problems: string[] = [];
@@ -22,7 +36,11 @@ export const test = base.extend<{ problems: string[] }>({
 			});
 			page.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
 			page.on('console', (m) => {
-				if (m.type() === 'error') problems.push('console: ' + m.text());
+				if (m.type() !== 'error') return;
+				// The browser itself logs every 4xx/5xx answer of an API call; tests that
+				// provoke one on purpose assert the screen, not this line.
+				if (m.text().startsWith('Failed to load resource') && m.location().url.includes('/api/v1/')) return;
+				problems.push('console: ' + m.text());
 			});
 			await use(problems);
 			expect(problems, 'CSP violations, page errors or console errors').toEqual([]);

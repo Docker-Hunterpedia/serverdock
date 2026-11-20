@@ -2,7 +2,7 @@
 // never a live region. When a poll fails, or the last good one is older than 45 s,
 // or the page was hidden (the poll paused), it reads "unknown" until the first
 // fresh poll (A12): stale numbers are never shown as current.
-import { systemInfo, type SystemInfo } from './api';
+import { ApiError, systemInfo, type SystemInfo } from './api';
 
 export const POLL_MS = 15_000;
 export const STALE_MS = 45_000;
@@ -15,7 +15,7 @@ export type Status =
 export type StatusPoller = { stop: () => void };
 
 /** Starts polling; `set` receives every state change. Call stop() on teardown. */
-export function startStatusPolling(set: (s: Status) => void, onSignedOut: () => void): StatusPoller {
+export function startStatusPolling(set: (s: Status) => void, onSignedOut: (code: string) => void): StatusPoller {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let staleTimer: ReturnType<typeof setTimeout> | undefined;
 	let prev: { cpu: number; at: number } | undefined;
@@ -47,7 +47,7 @@ export function startStatusPolling(set: (s: Status) => void, onSignedOut: () => 
 			if (stopped || c !== ctrl) return;
 			clearTimeout(staleTimer);
 			unknown();
-			if (e instanceof Error && 'signedOut' in e && (e as { signedOut: boolean }).signedOut) onSignedOut();
+			if (e instanceof ApiError && e.signedOut) onSignedOut(e.code);
 		} finally {
 			clearTimeout(t);
 		}

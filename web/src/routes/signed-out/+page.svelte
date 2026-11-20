@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import PageHeading from '../../lib/PageHeading.svelte';
 
 	const reasons: Record<string, string> = {
 		signed_out: 'You signed out.',
@@ -19,7 +20,7 @@
 </svelte:head>
 
 <main class="card">
-	<h1 tabindex="-1">Signed out</h1>
+	<PageHeading>Signed out</PageHeading>
 	<p id="why">{text}</p>
 	<p><a class="button" href="/login">Sign in again</a></p>
 </main>
