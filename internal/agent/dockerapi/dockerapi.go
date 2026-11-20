@@ -96,13 +96,16 @@ func apiLess(a, b string) bool {
 }
 
 // negotiate returns the "/v<version>" path prefix, pinging the daemon on first
-// use. A failed or refused negotiation is not cached, so a daemon that comes up
-// or is upgraded later is picked up on the next call.
+// use. c.mu is never held across the ping, so a caller waits only on its own
+// context (two first calls may both ping; that is cheap and harmless). A failed
+// or refused negotiation is not cached, so a daemon that comes up or is
+// upgraded later is picked up on the next call.
 func (c *Client) negotiate(ctx context.Context) (string, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.prefix != "" {
-		return c.prefix, nil
+	prefix := c.prefix
+	c.mu.Unlock()
+	if prefix != "" {
+		return prefix, nil
 	}
 	pctx, cancel := context.WithTimeout(ctx, c.short)
 	defer cancel()
@@ -130,8 +133,20 @@ func (c *Client) negotiate(ctx context.Context) (string, error) {
 	if apiLess(MaxAPIVersion, server) {
 		use = MaxAPIVersion
 	}
+	c.mu.Lock()
 	c.apiVer, c.prefix = use, "/v"+use
-	return c.prefix, nil
+	prefix = c.prefix
+	c.mu.Unlock()
+	return prefix, nil
+}
+
+// forget drops the cached API version so the next call pings again. It runs on
+// connection-level errors (the daemon may have restarted or been upgraded) and
+// on a 400 (the daemon no longer accepts the negotiated version).
+func (c *Client) forget() {
+	c.mu.Lock()
+	c.prefix, c.apiVer = "", ""
+	c.mu.Unlock()
 }
 
 // NegotiatedAPI returns the API version in use, or "" before the first
@@ -157,9 +172,15 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		if ctx.Err() == nil {
+			c.forget() // not our own deadline or cancel: the daemon may have changed
+		}
 		return 0, nil, fmt.Errorf("dockerapi: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest {
+		c.forget()
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
 		return 0, nil, fmt.Errorf("dockerapi: %w", err)
@@ -168,25 +189,60 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 }
 
 // stream starts a GET whose body lives as long as ctx (log follow; later
-// events, pull and build). Only a 200 response is returned.
+// events, pull and build). Only a 200 response is returned. The body is
+// unbounded, but the response headers must arrive within the short deadline: a
+// daemon that accepts the request and never answers does not hold the caller.
 func (c *Client) stream(ctx context.Context, path string) (*http.Response, error) {
 	prefix, err := c.negotiate(ctx)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+prefix+path, nil)
+	sctx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(sctx, http.MethodGet, "http://docker"+prefix+path, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	hdrTimer := time.AfterFunc(c.short, cancel)
 	resp, err := c.hc.Do(req)
+	timedOut := !hdrTimer.Stop() // true when the timer fired (before or just after headers)
 	if err != nil {
+		cancel()
+		if timedOut && ctx.Err() == nil {
+			return nil, fmt.Errorf("dockerapi: no response headers within %v: %w", c.short, context.DeadlineExceeded)
+		}
+		if ctx.Err() == nil {
+			c.forget()
+		}
 		return nil, fmt.Errorf("dockerapi: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if timedOut && ctx.Err() == nil {
 		resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("dockerapi: no response headers within %v: %w", c.short, context.DeadlineExceeded)
+	}
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusBadRequest {
+			c.forget()
+		}
+		resp.Body.Close()
+		cancel()
 		return nil, fmt.Errorf("dockerapi: %s: status %d", path[:min(len(path), 12)], resp.StatusCode)
 	}
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
+}
+
+// cancelBody releases the stream's context when the body is closed.
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // Info reports the engine and the negotiated API version (for the startup log).

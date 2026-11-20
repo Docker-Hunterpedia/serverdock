@@ -74,6 +74,8 @@ type fakeDocker struct {
 	pings        atomic.Int32  // pings served
 	prefixes     chan string   // the /v<ver> prefix of each non-ping request
 	inspectDelay time.Duration // delay before answering inspect
+	logsDelay    time.Duration // delay before answering logs (before headers)
+	badRequests  atomic.Int32  // number of versioned requests to answer 400 first
 	stopDelay    time.Duration // delay before answering stop
 	stopQuery    chan string   // raw query of stop requests
 }
@@ -100,6 +102,10 @@ func (fd *fakeDocker) versioned(next http.Handler) http.Handler {
 		select {
 		case fd.prefixes <- "v" + ver:
 		default:
+		}
+		if fd.badRequests.Add(-1) >= 0 {
+			http.Error(w, "unsupported API version", http.StatusBadRequest)
+			return
 		}
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = "/" + path
@@ -149,6 +155,7 @@ func startFakeDocker(t *testing.T, fd *fakeDocker) string {
 	})
 	mux.HandleFunc("GET /containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
 		fd.logsPath <- r.URL.RequestURI()
+		time.Sleep(fd.logsDelay)
 		w.Write(fd.logsBody)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -449,5 +456,99 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 		if strings.Contains(l, "ResponseHeaderTimeout") && !strings.HasPrefix(strings.TrimSpace(l), "//") {
 			t.Errorf("code sets ResponseHeaderTimeout: %s", l)
 		}
+	}
+}
+
+// A daemon that accepts the logs request and never sends headers fails at the
+// short deadline instead of holding the caller for the whole (unbounded) stream.
+func TestStreamHeadersMustArriveInTime(t *testing.T) {
+	fd := &fakeDocker{logsBody: frame(1, "x\n"), logsDelay: time.Second}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	c.short = 150 * time.Millisecond
+	t0 := time.Now()
+	err := c.Logs(context.Background(), "web-1", 5, io.Discard)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if d := time.Since(t0); d > 900*time.Millisecond {
+		t.Errorf("took %v", d)
+	}
+}
+
+// A 400, or a connection-level error, drops the cached API version so the next
+// call pings again.
+func TestNegotiationForgottenOn400AndConnectionError(t *testing.T) {
+	fd := &fakeDocker{}
+	c := New(startFakeDocker(t, fd))
+	t.Cleanup(c.Close)
+	if _, _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fd.badRequests.Store(1)
+	if _, _, err := c.Info(context.Background()); err == nil {
+		t.Fatal("expected the 400 to surface")
+	}
+	if c.NegotiatedAPI() != "" {
+		t.Error("API version still cached after a 400")
+	}
+	if _, _, err := c.Info(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := fd.pings.Load(); n != 2 {
+		t.Errorf("pings = %d, want 2 (re-negotiated after the 400)", n)
+	}
+	// Connection-level error: point the client at a dead socket.
+	dead := New("/nonexistent/docker.sock")
+	dead.mu.Lock()
+	dead.prefix, dead.apiVer = "/v1.45", "1.45"
+	dead.mu.Unlock()
+	if _, _, err := dead.Info(context.Background()); err == nil {
+		t.Fatal("expected a dial error")
+	}
+	if dead.NegotiatedAPI() != "" {
+		t.Error("API version still cached after a connection error")
+	}
+	// Our own cancellation is not evidence about the daemon.
+	c2 := New(startFakeDocker(t, &fakeDocker{inspectDelay: time.Second}))
+	t.Cleanup(c2.Close)
+	c2.short = 100 * time.Millisecond
+	c2.Logs(context.Background(), "web-1", 5, io.Discard)
+	if c2.NegotiatedAPI() == "" {
+		t.Error("a local deadline cleared the negotiated version")
+	}
+}
+
+// Waiters on a slow first ping obey their own context; nothing holds the lock.
+func TestNegotiateWaitersRespectTheirContext(t *testing.T) {
+	block := make(chan struct{})
+	dir, _ := os.MkdirTemp("", "sd")
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-block:
+		case <-r.Context().Done():
+		}
+	})}}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(block) })
+	c := New(sock)
+	t.Cleanup(c.Close)
+	go c.Info(context.Background()) // first caller: stuck in the ping
+	time.Sleep(100 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	if _, _, err := c.Info(ctx); err == nil {
+		t.Fatal("expected a deadline error")
+	}
+	if d := time.Since(t0); d > time.Second {
+		t.Errorf("second caller waited %v behind the first", d)
 	}
 }
