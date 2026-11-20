@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — Databases &amp; backups</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.app{display:flex;flex-wrap:wrap;min-height:1000px}
+.side{flex:1 1 220px;max-width:240px;background:#fff;border-right:1px solid #d6d6d2;padding:20px 14px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.nav{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:6px;color:#3a3a37;text-decoration:none;font-size:14px}
+.nav.on{background:#e6e6e3;font-weight:600;color:#1f1f1f}
+.main{flex:999 1 560px;min-width:0;padding:28px 32px;display:flex;flex-direction:column;gap:20px;box-sizing:border-box}
+.box{background:#fff;border:1px solid #cfcfca;border-radius:8px;padding:16px;box-sizing:border-box}
+.lbl{font-size:12px;color:#5c5c58}
+.h2{margin:0;font-size:15px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.t{width:100%;border-collapse:collapse;font-size:14px}
+.t th{text-align:left;font-size:12px;color:#5c5c58;font-weight:500;padding:8px;border-bottom:1px solid #d6d6d2;white-space:nowrap}
+.t td{padding:10px 8px;border-bottom:1px solid #ececea;white-space:nowrap}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:2px 8px;border-radius:99px;border:1px solid #b4b4af;background:#fff}
+.st.bad{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.scroll{overflow-x:auto}
+.kv{margin:0;display:grid;grid-template-columns:96px 1fr;row-gap:8px;column-gap:12px;font-size:14px}
+.kv dt{font-size:12px;color:#5c5c58;align-self:center}
+.kv dd{margin:0}
+@media (max-width:760px){.side{max-width:none}.main{padding:20px 16px}}
+</style>
+</helmet>
+<div class="app">
+<nav class="side" aria-label="Main">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock</strong>
+</div>
+<a class="nav" href="Main.dc.html">Overview</a>
+<a class="nav" href="Service.dc.html">Projects &amp; services</a>
+<a class="nav" href="Servers.dc.html">Servers</a>
+<a class="nav" href="Domains.dc.html">Domains</a>
+<a class="nav on" href="Backups.dc.html">Databases &amp; backups</a>
+<a class="nav" href="Logs.dc.html">Logs</a>
+<a class="nav" href="Main.dc.html">Alerts</a>
+<a class="nav" href="Approval.dc.html">AI &amp; MCP</a>
+<a class="nav" href="Main.dc.html">Audit log</a>
+<a class="nav" href="Main.dc.html">Settings</a>
+<div style="margin-top: auto; padding: 12px 10px; border-top: 1px solid #e0e0dc; display: flex; flex-direction: column; gap: 4px">
+<span class="lbl">ServerDock itself</span>
+<span class="mono">52 MB RAM · 0.3% CPU</span>
+<span class="lbl">v0.1.0 · up to date</span>
+</div>
+</nav>
+<main class="main">
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between">
+<div>
+<h1 style="margin: 0; font-size: 24px">Databases &amp; backups</h1>
+<span class="lbl">A backup counts only after a restore test proves it works.</span>
+</div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap">
+<button class="btn" type="button">Storage targets</button>
+<a class="btn p" href="NewService.dc.html">+ New database</a>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px">
+<div class="box" style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; align-items: center"><span class="h2">postgres-main</span><span class="st">● Protected</span></div>
+<dl class="kv">
+<dt>Engine</dt><dd>PostgreSQL 17 · 1.8 GB</dd>
+<dt>Server</dt><dd>hetzner-1</dd>
+<dt>Last backup</dt><dd>✓ Today 03:00</dd>
+<dt>Restore test</dt><dd>✓ Passed (row counts match)</dd>
+<dt>Schedule</dt><dd>Daily · keep 14</dd>
+<dt>Stored in</dt><dd>s3: backups-eu · encrypted</dd>
+</dl>
+</div>
+<div class="box" style="display: flex; flex-direction: column; gap: 8px; border-width: 2px; border-color: #1f1f1f">
+<div style="display: flex; justify-content: space-between; align-items: center"><span class="h2">mysql-blog</span><span class="st bad">▲ At risk</span></div>
+<dl class="kv">
+<dt>Engine</dt><dd>MySQL 8 · 420 MB</dd>
+<dt>Server</dt><dd>vps-small</dd>
+<dt>Last good</dt><dd>3 days ago</dd>
+<dt>Problem</dt><dd>Last 3 runs failed: S3 access denied</dd>
+<dt>Next step</dt><dd><a href="Backups.dc.html">Fix storage credentials</a></dd>
+</dl>
+</div>
+<div class="box" style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; align-items: center"><span class="h2">redis-cache</span><span class="st" style="border-style: dashed">○ No backups</span></div>
+<dl class="kv">
+<dt>Engine</dt><dd>Valkey 8</dd>
+<dt>Server</dt><dd>hetzner-1</dd>
+<dt>Backups</dt><dd>Off by choice (cache only)</dd>
+</dl>
+</div>
+</div>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 10px">
+<h2 class="h2">postgres-main · backup runs</h2>
+<div class="scroll">
+<table class="t">
+<thead><tr><th>When</th><th>Result</th><th>Size</th><th>Restore test</th><th>Where</th><th></th></tr></thead>
+<tbody>
+<tr><td>Today 03:00</td><td><span class="st">✓ Done</span></td><td>212 MB</td><td>✓ passed · 41 s</td><td class="mono">s3://backups-eu/pg/…</td><td><button class="btn" type="button" style="min-height: 36px">Restore…</button></td></tr>
+<tr><td>Yesterday 03:00</td><td><span class="st">✓ Done</span></td><td>209 MB</td><td>✓ passed · 39 s</td><td class="mono">s3://backups-eu/pg/…</td><td><button class="btn" type="button" style="min-height: 36px">Restore…</button></td></tr>
+<tr><td>2 days ago</td><td><span class="st">✓ Done</span></td><td>207 MB</td><td>— skipped (weekly)</td><td class="mono">s3://backups-eu/pg/…</td><td><button class="btn" type="button" style="min-height: 36px">Restore…</button></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 12px; border-width: 2px; border-color: #1f1f1f; max-width: 640px">
+<h2 class="h2">Restore postgres-main (confirm dialog, shown open)</h2>
+<p style="margin: 0; font-size: 14px; line-height: 1.5">This replaces <strong>all data in postgres-main on hetzner-1</strong> with the backup from <strong>today 03:00</strong>. A snapshot of the current data is taken first, so you can undo.</p>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500">Type <span class="mono">postgres-main</span> to confirm<input style="min-height: 44px; padding: 0 10px; border: 1px solid #9a9a95; border-radius: 6px; font: inherit; font-size: 14px"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500">2FA code<input inputmode="numeric" style="min-height: 44px; padding: 0 10px; border: 1px solid #9a9a95; border-radius: 6px; font: inherit; font-size: 14px; width: 160px"></label>
+<div style="display: flex; gap: 8px; flex-wrap: wrap">
+<button class="btn" type="button">Rehearse first (no changes)</button>
+<button class="btn p" type="button">Restore postgres-main</button>
+</div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

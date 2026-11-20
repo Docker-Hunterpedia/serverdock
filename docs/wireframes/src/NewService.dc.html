@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — New service</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.app{display:flex;flex-wrap:wrap;min-height:1000px}
+.side{flex:1 1 220px;max-width:240px;background:#fff;border-right:1px solid #d6d6d2;padding:20px 14px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.nav{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:6px;color:#3a3a37;text-decoration:none;font-size:14px}
+.nav.on{background:#e6e6e3;font-weight:600;color:#1f1f1f}
+.main{flex:999 1 560px;min-width:0;padding:28px 32px;display:flex;flex-direction:column;gap:20px;box-sizing:border-box}
+.box{background:#fff;border:1px solid #cfcfca;border-radius:8px;padding:16px;box-sizing:border-box}
+.lbl{font-size:12px;color:#5c5c58}
+.h2{margin:0;font-size:15px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.card{display:flex;flex-direction:column;gap:6px;text-align:left;padding:16px;border:1px solid #cfcfca;border-radius:8px;background:#fff;font:inherit;color:#1f1f1f;cursor:pointer;min-height:96px}
+.card.on{border:2px solid #1f1f1f;padding:15px;background:#f0f0ee}
+.field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:500}
+.field input,.field select{min-height:44px;padding:0 10px;border:1px solid #9a9a95;border-radius:6px;font:inherit;font-size:14px;font-weight:400;background:#fff}
+@media (max-width:760px){.side{max-width:none}.main{padding:20px 16px}}
+</style>
+</helmet>
+<div class="app">
+<nav class="side" aria-label="Main">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock</strong>
+</div>
+<a class="nav" href="Main.dc.html">Overview</a>
+<a class="nav on" href="Service.dc.html">Projects &amp; services</a>
+<a class="nav" href="Servers.dc.html">Servers</a>
+<a class="nav" href="Domains.dc.html">Domains</a>
+<a class="nav" href="Backups.dc.html">Databases &amp; backups</a>
+<a class="nav" href="Logs.dc.html">Logs</a>
+<a class="nav" href="Main.dc.html">Alerts</a>
+<a class="nav" href="Approval.dc.html">AI &amp; MCP</a>
+<a class="nav" href="Main.dc.html">Audit log</a>
+<a class="nav" href="Main.dc.html">Settings</a>
+<div style="margin-top: auto; padding: 12px 10px; border-top: 1px solid #e0e0dc; display: flex; flex-direction: column; gap: 4px">
+<span class="lbl">ServerDock itself</span>
+<span class="mono">52 MB RAM · 0.3% CPU</span>
+<span class="lbl">v0.1.0 · up to date</span>
+</div>
+</nav>
+<main class="main">
+<div>
+<h1 style="margin: 0; font-size: 24px">New service</h1>
+<span class="lbl">in project <strong style="color: #1f1f1f">shop</strong> · environment production</span>
+</div>
+
+<section style="display: flex; flex-direction: column; gap: 10px">
+<h2 class="h2">1 · What are you deploying?</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px">
+<sc-for list="{{sources}}" as="s" hint-placeholder-count="5">
+<button type="button" class="{{s.cls}}" onClick="{{s.pick}}" aria-pressed="{{s.pressed}}">
+<strong style="font-size: 15px">{{s.name}}</strong>
+<span class="lbl">{{s.desc}}</span>
+</button>
+</sc-for>
+</div>
+</section>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2">2 · {{formTitle}}</h2>
+<sc-if value="{{isGit}}" hint-placeholder-val="{{true}}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px">
+<label class="field">Repository<select><option>shop/api (GitHub · connected)</option><option>shop/web</option></select></label>
+<label class="field">Branch<input value="main"></label>
+<label class="field">Build with<select><option>Detected: Dockerfile</option><option>Railpack (no Dockerfile needed)</option><option>Docker Compose file</option></select></label>
+<label class="field">Port your app listens on<input value="8080"></label>
+</div>
+<fieldset style="border: 1px solid #cfcfca; border-radius: 8px; padding: 12px 14px; margin: 0; display: flex; flex-direction: column; gap: 8px">
+<legend style="font-size: 13px; font-weight: 500; padding: 0 4px">Processes from this repo</legend>
+<div style="display: grid; grid-template-columns: 90px 1fr 110px; gap: 8px; align-items: center; font-size: 14px">
+<strong>web</strong><span class="mono">npm start</span><span>1 replica · public</span>
+<strong>worker</strong><span class="mono">npm run worker</span><span>1 replica · private</span>
+</div>
+<button type="button" class="btn" style="align-self: flex-start; min-height: 36px">+ Add process</button>
+</fieldset>
+<span class="lbl">Push to <span class="mono">main</span> deploys automatically. Commit status and PR comments are posted back to GitHub.</span>
+</sc-if>
+<sc-if value="{{isImage}}" hint-placeholder-val="{{false}}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px">
+<label class="field">Image<input value="ghcr.io/shop/api:1.4.2"></label>
+<label class="field">Registry login<select><option>ghcr.io · shop-bot (saved)</option><option>Docker Hub · add login…</option><option>Public image, no login</option></select></label>
+<label class="field">Port<input value="8080"></label>
+</div>
+</sc-if>
+<sc-if value="{{isFolder}}" hint-placeholder-val="{{false}}">
+<div style="border: 1px dashed #9a9a95; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start">
+<strong style="font-size: 14px">Deploy from your computer</strong>
+<div class="mono" style="background: #1f1f1f; color: #e9e9e6; border-radius: 6px; padding: 10px 12px">cd my-app &amp;&amp; serverdock up --service api</div>
+<span class="lbl">The CLI uploads the folder (respecting .gitignore), builds it on the builder, and deploys. Or drop a .zip here.</span>
+</div>
+</sc-if>
+<sc-if value="{{isCompose}}" hint-placeholder-val="{{false}}">
+<div style="border: 1px dashed #b4b4af; border-radius: 6px; padding: 14px; min-height: 120px" class="mono">compose.yaml editor (paste or from repo)</div>
+<span class="lbl">Checked before deploy: privileged mode, host network/PID, docker.sock and / mounts are blocked unless an admin allows them.</span>
+</sc-if>
+<sc-if value="{{isDb}}" hint-placeholder-val="{{false}}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px">
+<label class="field">Engine<select><option>PostgreSQL 17</option><option>MySQL 8</option><option>MariaDB 11</option><option>Redis / Valkey</option><option>MongoDB 8 (Phase 2)</option><option>ClickHouse (Phase 2)</option></select></label>
+<label class="field">Daily backup to<select><option>s3: backups-eu (default)</option><option>No backups (not recommended)</option></select></label>
+</div>
+<span class="lbl">Private by default: reachable only from services in this project.</span>
+</sc-if>
+<sc-if value="{{isTemplate}}" hint-placeholder-val="{{false}}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px">
+<div class="card" style="min-height: 72px"><strong>Uptime Kuma</strong><span class="lbl">tested 2 days ago ✓</span></div>
+<div class="card" style="min-height: 72px"><strong>n8n</strong><span class="lbl">tested 2 days ago ✓</span></div>
+<div class="card" style="min-height: 72px"><strong>Plausible</strong><span class="lbl">tested 2 days ago ✓</span></div>
+<div class="card" style="min-height: 72px"><strong>Gitea</strong><span class="lbl">tested 2 days ago ✓</span></div>
+</div>
+<span class="lbl">Every template is installed, health-checked and upgraded in CI before it shows here.</span>
+</sc-if>
+</section>
+
+<section class="box" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px">
+<label class="field">Name<input value="api"></label>
+<label class="field">Server<select><option>hetzner-1 · 2.1 GB free</option><option>vps-small · 390 MB free</option></select></label>
+<label class="field">Domain (optional)<input value="api.example.com"></label>
+<label class="field">Memory limit<input value="512 MB"></label>
+<label class="field">CPU limit<input value="1 core"></label>
+<label class="field">Deploy strategy<select><option>Auto: stop-first (a writable volume is attached)</option><option>Blue-green (zero downtime, stateless only)</option></select></label>
+<label class="field">Persistent volume (optional)<input value="uploads → /app/uploads"></label>
+<label class="field">Network<select><option>Project network “shop” · reach others by name (postgres-main:5432)</option></select></label>
+</section>
+
+<div style="display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap">
+<a class="btn" href="Main.dc.html">Cancel</a>
+<a class="btn p" href="Service.dc.html">Create &amp; deploy</a>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { src: 'git' }; }
+  renderVals() {
+    const list = [
+      { id: 'git', name: 'Git repository', desc: 'GitHub, GitLab, Gitea · auto-deploy on push', form: 'Repository & build' },
+      { id: 'image', name: 'Docker image', desc: 'Any registry, public or private', form: 'Image' },
+      { id: 'folder', name: 'Local folder', desc: 'From your computer via CLI or .zip', form: 'Upload' },
+      { id: 'compose', name: 'Docker Compose', desc: 'Multi-container stack', form: 'Compose file' },
+      { id: 'db', name: 'Database', desc: 'Postgres, MySQL, Redis + backups', form: 'Database' },
+      { id: 'template', name: 'One-click app', desc: 'Tested templates catalog', form: 'Pick a template' }
+    ];
+    const src = this.state.src;
+    const cur = list.find((x) => x.id === src);
+    return {
+      sources: list.map((x) => ({
+        ...x,
+        cls: x.id === src ? 'card on' : 'card',
+        pressed: x.id === src ? 'true' : 'false',
+        pick: () => this.setState({ src: x.id })
+      })),
+      formTitle: cur.form,
+      isGit: src === 'git', isImage: src === 'image', isFolder: src === 'folder', isCompose: src === 'compose', isDb: src === 'db', isTemplate: src === 'template'
+    };
+  }
+}
+</script>
+</body>
+</html>

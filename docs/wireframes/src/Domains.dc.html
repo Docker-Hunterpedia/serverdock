@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — Domains</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.app{display:flex;flex-wrap:wrap;min-height:1000px}
+.side{flex:1 1 220px;max-width:240px;background:#fff;border-right:1px solid #d6d6d2;padding:20px 14px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.nav{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:6px;color:#3a3a37;text-decoration:none;font-size:14px}
+.nav.on{background:#e6e6e3;font-weight:600;color:#1f1f1f}
+.main{flex:999 1 560px;min-width:0;padding:28px 32px;display:flex;flex-direction:column;gap:20px;box-sizing:border-box}
+.box{background:#fff;border:1px solid #cfcfca;border-radius:8px;padding:16px;box-sizing:border-box}
+.lbl{font-size:12px;color:#5c5c58}
+.h2{margin:0;font-size:15px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.t{width:100%;border-collapse:collapse;font-size:14px}
+.t th{text-align:left;font-size:12px;color:#5c5c58;font-weight:500;padding:8px;border-bottom:1px solid #d6d6d2;white-space:nowrap}
+.t td{padding:10px 8px;border-bottom:1px solid #ececea;white-space:nowrap}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:2px 8px;border-radius:99px;border:1px solid #b4b4af;background:#fff}
+.st.bad{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.st.warn{border:2px solid #1f1f1f}
+.scroll{overflow-x:auto}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #ececea;font-size:14px}
+@media (max-width:760px){.side{max-width:none}.main{padding:20px 16px}}
+</style>
+</helmet>
+<div class="app">
+<nav class="side" aria-label="Main">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock</strong>
+</div>
+<a class="nav" href="Main.dc.html">Overview</a>
+<a class="nav" href="Service.dc.html">Projects &amp; services</a>
+<a class="nav" href="Servers.dc.html">Servers</a>
+<a class="nav on" href="Domains.dc.html">Domains</a>
+<a class="nav" href="Backups.dc.html">Databases &amp; backups</a>
+<a class="nav" href="Logs.dc.html">Logs</a>
+<a class="nav" href="Main.dc.html">Alerts</a>
+<a class="nav" href="Approval.dc.html">AI &amp; MCP</a>
+<a class="nav" href="Main.dc.html">Audit log</a>
+<a class="nav" href="Main.dc.html">Settings</a>
+<div style="margin-top: auto; padding: 12px 10px; border-top: 1px solid #e0e0dc; display: flex; flex-direction: column; gap: 4px">
+<span class="lbl">ServerDock itself</span>
+<span class="mono">52 MB RAM · 0.3% CPU</span>
+<span class="lbl">v0.1.0 · up to date</span>
+</div>
+</nav>
+<main class="main">
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between">
+<div>
+<h1 style="margin: 0; font-size: 24px">Domains</h1>
+<span class="lbl">HTTPS is automatic. A certificate or DNS problem never takes a running app down; it shows here as “needs action”.</span>
+</div>
+<button class="btn p" type="button">+ Add domain</button>
+</div>
+
+<section class="box">
+<div class="scroll">
+<table class="t">
+<thead><tr><th>Domain</th><th>Points to</th><th>HTTPS</th><th>Status</th><th>Server</th><th></th></tr></thead>
+<tbody>
+<tr><td>example.com</td><td>web :3000</td><td>Let’s Encrypt · renews in 61 d</td><td><span class="st">● Serving</span></td><td>hetzner-1</td><td><a href="Domains.dc.html">Edit</a></td></tr>
+<tr><td>api.example.com</td><td>api :8080</td><td>Let’s Encrypt · renews in 44 d</td><td><span class="st">● Serving</span></td><td>hetzner-1</td><td><a href="Domains.dc.html">Edit</a></td></tr>
+<tr><td><strong>shop.example.com</strong></td><td>web :3000</td><td>— waiting —</td><td><span class="st warn">◆ Needs action</span></td><td>hetzner-1</td><td><a href="Domains.dc.html">Fix</a></td></tr>
+<tr><td>status.example.com</td><td>uptime-kuma :3001</td><td>Cloudflare Tunnel (no public IP)</td><td><span class="st" style="border-style: dashed">◌ Unknown (server offline)</span></td><td>home-lab</td><td><a href="Domains.dc.html">Edit</a></td></tr>
+<tr><td>*.preview.example.com</td><td>PR previews</td><td>Wildcard · DNS-01 via Cloudflare</td><td><span class="st">● Serving</span></td><td>vps-small</td><td><a href="Domains.dc.html">Edit</a></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 6px; border-width: 2px; border-color: #1f1f1f">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px">
+<h2 class="h2">shop.example.com · diagnostics</h2>
+<button class="btn" type="button">Check again</button>
+</div>
+<div class="chk"><strong style="width: 20px">✓</strong><div>Domain is valid and added to <strong>web</strong></div></div>
+<div class="chk"><strong style="width: 20px">✗</strong><div style="display: flex; flex-direction: column; gap: 4px"><span><strong>DNS points to the wrong server.</strong> shop.example.com → <span class="mono">104.21.8.14</span> (Cloudflare proxy). This server is <span class="mono">203.0.113.10</span>.</span><span class="lbl">Fix: set an A record to 203.0.113.10, or turn off the orange cloud until the certificate is issued, or connect Cloudflare for DNS-01.</span></div></div>
+<div class="chk"><strong style="width: 20px">–</strong><div>Certificate: not requested yet (waiting for DNS, so we don’t hit Let’s Encrypt rate limits)</div></div>
+<div class="chk"><strong style="width: 20px">✓</strong><div>App is listening on :3000 and answers 200</div></div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap; padding-top: 8px">
+<button class="btn p" type="button">Copy DNS record</button>
+<button class="btn" type="button">Connect Cloudflare</button>
+</div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

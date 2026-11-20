@@ -1,0 +1,26 @@
+{"v":3,"createdOnFiles":{"v":1,"at":"2026-11-20T05:00:00Z"},"title":"ServerDock Wireframes","launch":{"view":"canvas"},"pages":[],
+"boards":{
+"Main.dc.html":{"x":0,"y":0,"w":1440,"h":1000,"title":"1 · Overview","expand":"fill","is_interactive":true},
+"Service.dc.html":{"x":1520,"y":0,"w":1440,"h":1000,"title":"2 · Service detail","expand":"fill","is_interactive":true},
+"DeployFailed.dc.html":{"x":3040,"y":0,"w":1440,"h":1000,"title":"3 · Failed deploy, auto-rolled back","expand":"fill","is_interactive":true},
+"Phone.dc.html":{"x":4560,"y":0,"w":390,"h":844,"title":"4 · Phone: incident"},
+"NewService.dc.html":{"x":0,"y":1400,"w":1440,"h":1000,"title":"5 · New service","expand":"fill","is_interactive":true},
+"Servers.dc.html":{"x":1520,"y":1400,"w":1440,"h":1000,"title":"6 · Servers & add server","expand":"fill","is_interactive":true},
+"Domains.dc.html":{"x":3040,"y":1400,"w":1440,"h":1000,"title":"7 · Domains & diagnostics","expand":"fill","is_interactive":true},
+"Logs.dc.html":{"x":0,"y":2800,"w":1440,"h":1000,"title":"8 · Logs","expand":"fill","is_interactive":true},
+"Backups.dc.html":{"x":1520,"y":2800,"w":1440,"h":1000,"title":"9 · Databases & backups","expand":"fill","is_interactive":true},
+"Approval.dc.html":{"x":3040,"y":2800,"w":1440,"h":1000,"title":"10 · AI & MCP approvals","expand":"fill","is_interactive":true},
+"Onboarding.dc.html":{"x":0,"y":4200,"w":1440,"h":1000,"title":"11 · First run / onboarding","expand":"fill","is_interactive":true},
+"Updates.dc.html":{"x":1520,"y":4200,"w":1440,"h":1000,"title":"12 · Updates","expand":"fill","is_interactive":true},
+"Settings.dc.html":{"x":3040,"y":4200,"w":1440,"h":1000,"title":"13 · Settings","expand":"fill","is_interactive":true}
+},
+"order":["Main.dc.html","Service.dc.html","DeployFailed.dc.html","Phone.dc.html","NewService.dc.html","Servers.dc.html","Domains.dc.html","Logs.dc.html","Backups.dc.html","Approval.dc.html","Onboarding.dc.html","Updates.dc.html","Settings.dc.html"],
+"notes":{
+"t1":{"x":0,"y":-300,"text":"Core: see real state, recover from failure","kind":"title1","maxW":4950},
+"t2":{"x":0,"y":1100,"text":"Setup: services, servers, domains","kind":"title1","maxW":4480},
+"t3":{"x":0,"y":2500,"text":"Data & AI: logs, backups, approvals","kind":"title1","maxW":4480},
+"t4":{"x":0,"y":3900,"text":"First run, updates, settings","kind":"title1","maxW":4480},
+"n1":{"x":4560,"y":1400,"w":380,"fill":"orange","text":"Wireframe rules\n• Grayscale on purpose: layout and flow first, brand later.\n• State is shown with a word + symbol, never color alone (● running, ▲ failed, ◌ unknown).\n• Every destructive action names its exact target.\n• Sidebar links work in Play mode."},
+"n2":{"x":4560,"y":2800,"w":380,"fill":"orange","text":"Footprint in the UI\nThe sidebar footer always shows what ServerDock itself uses (RAM/CPU). The promise stays visible and honest."}
+},
+"designSystems":[]}

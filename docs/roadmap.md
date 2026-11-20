@@ -12,15 +12,17 @@ Goal: decisions locked and a skeleton that proves the footprint.
 
 - [ ] Confirm vision, features, architecture (maintainer review of these docs)
 - [x] Accept ADRs 0001–0006 (AGPL-3.0, Go, outbound agent, embedded Caddy, SvelteKit, MCP-first AI) — accepted by the maintainer 2026-11-20
-- [ ] Decide ADR 0007 (no telemetry by default) — proposed
+- [x] ADR 0007 (no telemetry by default) — accepted by the maintainer 2026-11-20
+- [x] ADR 0008 (footprint gates on deployed shapes; slim agent in Phase 2) — accepted by the maintainer 2026-11-20
 - [x] Research, feature list, wireframes (13 screens), phase chart
-- [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64)
-- [ ] `serverdock bench` harness + CI job on a 1 vCPU / 1 GB VM reporting idle RSS/CPU
-- [ ] **Spike 1:** Go binary with embedded Caddy + SQLite + empty SPA → measure idle RSS
-- [ ] **Spike 2:** agent dials out over WSS with yamux, survives reconnects, streams container logs on demand
+- [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — workflow written, not yet run on GitHub
+- [ ] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job not yet run
+- [x] **Spike 1:** Go binary with embedded Caddy + SQLite + empty SPA → measure idle RSS — implemented and tested; only a local informational measurement so far ([05-phase0-measurements.md](research/05-phase0-measurements.md))
+- [x] **Spike 2:** agent dials out over WebSocket with yamux, survives reconnects, streams container logs on demand — implemented and tested (plain `ws://`; TLS/mTLS come in Phase 1/2)
 - [ ] `docs/security.md` threat model reviewed by the `security` agent
 
 **Exit:** both spikes measured under budget (≤ 80 MB single node). If not, revisit ADR 0004 (Caddy container fallback).
+**Result (2026-11-20):** met in CI: single node 47.6 MB, remote node 44.1 MB, 0% idle CPU ([research/05](research/05-phase0-measurements.md)). The real 1 GB VPS run is deferred to the Phase 1 exit.
 
 ## Phase 1 — MVP: "Solo on one server"
 
@@ -50,11 +52,12 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
 - [ ] Accessible, phone-usable UI for all of the above
 
-**Exit:** fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
+**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 
 ## Phase 2 — Multi-server & builds
 
 - [ ] Remote agent (outbound, enrollment token, mTLS), SSH-assisted one-time install
+- [ ] Slim agent build (no SQLite/SPA/control plane); scenario 3 gate ≤ 20 MB, hard fail 25 (ADR 0008)
 - [ ] Builder servers; CI build mode (generated GitHub Actions)
 - [ ] Railpack zero-config builds
 - [ ] GitLab, Gitea, Bitbucket; PR previews incl. Compose; Compose diff review

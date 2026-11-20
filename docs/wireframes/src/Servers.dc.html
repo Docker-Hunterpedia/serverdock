@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock — Servers</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#1f1f1f;background:#f4f4f2}
+a{color:#1f1f1f}a:hover{color:#000}
+.app{display:flex;flex-wrap:wrap;min-height:1000px}
+.side{flex:1 1 220px;max-width:240px;background:#fff;border-right:1px solid #d6d6d2;padding:20px 14px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.nav{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:6px;color:#3a3a37;text-decoration:none;font-size:14px}
+.nav.on{background:#e6e6e3;font-weight:600;color:#1f1f1f}
+.main{flex:999 1 560px;min-width:0;padding:28px 32px;display:flex;flex-direction:column;gap:20px;box-sizing:border-box}
+.box{background:#fff;border:1px solid #cfcfca;border-radius:8px;padding:16px;box-sizing:border-box}
+.lbl{font-size:12px;color:#5c5c58}
+.h2{margin:0;font-size:15px;font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid #9a9a95;border-radius:6px;background:#fff;font:inherit;font-size:14px;color:#1f1f1f;text-decoration:none;box-sizing:border-box}
+.btn.p{background:#1f1f1f;color:#fff;border-color:#1f1f1f}
+.t{width:100%;border-collapse:collapse;font-size:14px}
+.t th{text-align:left;font-size:12px;color:#5c5c58;font-weight:500;padding:8px;border-bottom:1px solid #d6d6d2;white-space:nowrap}
+.t td{padding:10px 8px;border-bottom:1px solid #ececea;white-space:nowrap}
+.mono{font-family:'JetBrains Mono',monospace;font-size:13px}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:2px 8px;border-radius:99px;border:1px solid #b4b4af;background:#fff}
+.st.unk{border-style:dashed}
+.scroll{overflow-x:auto}
+.code{background:#1f1f1f;color:#e9e9e6;border-radius:8px;padding:14px;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;overflow-x:auto;white-space:pre}
+.stepn{width:28px;height:28px;border-radius:50%;border:1px solid #1f1f1f;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:none}
+@media (max-width:760px){.side{max-width:none}.main{padding:20px 16px}}
+</style>
+</helmet>
+<div class="app">
+<nav class="side" aria-label="Main">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px">
+<div style="width: 28px; height: 28px; border-radius: 6px; background: #1f1f1f"></div>
+<strong style="font-size: 16px">ServerDock</strong>
+</div>
+<a class="nav" href="Main.dc.html">Overview</a>
+<a class="nav" href="Service.dc.html">Projects &amp; services</a>
+<a class="nav on" href="Servers.dc.html">Servers</a>
+<a class="nav" href="Domains.dc.html">Domains</a>
+<a class="nav" href="Backups.dc.html">Databases &amp; backups</a>
+<a class="nav" href="Logs.dc.html">Logs</a>
+<a class="nav" href="Main.dc.html">Alerts</a>
+<a class="nav" href="Approval.dc.html">AI &amp; MCP</a>
+<a class="nav" href="Main.dc.html">Audit log</a>
+<a class="nav" href="Main.dc.html">Settings</a>
+<div style="margin-top: auto; padding: 12px 10px; border-top: 1px solid #e0e0dc; display: flex; flex-direction: column; gap: 4px">
+<span class="lbl">ServerDock itself</span>
+<span class="mono">52 MB RAM · 0.3% CPU</span>
+<span class="lbl">v0.1.0 · up to date</span>
+</div>
+</nav>
+<main class="main">
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between">
+<div>
+<h1 style="margin: 0; font-size: 24px">Servers</h1>
+<span class="lbl">All servers managed from this one panel. Remote servers run a small agent that connects out to here.</span>
+</div>
+<button class="btn p" type="button">+ Add server</button>
+</div>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 10px">
+<div class="scroll">
+<table class="t">
+<thead><tr><th>Server</th><th>Status</th><th>Role</th><th>Connection</th><th>CPU</th><th>RAM</th><th>Disk</th><th>Agent uses</th><th>Services</th></tr></thead>
+<tbody>
+<tr><td><strong>hetzner-1</strong><br><span class="lbl">panel runs here</span></td><td><span class="st">● Online</span></td><td>app · edge</td><td>local (in-process)</td><td>11%</td><td>1.9 / 4 GB</td><td>41%</td><td class="mono">—</td><td>8</td></tr>
+<tr><td><strong>vps-small</strong><br><span class="lbl">1 vCPU · 1 GB</span></td><td><span class="st">● Online</span></td><td>app · edge</td><td>agent → outbound WSS · 18 ms</td><td>6%</td><td>610 MB / 1 GB</td><td>63%</td><td class="mono">19 MB</td><td>5</td></tr>
+<tr><td><strong>builder-1</strong><br><span class="lbl">4 vCPU · 8 GB</span></td><td><span class="st">● Online</span></td><td>builder</td><td>agent → outbound WSS · 22 ms</td><td>74% (building)</td><td>3.1 / 8 GB</td><td>30%</td><td class="mono">17 MB</td><td>0</td></tr>
+<tr><td><strong>home-lab</strong><br><span class="lbl">behind NAT</span></td><td><span class="st unk">◌ Unknown</span></td><td>app</td><td>agent disconnected 6 min ago · retrying</td><td>—</td><td>—</td><td>—</td><td class="mono">—</td><td>1</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+<section class="box" style="flex: 3 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px">
+<h2 class="h2">vps-small · Docker resources</h2>
+<span class="lbl">Shows everything on the server, including things ServerDock didn’t create</span>
+</div>
+<div style="display: flex; gap: 4px; border-bottom: 1px solid #cfcfca; overflow-x: auto" role="tablist" aria-label="Docker resources">
+<a href="Servers.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; font-size: 14px; text-decoration: none; border-bottom: 2px solid #1f1f1f; font-weight: 600" aria-current="page">Containers 9</a>
+<a href="Servers.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; font-size: 14px; text-decoration: none; color: #3a3a37">Images 23</a>
+<a href="Servers.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; font-size: 14px; text-decoration: none; color: #3a3a37">Volumes 6</a>
+<a href="Servers.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; font-size: 14px; text-decoration: none; color: #3a3a37">Networks 4</a>
+</div>
+<div class="scroll">
+<table class="t">
+<thead><tr><th>Container</th><th>Managed by</th><th>State</th><th>RAM</th></tr></thead>
+<tbody>
+<tr><td>sd-worker-32</td><td>ServerDock · worker</td><td>● running</td><td>71 MB</td></tr>
+<tr><td>sd-mysql-blog</td><td>ServerDock · mysql-blog</td><td>● running</td><td>188 MB</td></tr>
+<tr><td>old-wordpress</td><td><strong>not managed</strong> · <a href="Servers.dc.html">adopt</a></td><td>○ exited 41 d ago</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+<div style="border: 2px solid #1f1f1f; border-radius: 8px; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+<div style="flex: 1 1 300px; display: flex; flex-direction: column; gap: 4px">
+<strong style="font-size: 14px">Disk 85% full · cleanup can free 3.4 GB</strong>
+<span class="lbl">14 unused images (2.6 GB) · build cache (0.8 GB). Never touches volumes or running containers. Runs automatically weekly.</span>
+</div>
+<button class="btn" type="button">Preview cleanup</button>
+</div>
+</section>
+<section class="box" style="flex: 2 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+<h2 class="h2">vps-small · security checks</h2>
+<dl style="margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 10px; column-gap: 12px; font-size: 14px">
+<dt>Security updates</dt><dd style="margin: 0"><strong>▲ 7 pending</strong></dd>
+<dt>SSH password login</dt><dd style="margin: 0"><strong>▲ enabled</strong></dd>
+<dt>Open ports</dt><dd style="margin: 0">22, 80, 443 ✓</dd>
+<dt>Firewall</dt><dd style="margin: 0">ufw active ✓</dd>
+<dt>Agent ports</dt><dd style="margin: 0">none (outbound only) ✓</dd>
+</dl>
+<span class="lbl">Phase 3. Each warning links to the exact fix; nothing is changed without approval.</span>
+</section>
+</div>
+
+<section class="box" style="display: flex; flex-direction: column; gap: 18px; border-width: 2px; border-color: #1f1f1f">
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px">
+<h2 class="h2">Add server (dialog, shown open)</h2>
+<button type="button" class="btn" aria-label="Close add server">Close</button>
+</div>
+<div style="display: flex; gap: 12px; align-items: flex-start">
+<span class="stepn">1</span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+<strong style="font-size: 14px">Name it and pick its role</strong>
+<div style="display: flex; gap: 10px; flex-wrap: wrap">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500">Name<input value="vps-eu-2" style="min-height: 44px; padding: 0 10px; border: 1px solid #9a9a95; border-radius: 6px; font: inherit; font-size: 14px; width: 220px"></label>
+<fieldset style="border: 0; padding: 0; margin: 0; display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap">
+<legend style="font-size: 13px; font-weight: 500; padding: 0 0 6px">Role</legend>
+<label style="display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border: 2px solid #1f1f1f; border-radius: 6px; font-size: 14px"><input type="checkbox" checked> Run apps</label>
+<label style="display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border: 1px solid #9a9a95; border-radius: 6px; font-size: 14px"><input type="checkbox"> Build images</label>
+</fieldset>
+</div>
+</div>
+</div>
+<div style="display: flex; gap: 12px; align-items: flex-start">
+<span class="stepn">2</span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+<strong style="font-size: 14px">Run this on the new server (as root)</strong>
+<div class="code">curl -fsSL https://panel.example.com/agent.sh | sh -s -- \
+  --join sd_enroll_7Q2K…X9  # one-time token, expires in 15 min</div>
+<span class="lbl">The agent opens one outbound connection to this panel. No ports to open, works behind NAT. The token works once; after that the server has its own key. Or: <a href="Servers.dc.html">install over SSH once</a> (key is used for install only, never stored).</span>
+<label style="display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px"><input type="checkbox"> This server has no public IP: expose its apps through a <strong>Cloudflare Tunnel</strong></label>
+</div>
+</div>
+<div style="display: flex; gap: 12px; align-items: flex-start">
+<span class="stepn">3</span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<strong style="font-size: 14px">Waiting for the agent…</strong>
+<span style="font-size: 14px">◌ Not connected yet. Checks: Docker found? · cgroup v2? · ports 80/443 free? · disk space?</span>
+</div>
+</div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

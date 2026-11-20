@@ -1,6 +1,6 @@
 # 0007 — No telemetry by default
 
-**Status:** proposed (needs maintainer decision) · **Date:** 2026-11-20
+**Status:** accepted by the maintainer · **Date:** 2026-11-20
 
 **Context.** None of the docs mentioned telemetry. In self-hosted tools, silence on this becomes a trust problem later. ServerDock holds root-equivalent access to user servers.
 

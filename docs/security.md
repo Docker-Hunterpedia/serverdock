@@ -43,3 +43,17 @@ Coolify and Dokploy 2026 CVEs: command injection through backups, build params, 
 ## Disclosure
 
 `SECURITY.md` with GitHub private vulnerability reporting from the first public commit.
+
+## Open items from the Phase 0 review (must be resolved before real deployments)
+
+Found in the systems/security review of plan 0001 (2026-11-20). Acceptable for the spike; each is owned by the phase listed.
+
+| # | Item | Phase |
+|---|---|---|
+| 1 | The agent bearer token travels over plain `ws://` on `:80`. Ship `wss://` (TLS) before any real deployment. | 1 |
+| 2 | Caddy reloads drop every remote agent after `stream_close_delay` (5 min). Serve `/agent/connect` from a listener Caddy does not rebuild (hub with its own TLS listener, or a never-rebuilt server block). | 1 |
+| 3 | The shared token gives no per-agent identity: any token holder can claim any non-reserved id and replace that agent. Enrollment + mTLS must bind the id to the credential (ADR 0003). The local agent's id is already reserved. | 2 |
+| 4 | No session cap, per-IP limit, per-agent stream cap (yamux backlog 256) or auth-failure rate limit. | 1 |
+| 5 | Non-streaming Docker API calls (inspect) have no timeout; add `ResponseHeaderTimeout`/per-call timeouts except for log follow. | 1 |
+| 6 | No goroutine-leak tests; add `goleak.VerifyTestMain` to `hub`, `agent`, `cmd/serverdock` and join the local session goroutines. | 1 |
+| 7 | The bench mounts `docker.sock` into the agent container (root-equivalent); keep it confined to the bench. | ongoing |

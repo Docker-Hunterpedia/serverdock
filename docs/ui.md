@@ -2,7 +2,7 @@
 
 *Draft 1, 2026-11-20. AI-written; not yet confirmed by the maintainer.*
 
-Wireframes (grayscale, clickable sidebar in Play mode): https://claude.ai/artifact/1zmuYCkV2TEobWhU4agDdB — private until shared.
+Wireframes: [PNG gallery in the repo](wireframes/README.md). The interactive canvas is a private claude.ai artifact.
 
 The wireframes show the target product across all phases (e.g. Overview shows 3 servers, which needs Phase 2). Items that land after Phase 1 are labelled with their phase where it matters.
 
