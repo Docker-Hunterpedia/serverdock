@@ -121,6 +121,8 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
 
 ## Footprint allocation (cumulative S2 / S4 VmRSS targets, CI amd64)
 
+> Since [ADR 0011](../decisions/0011-footprint-ceiling.md) (2026-11-21) these allocations are **tripwire planning numbers**, not gates: CI fails only above 200 MB (S2) / 100 MB (S4). Crossing an allocation needs a written reason in the PR.
+
 Baseline from [research/05](../research/05-phase0-measurements.md): **S2 47.6 MB, S4 44.1 MB**, binary 18.8 MB gzip. Slack per rule 2: S2 +2 MB, S4 +0.5 MB.
 
 | After | S2 target | S4 target | Main new idle cost |

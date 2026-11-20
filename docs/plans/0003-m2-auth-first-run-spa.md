@@ -468,6 +468,8 @@ S4 (remote agent + its Caddy) is **44.2 MB against 45.0 MB**: 0.8 MB of headroom
 
 ## Footprint budget
 
+> Since [ADR 0011](../decisions/0011-footprint-ceiling.md) (2026-11-21) the S2/S4 numbers below are tripwire allocations; CI fails only above 200 MB (S2) / 100 MB (S4). M2 measured S4 46.0 MB (over the 45.0 allocation); the footprint investigation found no leak (file pages of the shared binary plus lazy heap return), recorded here as the written reason.
+
 **Allocation (plan 0002):** S2 ≤ 53 MB, S4 ≤ 45 MB, slack + 2 / + 0.5 MB. M1: S2 47.6 MB, S4 44.2 MB, binary 18.9 MB gzip.
 
 | | M1 measured | M2 estimate | Allocation | Where the cost comes from |

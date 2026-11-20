@@ -54,12 +54,12 @@ func TestGates(t *testing.T) {
 	run := func(rssMB, cpu float64) RunStats {
 		return RunStats{VmRSSMedian: rssMB * mb, IdleCPUPercent: cpu}
 	}
-	// Median of medians 83.9 MB is inside 80 MB +5% (84); one outlier run is ignored.
-	s := scenario(2, []RunStats{run(83.9, 0.1), run(120, 0.1), run(30, 0.1)})
+	// Median of medians 209.9 MB is inside 200 MB +5% (210); one outlier run is ignored.
+	s := scenario(2, []RunStats{run(209.9, 0.1), run(300, 0.1), run(30, 0.1)})
 	if !s.Gates[0].Pass {
 		t.Errorf("rss gate: %+v", s.Gates[0])
 	}
-	s = scenario(2, []RunStats{run(84.5, 0.1), run(85, 0.1), run(30, 0.1)})
+	s = scenario(2, []RunStats{run(210.5, 0.1), run(211, 0.1), run(30, 0.1)})
 	if s.Gates[0].Pass {
 		t.Errorf("rss gate should fail: %+v", s.Gates[0])
 	}
@@ -78,11 +78,11 @@ func TestGates(t *testing.T) {
 
 func TestReportLabelsAndVerdict(t *testing.T) {
 	r := Report{Date: "d", Arch: "a", Mode: "helper", Quick: true, Informational: true,
-		Label: label(true, true), Scenarios: []ScenarioResult{scenario(2, []RunStats{{VmRSSMedian: 90 * mb, IdleCPUPercent: 0.1}})},
+		Label: label(true, true), Scenarios: []ScenarioResult{scenario(2, []RunStats{{VmRSSMedian: 220 * mb, IdleCPUPercent: 0.1}})},
 		Gates: binaryGates(10 * mb)}
 	r.evaluate()
 	if r.Pass {
-		t.Error("90 MB must fail scenario 2")
+		t.Error("220 MB must fail scenario 2")
 	}
 	md := markdown(r)
 	for _, want := range []string{"quick", "informational", "FAIL", "not enforced"} {
@@ -95,10 +95,10 @@ func TestReportLabelsAndVerdict(t *testing.T) {
 func TestScenarioGates(t *testing.T) {
 	run := func(rss float64) []RunStats { return []RunStats{{VmRSSMedian: rss * mb, IdleCPUPercent: 0.1}} }
 	// Scenario 4 (remote node with proxy) is gated at 50 MB +5%.
-	if s := scenario(4, run(52.4)); !s.Gates[0].Pass {
-		t.Errorf("52.4 MB should pass scenario 4: %+v", s.Gates)
+	if s := scenario(4, run(104.9)); !s.Gates[0].Pass {
+		t.Errorf("104.9 MB should pass scenario 4: %+v", s.Gates)
 	}
-	if s := scenario(4, run(53)); s.Gates[0].Pass {
+	if s := scenario(4, run(106)); s.Gates[0].Pass {
 		t.Errorf("53 MB should fail scenario 4: %+v", s.Gates)
 	}
 	// Scenarios 1 and 3 are report only (ADR 0008): over target, the run still passes.
@@ -114,5 +114,27 @@ func TestScenarioGates(t *testing.T) {
 	}
 	if !strings.Contains(markdown(r), "report only") {
 		t.Error("markdown should flag report-only")
+	}
+}
+
+func TestTripwireWarnsButNeverFails(t *testing.T) {
+	run := func(rss float64) []RunStats { return []RunStats{{VmRSSMedian: rss * mb, IdleCPUPercent: 0.1}} }
+	for _, c := range []struct {
+		id  int
+		rss float64
+	}{{2, 95}, {4, 60}} {
+		r := Report{Scenarios: []ScenarioResult{scenario(c.id, run(c.rss))}, Gates: binaryGates(10 * mb)}
+		r.evaluate()
+		if !r.Pass {
+			t.Errorf("scenario %d at %.0f MB is over the tripwire but under the ceiling: must pass", c.id, c.rss)
+		}
+		if !strings.Contains(markdown(r), "above tripwire") {
+			t.Errorf("scenario %d: markdown must flag the tripwire", c.id)
+		}
+	}
+	r := Report{Scenarios: []ScenarioResult{scenario(2, run(70)), scenario(4, run(45))}, Gates: binaryGates(10 * mb)}
+	r.evaluate()
+	if strings.Contains(markdown(r), "above tripwire") {
+		t.Error("under the tripwire must not be flagged")
 	}
 }

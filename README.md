@@ -13,7 +13,7 @@ Self-hosted panels made "your own Heroku" popular, but in 2026 the popular ones 
 
 | | ServerDock target |
 |---|---|
-| **Light** | ≤ 80 MB RAM and < 1% CPU idle for panel + agent + proxy on one server; ≤ 50 MB per extra server. Published and checked in CI. |
+| **Light** | About 50 MB RAM and < 1% CPU idle today for panel + agent + proxy on one server (hard ceiling 200 MB, warning at 80 MB); about 45 MB per extra server (ceiling 100 MB). Published and checked in CI. |
 | **Safe** | Typed Docker API operations, never shell strings. Agents connect out, so there are no open ports and no stored SSH keys. 2FA on dangerous actions, audit log, signed releases. |
 | **Honest** | Real state, failures with evidence and a next step, automatic rollback when a deploy fails its health check. |
 | **Simple** | One Go binary, one install command, SQLite inside. No Redis, no Swarm, no Kubernetes. |

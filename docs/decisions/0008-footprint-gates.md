@@ -1,6 +1,6 @@
 # 0008 — Gate the footprint on the deployed shapes; slim agent in Phase 2
 
-**Status:** accepted by the maintainer · **Date:** 2026-11-20
+**Status:** accepted by the maintainer · **Date:** 2026-11-20 · Hard limits superseded by [ADR 0011](0011-footprint-ceiling.md) (ceiling 200 / 100 MB; 80 / 50 MB become tripwires). The choice of gated scenarios still holds.
 
 **Context.** The Phase 0 local bench ([research/05](../research/05-phase0-measurements.md)) showed that ServerDock ships as one ~48 MB binary, and about 30–34 MB of every scenario's VmRSS is `RssFile`: read-only pages of that binary, which the kernel can drop and share. Those numbers came from Docker Desktop and are informational only. As a result, the two setups people don't run on their own failed their gates: server without proxy (45.8 MB against 40) and remote agent without proxy (40.7 MB against 20). The two setups people actually run passed: single node at 52.5 MB against 80, and remote agent with its own Caddy at 49.8 MB against 50. A remote agent always runs with its own Caddy, because Caddy is what routes traffic to the apps on that server.
 

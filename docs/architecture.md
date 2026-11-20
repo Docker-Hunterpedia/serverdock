@@ -112,7 +112,7 @@ flowchart LR
 
 ## Footprint budget
 
-These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM. The two **totals in bold are hard gates**: a PR that exceeds them fails CI and needs a written reason and `footprint` agent review. Component rows are targets the bench reports but does not enforce yet. The remote-agent row becomes a gate again when the slim agent ships in Phase 2 ([ADR 0008](decisions/0008-footprint-gates.md)).
+These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM ([ADR 0008](decisions/0008-footprint-gates.md), [ADR 0011](decisions/0011-footprint-ceiling.md)). The two **totals in bold have a hard ceiling** (CI fails above it) and a **tripwire** (a warning: going above it needs a written reason in the PR and `footprint` agent review). Component rows are targets the bench reports but does not enforce. The remote-agent row becomes a gate when the slim agent ships in Phase 2.
 
 | Component | Idle RSS | Idle CPU |
 |---|---|---|
@@ -120,8 +120,8 @@ These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM. T
 | In-process local agent | + ≤ 8 MB | — |
 | Remote agent (slim build, Phase 2) | ≤ 20 MB | < 0.3% |
 | Embedded Caddy | + ≤ 30 MB | — |
-| **Single node total** | **≤ 80 MB** | **< 1%** |
-| **Remote node total (agent + proxy)** | **≤ 50 MB** | **< 0.5%** |
+| **Single node total** | **ceiling ≤ 200 MB · tripwire 80 MB** | **< 1%** |
+| **Remote node total (agent + proxy)** | **ceiling ≤ 100 MB · tripwire 50 MB** | **< 0.5%** |
 | Binary size (server, compressed) | ≤ 40 MB | |
 | SPA first load (gzip) | ≤ 250 KB JS | |
 

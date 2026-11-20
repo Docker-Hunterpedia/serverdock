@@ -53,7 +53,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
 - [ ] Accessible, phone-usable UI for all of the above
 
-**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
+**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 
 ## Phase 2 — Multi-server & builds
 
@@ -88,7 +88,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Master key re-key; agent cert renewal/revocation; BYO TLS certs; per-project alert routing
 - [ ] Compose conformance test suite
 
-**Exit:** 3 servers (one behind NAT) managed from one panel; remote agent ≤ 50 MB with proxy; template CI green.
+**Exit:** 3 servers (one behind NAT) managed from one panel; remote node ≤ 100 MB with proxy (tripwire 50 MB, ADR 0011); template CI green.
 
 ## Phase 3 — Light built-in AI
 

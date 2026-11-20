@@ -8,12 +8,12 @@
 #      readiness and the burst run in the curl helper container on the shared volume
 #      (every request is a `docker run` curl, with its own unix-socket connect). From M2 step 2
 #      on, S1 is therefore NOT comparable with M1's S1 (a TCP listener and the host's curl).
-#   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node <= 80 MB.
+#   2  GATE  server --proxy=true (control plane + in-process local agent + Caddy), single node: ceiling 200 MB, tripwire 80 MB (ADR 0011).
 #      From M2 step 3 the burst goes over HTTPS on :443 (curl -k, self-signed panel leaf), so its
 #      TLS handshakes are part of the measurement: not like-for-like with earlier S2 numbers.
 #   3  (report only until the Phase 2 slim agent) remote `agent` connected to a scenario-2 server
 #      through its proxy (measured: the agent)
-#   4  GATE  remote `agent` plus its own embedded Caddy (--proxy-listen), remote node <= 50 MB
+#   4  GATE  remote `agent` plus its own embedded Caddy (--proxy-listen), remote node: ceiling 100 MB, tripwire 50 MB (ADR 0011)
 #   Gates: docs/decisions/0008-footprint-gates.md
 # Scenarios 3-4 also start a server container (agent TLS listener on the bench network, debug
 # unix socket on a shared volume) and a busybox logger; one log stream is opened and closed
