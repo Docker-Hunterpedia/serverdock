@@ -198,7 +198,7 @@ func TestPhase0AdoptionNeverTouchesMetaSchemaVersion(t *testing.T) {
 func TestPhase0AdoptedEvenWithNothingPending(t *testing.T) {
 	dir := t.TempDir()
 	makePhase0(t, dir, 1)
-	s, err := openWithT(t, dir, Options{})
+	s, err := openWithT(t, dir, Options{Migrations: list()}) // only 0001 exists: nothing pending
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,9 +228,13 @@ func TestChecksumMismatchAndNewerVersionRefused(t *testing.T) {
 		t.Fatalf("newer database: %v", err)
 	}
 	// And a version we have never heard of, on the builtin list.
-	raw, _ := sql.Open("sqlite", dsn(filepath.Join(dir, fileName), true))
-	raw.Exec(`INSERT INTO schema_migrations VALUES (99, '0099_future', 'x', 'now')`)
-	raw.Close()
+	dir = t.TempDir()
+	bs, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs.W.Exec(`INSERT INTO schema_migrations VALUES (99, '0099_future', 'x', 'now')`)
+	bs.Close()
 	if _, err := Open(ctx, dir); err == nil || !strings.Contains(err.Error(), "newer") {
 		t.Fatalf("future version: %v", err)
 	}

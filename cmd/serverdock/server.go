@@ -22,6 +22,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
+	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
@@ -187,6 +188,14 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return err
 	}
 	defer st.Close()
+	auditLog, err := audit.New(st, log)
+	if err != nil {
+		return err
+	}
+	if err := auditLog.LogHead(ctx); err != nil {
+		return fmt.Errorf("audit log: %w", err)
+	}
+	defer func() { _ = auditLog.Flush(context.WithoutCancel(ctx)) }()
 
 	// Open every listener first, so a failure leaves nothing half-started.
 	var opened []io.Closer
