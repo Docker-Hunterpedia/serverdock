@@ -10,16 +10,16 @@ Editable source: [diagrams/roadmap-phases.excalidraw](diagrams/roadmap-phases.ex
 
 Goal: decisions locked and a skeleton that proves the footprint.
 
-- [ ] Confirm vision, features, architecture (maintainer review of these docs)
+- [ ] Confirm vision, features, architecture (maintainer review of these docs) — **carried over to Phase 1: due before M3a** ([plan 0002](plans/0002-phase-1-mvp-solo.md), Part D)
 - [x] Accept ADRs 0001–0006 (AGPL-3.0, Go, outbound agent, embedded Caddy, SvelteKit, MCP-first AI) — accepted by the maintainer 2026-11-20
 - [x] ADR 0007 (no telemetry by default) — accepted by the maintainer 2026-11-20
 - [x] ADR 0008 (footprint gates on deployed shapes; slim agent in Phase 2) — accepted by the maintainer 2026-11-20
 - [x] Research, feature list, wireframes (13 screens), phase chart
-- [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — workflow written, not yet run on GitHub
-- [ ] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job not yet run
+- [x] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — ran on GitHub in PR #1 ([run 44715013248](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44715013248))
+- [x] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job ran in PR #1 ([run 44715013248](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44715013248))
 - [x] **Spike 1:** Go binary with embedded Caddy + SQLite + empty SPA → measure idle RSS — implemented and tested; only a local informational measurement so far ([05-phase0-measurements.md](research/05-phase0-measurements.md))
 - [x] **Spike 2:** agent dials out over WebSocket with yamux, survives reconnects, streams container logs on demand — implemented and tested (plain `ws://`; TLS/mTLS come in Phase 1/2)
-- [ ] `docs/security.md` threat model reviewed by the `security` agent
+- [ ] `docs/security.md` threat model reviewed by the `security` agent — **carried over to Phase 1 as the M2 entry gate**; run during M1 after step 6, so the review covers the agent listener and limits (plan 0002)
 
 **Exit:** both spikes measured under budget (≤ 80 MB single node). If not, revisit ADR 0004 (Caddy container fallback).
 **Result (2026-11-20):** met in CI: single node 47.6 MB, remote node 44.1 MB, 0% idle CPU ([research/05](research/05-phase0-measurements.md)). The real 1 GB VPS run is deferred to the Phase 1 exit.
