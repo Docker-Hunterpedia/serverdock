@@ -44,6 +44,6 @@ The same data raises a separate question for the reviewers: the single large bin
 
 ## What the Phase 0 spikes verified (tests, not measurements)
 
-- Caddy reload while an agent is connected through `/agent/connect`: the agent **stays connected on the same session** (`stream_close_delay` 5m). Without that setting the same test shows the agent being dropped and reconnecting.
+- Caddy reload while an agent is connected through `/agent/connect`: the drop is **delayed, not avoided**. With `stream_close_delay` 5m the agent keeps its session and open streams through the reload, but Caddy still closes the old upgraded connection 5 minutes later, and the agent then reconnects with backoff. Without the setting the agent is dropped immediately. Phase 1 consequence: every Caddy reload (every deploy) drops every remote agent after 5 minutes; serve `/agent/connect` from a listener Caddy does not rebuild (see docs/security.md, Phase 0 review items).
 - Hub shutdown closes hijacked WebSocket sessions (hub context tied to the server lifetime).
 - A server-side stream close cancels the Docker request within 2 s (fake Docker socket, end to end through hub, yamux, agent and `dockerapi`); a real busybox integration test (`-tags integration`) passed locally against Docker Desktop.

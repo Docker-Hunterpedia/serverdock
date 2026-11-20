@@ -14,8 +14,8 @@ Goal: decisions locked and a skeleton that proves the footprint.
 - [x] Accept ADRs 0001–0006 (AGPL-3.0, Go, outbound agent, embedded Caddy, SvelteKit, MCP-first AI) — accepted by the maintainer 2026-11-20
 - [x] ADR 0007 (no telemetry by default) — accepted by the maintainer 2026-11-20
 - [x] Research, feature list, wireframes (13 screens), phase chart
-- [x] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — workflow written, not yet run on GitHub
-- [x] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job not yet run
+- [ ] Repo skeleton (`cmd/`, `internal/`, `web/`), Go module, lint, CI (test, vet, govulncheck, build for amd64/arm64) — workflow written, not yet run on GitHub
+- [ ] Bench harness (`bench/run.sh`, `measure.sh`, `report`) + CI bench job reporting idle RSS/CPU — implemented as scripts rather than a `serverdock bench` subcommand; CI job not yet run
 - [x] **Spike 1:** Go binary with embedded Caddy + SQLite + empty SPA → measure idle RSS — implemented and tested; only a local informational measurement so far ([05-phase0-measurements.md](research/05-phase0-measurements.md))
 - [x] **Spike 2:** agent dials out over WebSocket with yamux, survives reconnects, streams container logs on demand — implemented and tested (plain `ws://`; TLS/mTLS come in Phase 1/2)
 - [ ] `docs/security.md` threat model reviewed by the `security` agent

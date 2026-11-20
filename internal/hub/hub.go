@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,12 @@ import (
 )
 
 var agentIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
+
+// LocalID is the id of the in-process local agent. Remote agents may not use
+// it (or any case variant), so they cannot replace or impersonate the local agent.
+const LocalID = "local"
+
+func reservedID(id string) bool { return strings.EqualFold(id, LocalID) }
 
 // Hub tracks connected agents.
 type Hub struct {
@@ -89,7 +96,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
-	if !agentIDRe.MatchString(id) {
+	if !agentIDRe.MatchString(id) || reservedID(id) {
 		http.Error(w, "bad agent id", http.StatusBadRequest)
 		return
 	}
@@ -209,10 +216,12 @@ func (h *Hub) DebugRoutes(mux *http.ServeMux) {
 		}
 		tail := 100
 		if v := r.URL.Query().Get("tail"); v != "" {
-			if _, err := fmt.Sscanf(v, "%d", &tail); err != nil {
+			n, err := strconv.Atoi(v)
+			if err != nil {
 				http.Error(w, "bad tail", http.StatusBadRequest)
 				return
 			}
+			tail = n
 		}
 		rc, err := s.Logs(r.Context(), r.PathValue("container"), tail)
 		if err != nil {

@@ -14,11 +14,12 @@ import (
 // Caddy keeps global state: this is the only test in the package that uses it.
 //
 // Observed behaviour asserted here: a Caddy reload (forced, with a new config)
-// while an agent is connected through /agent/connect does NOT drop the agent,
-// thanks to stream_close_delay on that route. The same hub session survives
-// (same Seq), a log stream opened before the reload keeps flowing, and a new
-// log stream works after it. If this ever regresses to a drop, the agent must
-// at least reconnect within the backoff window; the test reports which happened.
+// while an agent is connected through /agent/connect does not drop the agent
+// IMMEDIATELY, thanks to stream_close_delay on that route: the same hub session
+// survives the reload (same Seq), a log stream opened before it keeps flowing,
+// and a new log stream works after it. Caddy still closes the old upgraded
+// connection when the delay (5m) expires, after which the agent reconnects with
+// backoff; this test only covers the first 2 seconds.
 func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
 	e := newEnv(t)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -69,7 +70,7 @@ func TestAgentStaysConnectedAcrossCaddyReload(t *testing.T) {
 	case !ok:
 		t.Fatal("agent session gone after reload and not reconnected within 2s")
 	case s2.Seq == s1.Seq:
-		t.Logf("RESULT: agent stayed connected across the Caddy reload (%v after reload), same session", time.Since(reloadDone).Round(time.Millisecond))
+		t.Logf("RESULT: agent kept its session through the Caddy reload (%v after reload); Caddy will still close it when stream_close_delay expires", time.Since(reloadDone).Round(time.Millisecond))
 	default:
 		t.Fatalf("RESULT: agent was dropped by the reload and reconnected (seq %d -> %d); stream_close_delay did not hold the connection", s1.Seq, s2.Seq)
 	}

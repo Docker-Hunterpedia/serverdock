@@ -176,7 +176,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	pipeHub, pipeAgent := net.Pipe()
-	go func() { _ = h.Attach(cpCtx, "local", pipeHub, 0) }()
+	go func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) }()
 	agentDone := make(chan error, 1)
 	go func() {
 		go func() {

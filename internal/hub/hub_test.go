@@ -120,6 +120,13 @@ func TestAuthAndValidation(t *testing.T) {
 			t.Errorf("id %q: %d", id, c)
 		}
 	}
+	// The local agent's id is reserved: a token holder must not be able to
+	// replace or impersonate the in-process local agent.
+	for _, id := range []string{LocalID, "LOCAL", "Local"} {
+		if c := do("Bearer "+token, "?id="+id); c != 400 {
+			t.Errorf("reserved id %q: %d, want 400", id, c)
+		}
+	}
 	// A valid request without an upgrade header is rejected by the WebSocket layer, not 101.
 	if c := do("Bearer "+token, "?id=a"); c == 101 {
 		t.Errorf("unexpected upgrade")
