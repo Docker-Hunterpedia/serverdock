@@ -68,7 +68,7 @@ var opSpecs = []OpSpec{
 	// context (the hub's reconnect loop owns it).
 	{Name: OpImagePull, MaxProgressLines: MaxPullProgressLines, Timeout: 30 * time.Minute},
 	{Name: OpImageInspect, MaxResult: 32 << 10, Timeout: shortOpTimeout},
-	{Name: OpContainerCreate, Timeout: 2 * shortOpTimeout},
+	{Name: OpContainerCreate, Timeout: 3 * shortOpTimeout}, // network inspect + image inspect + create + 409 inspect, each ≤ 30 s
 	{Name: OpContainerStart, Timeout: shortOpTimeout},
 	{Name: OpContainerRestart, Timeout: stopOpTimeout},
 	{Name: OpContainerInspect, Timeout: shortOpTimeout},
