@@ -584,3 +584,37 @@ func FuzzCheckKeys(f *testing.F) {
 		}
 	})
 }
+
+// Passing real local-only handlers (Config.Ops) to a remote-mode agent serves
+// none of them, and the built-in hello cannot be replaced through Ops.
+func TestOpsGivenToARemoteAgentAreNotServed(t *testing.T) {
+	var ran atomic.Int32
+	h := func(context.Context, json.RawMessage, *Out) (any, error) { ran.Add(1); return struct{}{}, nil }
+	ops := map[string]Handler{OpHello: h}
+	for _, sp := range Specs() {
+		if !sp.RemoteOK && sp.Name != OpLogs {
+			ops[sp.Name] = h
+		}
+	}
+	if len(ops) < 10 {
+		t.Fatalf("only %d local-only ops in the table", len(ops))
+	}
+	remote := Config{Logs: blockingLogs{calls: &atomic.Int32{}}, Ops: ops}
+	rt := remote.handlerTable()
+	if len(rt) != 1 {
+		t.Fatalf("remote table serves %d ops, want only hello", len(rt))
+	}
+	local := Config{Logs: blockingLogs{calls: &atomic.Int32{}}, Ops: ops, Mode: ModeLocal}
+	lt := local.handlerTable()
+	for name := range ops {
+		if _, ok := lt[name]; !ok && name != OpHello {
+			t.Errorf("local table lacks %s", name)
+		}
+	}
+	// hello in the local table is the built-in one, not the handler passed in.
+	ys := pipeAgent(t, local)
+	got := roundTrip(t, ys, []byte(`{"v":1,"op":"hello","args":{"hub_max_v":1}}`+"\n"))
+	if !strings.Contains(got, `"v":1`) || ran.Load() != 0 {
+		t.Errorf("hello was replaced: %q ran=%d", got, ran.Load())
+	}
+}

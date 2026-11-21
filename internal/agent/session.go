@@ -83,6 +83,11 @@ type Config struct {
 	// Version is reported by `hello` (cleaned, at most MaxAgentVersion bytes).
 	Version string
 	Mode    Mode
+	// Ops are the handlers of the local-only v1 ops (internal/agentops). Only
+	// ops in the op table are served, and a remote-mode agent serves none of
+	// them (its table holds RemoteOK ops only), so passing Ops to a remote agent
+	// is harmless. The built-in `hello` cannot be replaced.
+	Ops map[string]Handler
 
 	// specs and impls replace the op table and the v1 handlers; tests only.
 	specs []OpSpec
@@ -99,7 +104,11 @@ func (c Config) handlerTable() map[string]opEntry {
 	}
 	impls := c.impls
 	if impls == nil {
-		impls = map[string]Handler{OpHello: c.hello}
+		impls = map[string]Handler{}
+		for name, h := range c.Ops {
+			impls[name] = h
+		}
+		impls[OpHello] = c.hello
 	}
 	table := map[string]opEntry{}
 	for _, sp := range specs {

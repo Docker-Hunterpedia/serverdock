@@ -226,7 +226,7 @@ jobs:
           docker push "$SD_TEST_APP_IMAGE"
       - name: go test -race -tags integration
         # Only packages that have integration-tagged tests; add new ones here.
-        run: go test -race -tags integration -count=1 ./internal/agent/dockerapi/...
+        run: go test -race -tags integration -count=1 ./internal/agent/dockerapi/... ./internal/agentops/...
       - name: registry log on failure
         if: failure()
         run: docker logs sd-registry || true

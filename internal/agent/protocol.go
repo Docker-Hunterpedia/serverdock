@@ -19,6 +19,21 @@ const (
 	OpLogs = "logs"
 	// OpHello is the version handshake.
 	OpHello = "hello"
+	// The local-only v1 ops (plan 0004, ADR 0012). Their handlers live in
+	// internal/agentops; the table below is the only place their limits are set.
+	OpImagePull        = "image_pull"
+	OpImageInspect     = "image_inspect"
+	OpContainerCreate  = "container_create"
+	OpContainerStart   = "container_start"
+	OpContainerRestart = "container_restart"
+	OpContainerInspect = "container_inspect"
+	OpContainerStop    = "container_stop"
+	OpContainerRemove  = "container_remove"
+	OpContainerList    = "container_list"
+	OpContainerPorts   = "container_ports"
+	OpNetworkEnsure    = "network_ensure"
+	OpNetworkInspect   = "network_inspect"
+	OpHealthCheck      = "health_check"
 	// MinTail and MaxTail bound the log tail.
 	MinTail = 1
 	MaxTail = 5000
@@ -47,7 +62,37 @@ type OpSpec struct {
 var opSpecs = []OpSpec{
 	{Name: OpLogs, RemoteOK: true},
 	{Name: OpHello, RemoteOK: true, MaxResult: MaxHelloResult, Timeout: HelloTimeout},
+
+	// Local-only (RemoteOK false): they change Docker state or read it widely.
+	// Every one except `events` has a Timeout; `events` is bounded by its
+	// context (the hub's reconnect loop owns it).
+	{Name: OpImagePull, MaxProgressLines: MaxPullProgressLines, Timeout: 30 * time.Minute},
+	{Name: OpImageInspect, MaxResult: 32 << 10, Timeout: shortOpTimeout},
+	{Name: OpContainerCreate, Timeout: 2 * shortOpTimeout},
+	{Name: OpContainerStart, Timeout: shortOpTimeout},
+	{Name: OpContainerRestart, Timeout: stopOpTimeout},
+	{Name: OpContainerInspect, Timeout: shortOpTimeout},
+	{Name: OpContainerStop, Timeout: stopOpTimeout},
+	{Name: OpContainerRemove, Timeout: shortOpTimeout},
+	{Name: OpContainerList, MaxResult: 512 << 10, Timeout: shortOpTimeout},
+	{Name: OpContainerPorts, MaxResult: 512 << 10, Timeout: shortOpTimeout},
+	{Name: OpNetworkEnsure, Timeout: shortOpTimeout},
+	{Name: OpNetworkInspect, MaxResult: 64 << 10, Timeout: shortOpTimeout},
+	{Name: OpEvents, Timeout: 0},
+	{Name: OpHealthCheck, Timeout: shortOpTimeout},
 }
+
+const (
+	// MaxPullProgressLines bounds the progress lines of one image_pull (the
+	// agent sends at most two a second, so this is far above a real pull).
+	MaxPullProgressLines = 20000
+	// shortOpTimeout covers an op that makes a few short Docker calls (each is
+	// bounded at 30 s by the Docker client).
+	shortOpTimeout = 45 * time.Second
+	// stopOpTimeout covers a stop or restart: the longest grace (300 s), the
+	// Docker client's margin (15 s) and the inspect before it.
+	stopOpTimeout = 390 * time.Second
+)
 
 // Specs returns a copy of the op table.
 func Specs() []OpSpec { return append([]OpSpec(nil), opSpecs...) }
