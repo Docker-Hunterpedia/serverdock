@@ -1,6 +1,6 @@
 # Plan 0004 — Phase 1 M3a: deploy from image, safely
 
-**Status:** approved — 2026-11-21 (reviewer, systems, security, footprint); implementation gated on QM3a-1 · **Author:** planner (AI) · **Date:** 2026-11-21 (revisions 2 and 3: 2026-11-21)
+**Status:** approved — 2026-11-21 (reviewer, systems, security, footprint); QM3a-1 confirmed by the maintainer 2026-11-21; implementation open · **Author:** planner (AI) · **Date:** 2026-11-21 (revisions 2 and 3: 2026-11-21)
 
 **Roadmap:** Phase 1, milestone M3a of [plan 0002](0002-phase-1-mvp-solo.md). It serves these roadmap items (plan 0002 Part C numbering): **4** "deploy from image" (the image part; Dockerfile is M5, Compose is M6), **6** "blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys" (all of it), **14** "stop-first strategy; connection draining on blue-green" (CPU/RAM limits are M3b), **15** "keep logs of the last N deploys; live pull progress; restart and redeploy-without-rebuild" (context variables are M3b, build progress is M5), and **23** "accessible, phone-usable UI" for the new screens. This plan is AI-written; the maintainer's answers are recorded in [Maintainer answers](#maintainer-answers-2026-11-21).
 
@@ -82,7 +82,7 @@ The four re-reviews (reviewer, systems, security, footprint) confirmed the revis
 
 ## Entry gate
 
-1. **Phase 0 carry-over (plan 0002 Part D item 9, roadmap Phase 0): the maintainer confirms vision, features and architecture before M3a starts** (QM3a-1, still open).
+1. **Phase 0 carry-over (plan 0002 Part D item 9, roadmap Phase 0): the maintainer confirms vision, features and architecture before M3a starts** (QM3a-1: confirmed by the maintainer, 2026-11-21).
 2. This plan approved by `reviewer`, with `systems` (required for M3a) and `security` sign-off on the design.
 3. Plan 0002 Q3 (S4 headroom) is closed by ADR 0011 (S4 ceiling 100 MB, slim agent stays in Phase 2).
 
@@ -704,7 +704,7 @@ Event-driven, no timer: the events reader, `applyRoutes` (hash-deduplicated), th
 
 ## Maintainer answers (2026-11-21)
 
-- **QM3a-1 — still open, entry gate:** confirm `docs/vision.md`, `docs/features.md` and `docs/architecture.md` (plan 0002 Part D item 9) before M3a starts.
+- **QM3a-1 — confirmed 2026-11-21 (maintainer: "Confirmed, start M3a"):** confirm `docs/vision.md`, `docs/features.md` and `docs/architecture.md` (plan 0002 Part D item 9) before M3a starts.
 - **QM3a-2 — decided (a):** an optional per-service public port, plain HTTP through Caddy, 1024–65535, never 80, 443 or ServerDock's own ports. The host firewall applies on top. Setting or changing the public port needs a confirmation dialog ("Applied now: exposes the app on the internet at …").
 - **QM3a-3 — decided (a):** warn about image-declared volumes; anonymous volumes are removed together with the old container; orphan removal removes only anonymous volumes.
 - **QM3a-4 — decided, narrowed (a):** `write` tokens may deploy (`services.deploy` may change only the tag or digest of the current repository), redeploy, roll back, restart and cancel. `services.create`, changing the repository or registry, and setting or changing the public port need a session or an `admin` token. Delete stays session-only. `deploys.log` needs `write` scope for tokens.
