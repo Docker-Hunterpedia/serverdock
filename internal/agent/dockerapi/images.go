@@ -58,6 +58,9 @@ func validPullRef(ref string) bool {
 	return ok && tag != "" && !strings.Contains(tag, ":")
 }
 
+// ValidPullRef reports whether ref is acceptable to ImagePull (see validPullRef).
+func ValidPullRef(ref string) bool { return validPullRef(ref) }
+
 // PullProgress is the running total of one pull, built from Docker's per-layer
 // lines. Layer ids are tracked up to maxLayers.
 type PullProgress struct {
@@ -82,9 +85,11 @@ type layerState struct {
 // matches ErrDiskFull. The call is bounded by ctx only (pulls are long); the
 // caller adds its own stall watch by cancelling ctx. ref must carry a tag or a
 // sha256 digest (see validPullRef). A stream that ends without a terminal
-// status line ("Image is up to date", "Downloaded newer image", or the "Digest:"
-// and "Status:" pair) is an error, not a success; the caller still runs
-// ImageInspect after a pull to learn the image id.
+// status line is an error, not a success. The terminal lines accepted are exactly
+// the two that begin "Status: Downloaded newer image for " or "Status: Image is
+// up to date for " (a "Digest:" line alone is not enough). The caller must still
+// run ImageInspect after a pull, to learn the image id and to prove the image is
+// there before reporting success.
 func (c *Client) ImagePull(ctx context.Context, ref string, onProgress func(PullProgress)) error {
 	if !validPullRef(ref) {
 		return errors.New("dockerapi: image reference needs a tag or a sha256 digest")

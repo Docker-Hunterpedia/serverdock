@@ -151,17 +151,36 @@ func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 	return statusErr("container remove", st, body, http.StatusNoContent)
 }
 
-// ourLabels keeps only the serverdock.* labels (at most 16, values cleaned and
-// capped at 256 bytes): the rest came from an image or a user and the deploy
-// path never needs them.
-func ourLabels(in map[string]string) map[string]string {
-	out := map[string]string{}
+// maxOurLabels and the two bounds below limit what ourLabels keeps.
+const (
+	maxOurLabels     = 16
+	maxOurLabelKey   = 64
+	maxOurLabelValue = 256
+)
+
+// ourLabels keeps only the serverdock.* labels: at most maxOurLabels, a key of at
+// most maxOurLabelKey bytes, and a value only if it is already clean text of at
+// most maxOurLabelValue bytes (CleanText(v) == v). The rest came from an image or
+// a user and the deploy path never needs them.
+//
+// A serverdock.* label that is not kept (too many, an over-long key, a value that
+// is not clean) is dropped and reported through dropped, never rewritten: a
+// "cleaned" value would be a different value, so a container carrying it must not
+// look like ours. The ownership check (exactly six labels, the expected values)
+// then refuses it, and so does a caller that sees dropped.
+func ourLabels(in map[string]string) (out map[string]string, dropped bool) {
+	out = map[string]string{}
 	for k, v := range in {
-		if strings.HasPrefix(k, "serverdock.") && len(out) < 16 && len(k) <= 64 {
-			out[k] = agent.CleanText(v, 256)
+		if !strings.HasPrefix(k, "serverdock.") {
+			continue
 		}
+		if len(out) >= maxOurLabels || len(k) > maxOurLabelKey || agent.CleanText(v, maxOurLabelValue) != v {
+			dropped = true
+			continue
+		}
+		out[k] = v
 	}
-	return out
+	return out, dropped
 }
 
 // ContainerState is the part of State the deploy path reads.
@@ -182,14 +201,17 @@ type ContainerNet struct {
 
 // ContainerInfo is an inspected container.
 type ContainerInfo struct {
-	ID           string
-	Name         string // without the leading slash
-	ImageID      string // Image: the image id the container was created from
-	Labels       map[string]string
-	State        ContainerState
-	RestartCount int
-	NetworkMode  string
-	Networks     map[string]ContainerNet
+	ID      string
+	Name    string // without the leading slash
+	ImageID string // Image: the image id the container was created from
+	Labels  map[string]string
+	State   ContainerState
+	// LabelsDropped is true when a serverdock.* label was not kept (see ourLabels):
+	// an ownership check must refuse such a container.
+	LabelsDropped bool
+	RestartCount  int
+	NetworkMode   string
+	Networks      map[string]ContainerNet
 }
 
 // ContainerInspect inspects a container by full id or by name (a 409 on create
@@ -233,8 +255,9 @@ func (c *Client) ContainerInspect(ctx context.Context, idOrName string) (Contain
 	if !ValidFullID(r.ID) {
 		return ContainerInfo{}, errors.New("dockerapi: container inspect: bad id")
 	}
+	labels, dropped := ourLabels(r.Config.Labels)
 	info := ContainerInfo{
-		ID: r.ID, Name: strings.TrimPrefix(r.Name, "/"), ImageID: r.Image, Labels: ourLabels(r.Config.Labels),
+		ID: r.ID, Name: strings.TrimPrefix(r.Name, "/"), ImageID: r.Image, Labels: labels, LabelsDropped: dropped,
 		RestartCount: r.RestartCount, NetworkMode: r.HostConfig.NetworkMode,
 		State: ContainerState{Status: agent.CleanText(r.State.Status, 32), Running: r.State.Running, Restarting: r.State.Restarting,
 			ExitCode: r.State.ExitCode, OOMKilled: r.State.OOMKilled},
@@ -255,13 +278,15 @@ func (c *Client) ContainerInspect(ctx context.Context, idOrName string) (Contain
 
 // ContainerSummary is one entry of ContainerList.
 type ContainerSummary struct {
-	ID       string
-	Names    []string // without the leading slash
-	ImageID  string
-	State    string
-	Labels   map[string]string
-	Networks map[string]ContainerNet
-	Ports    []PublishedPort
+	ID      string
+	Names   []string // without the leading slash
+	ImageID string
+	State   string
+	Labels  map[string]string
+	// LabelsDropped is true when a serverdock.* label was not kept (see ourLabels).
+	LabelsDropped bool
+	Networks      map[string]ContainerNet
+	Ports         []PublishedPort
 }
 
 // PublishedPort is a port a container publishes on the host.
@@ -282,7 +307,7 @@ type ListOptions struct {
 // filters. It reads the configured IPAMConfig address as well as the current
 // one, so a stopped container still shows the address it holds. Entries whose
 // id is not a full 64-hex id are skipped, and only serverdock.* label keys are
-// returned.
+// returned (LabelsDropped says when one was not kept).
 func (c *Client) ContainerList(ctx context.Context, opt ListOptions) ([]ContainerSummary, error) {
 	q := url.Values{}
 	if opt.All {
@@ -331,7 +356,8 @@ func (c *Client) ContainerList(ctx context.Context, opt ListOptions) ([]Containe
 		if !ValidFullID(r.ID) {
 			continue
 		}
-		s := ContainerSummary{ID: r.ID, ImageID: r.ImageID, State: agent.CleanText(r.State, 32), Labels: ourLabels(r.Labels), Networks: map[string]ContainerNet{}}
+		labels, dropped := ourLabels(r.Labels)
+		s := ContainerSummary{ID: r.ID, ImageID: r.ImageID, State: agent.CleanText(r.State, 32), Labels: labels, LabelsDropped: dropped, Networks: map[string]ContainerNet{}}
 		for _, n := range r.Names {
 			s.Names = append(s.Names, strings.TrimPrefix(n, "/"))
 		}

@@ -1014,11 +1014,56 @@ func TestContainerLabelsAreOnlyOurs(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].ID != id64 {
 		t.Fatalf("%+v %v", list, err)
 	}
-	if v := list[0].Labels["serverdock.service"]; len(list[0].Labels) != 1 || !strings.HasPrefix(v, "7") || strings.ContainsRune(v, 0x1b) {
-		t.Fatalf("labels %q", list[0].Labels)
+	// A value that CleanText would change is dropped, never rewritten.
+	if _, ok := list[0].Labels["serverdock.service"]; ok || len(list[0].Labels) != 0 || !list[0].LabelsDropped {
+		t.Fatalf("labels %q dropped=%v", list[0].Labels, list[0].LabelsDropped)
 	}
 	info, err := c.ContainerInspect(ctx, id64)
 	if err != nil || len(info.Labels) != 1 || info.Labels["serverdock.deploy"] != "1" {
 		t.Fatalf("%+v %v", info, err)
+	}
+}
+
+func TestOurLabelsDropAndReport(t *testing.T) {
+	long := map[string]string{}
+	for i := 0; i < 17; i++ {
+		long["serverdock.k"+itoa(i)] = "v"
+	}
+	cases := []struct {
+		name    string
+		in      map[string]string
+		keep    int
+		dropped bool
+	}{
+		{"clean", map[string]string{"serverdock.a": "1", "other": "x"}, 1, false},
+		{"dirty value dropped", map[string]string{"serverdock.a": "1\u001b[2J", "serverdock.b": "2"}, 1, true},
+		{"bidi value dropped", map[string]string{"serverdock.a": "a\u202eb"}, 0, true},
+		{"over-long value dropped", map[string]string{"serverdock.a": strings.Repeat("x", 257)}, 0, true},
+		{"max-length value kept", map[string]string{"serverdock.a": strings.Repeat("x", 256)}, 1, false},
+		{"over-long key dropped", map[string]string{"serverdock." + strings.Repeat("k", 60): "1"}, 0, true},
+		{"seventeen labels", long, 16, true},
+		{"non-serverdock never counts", map[string]string{"a": "\u001b", "b": strings.Repeat("x", 999)}, 0, false},
+	}
+	for _, tc := range cases {
+		got, dropped := ourLabels(tc.in)
+		if len(got) != tc.keep || dropped != tc.dropped {
+			t.Errorf("%s: kept %d dropped=%v, want %d %v", tc.name, len(got), dropped, tc.keep, tc.dropped)
+		}
+	}
+	// The flag reaches inspect and list results.
+	c, _ := startEngine(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			io.WriteString(w, `[{"Id":"`+id64+`","Names":["/y"],"Labels":{"serverdock.service":"a\u001bb"}}]`)
+			return
+		}
+		io.WriteString(w, `{"Id":"`+id64+`","Name":"/y","Config":{"Labels":{"serverdock.deploy":"a\u202eb"}}}`)
+	})
+	info, err := c.ContainerInspect(context.Background(), id64)
+	if err != nil || !info.LabelsDropped || len(info.Labels) != 0 {
+		t.Fatalf("%+v %v", info, err)
+	}
+	list, err := c.ContainerList(context.Background(), ListOptions{All: true})
+	if err != nil || len(list) != 1 || !list[0].LabelsDropped {
+		t.Fatalf("%+v %v", list, err)
 	}
 }
