@@ -48,7 +48,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    | Hub cert renewal back-off | `internal/pki` | ≥ 1 min | only after a failed renewal; checked lazily on handshake, no goroutine | M1 |
    | Job scheduler "next due" timer | `internal/jobs` | next due time | one timer for all scheduled work | M3a |
    | Docker events reconnect backoff | `internal/agent/dockerapi` | 1 s → 30 s | only while the events stream is down | M3a |
-   | Caddy/certmagic maintenance and events | embedded Caddy | measured in plan 0006 | whenever the proxy runs; certificate expiry alerts use these, not our own timer | M4 |
+   | Caddy/certmagic maintenance (`(*certmagic.Cache).maintainAssets`) and events | embedded Caddy | 10 min renew check, 1 h OCSP check (certmagic defaults) | whenever the proxy runs, in **server and agent mode** (`caddyhttp` provisions the `tls` app); certificate expiry alerts use these, not our own timer | running since M1 (S2 and S4); confirmed by a goroutine dump in M2 step 3 |
    | BuildKit idle stop | `internal/build` | 5 min | only while the BuildKit container runs | M5 |
    | Webhook replay-cache expiry | `internal/api` | none (lazy on insert) | no timer | M5 |
    | Daily housekeeping job (cleanup, retention pruning, update check, image digest check, scheduled state backup) | on the scheduler timer | daily | one recurring job | M6 (job), tasks added in M7b/M8 |
@@ -121,6 +121,8 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
 
 ## Footprint allocation (cumulative S2 / S4 VmRSS targets, CI amd64)
 
+> Since [ADR 0011](../decisions/0011-footprint-ceiling.md) (2026-11-21) these allocations are **tripwire planning numbers**, not gates: CI fails only above 200 MB (S2) / 100 MB (S4). Crossing an allocation needs a written reason in the PR.
+
 Baseline from [research/05](../research/05-phase0-measurements.md): **S2 47.6 MB, S4 44.1 MB**, binary 18.8 MB gzip. Slack per rule 2: S2 +2 MB, S4 +0.5 MB.
 
 | After | S2 target | S4 target | Main new idle cost |
@@ -178,6 +180,7 @@ Full step plan in **Part B**.
 
 ## M2 — Auth, first run, SPA shell
 
+- **Status (2026-11-21):** built on `phase-1-m2` (PR #3); the detailed plan is [plan 0003](0003-m2-auth-first-run-spa.md), steps 1–14 done, with its [status table](0003-m2-auth-first-run-spa.md#status-m2-close-out-2026-11-21). Open: the maintainer's manual screen-reader passes (steps 12 and 13), the CI bench numbers and the PR merge.
 - **Entry gate:** `security` has reviewed the threat model (carried over by M1 step 2).
 - **Goal:**
   - the panel is reachable over HTTPS;
@@ -212,7 +215,7 @@ Full step plan in **Part B**.
     - Client IP from `X-Forwarded-For` only when the request comes from loopback. Plan 0003 must test that our Caddy **replaces** a client-supplied XFF instead of appending to it.
   - **`serverdock admin reset`.**
     - Console-only. Takes the data-dir flock, so it refuses while the server runs.
-    - Clears the password and TOTP, revokes all sessions and API tokens, writes an audit row through the system invoker, and writes a fresh setup token file.
+    - Clears the password and TOTP, revokes all sessions and API tokens, and writes an audit row through the system invoker. **It does not write a setup token itself: the next server start writes it** (plan 0003, M2 step 7: no admin exists, so setup reopens only with that new token). It runs only as the uid that owns `DATA` (root against another owner is refused with a `sudo -u` hint), runs pending migrations when it opens the store, and creates a missing master key.
   - **Sessions.**
     - Opaque 256-bit `__Host-` cookie (`HttpOnly; Secure; SameSite=Strict`), stored hashed, with idle and absolute expiry.
     - "Fresh 2FA" is valid for 5 minutes.
@@ -327,8 +330,8 @@ Full step plan in **Part B**.
 ## M4 — Domains and automatic HTTPS
 
 - **Goal:** domains for services and the panel, automatic HTTPS, actionable diagnostics. A certificate or DNS problem never takes a running app down.
-- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6.
-- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/store`, `web/`.
+- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6; **passkeys for the panel** (added by the maintainer 2026-11-20).
+- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/auth` (passkeys), `internal/store`, `web/`.
 - **Key decisions:**
   - **Per-route validation, not all-or-nothing.** The generator validates each route/host. Failing routes are **left out** and get status `error` with a reason; the rest are loaded.
   - **On boot, the config is generated from the DB minus failing routes, never loaded from a stale copy on disk.**
@@ -336,7 +339,16 @@ Full step plan in **Part B**.
   - Plan 0006 starts with a spike on observing certificate state through Caddy's own events. **Certificate-expiry alerts (M8) use certmagic's maintenance and events, not a timer of ours.**
   - Diagnostics run on demand (`unknown` when undecidable).
   - IPv6: dual-stack.
-- **Footprint:** S2 → ≤ 62 MB; certmagic timers measured and listed.
+  - **Panel domain** (moved here from M2 by plan 0003): set the panel domain, issue its certificate, redirect the IP address to it once the certificate is valid, add HSTS (G15), and prompt the admin to re-enrol TOTP (G5).
+  - **Passkeys (WebAuthn), maintainer request 2026-11-20.** Passkeys need a domain (the relying-party ID can't be an IP address) and a trusted certificate (browsers turn WebAuthn off on pages with certificate errors), so they arrive here, after the panel domain works.
+    - A passkey can replace the TOTP step (password + passkey), or sign in on its own (passkey only, user verification required). Several passkeys per account, each with a name, last-used time and a revoke button in Settings › Security.
+    - The relying-party ID is the panel domain. Passkey sign-in is offered only on that origin; on the IP address the panel keeps password + TOTP.
+    - TOTP and recovery codes stay as the always-available fallback (IP access, lost device). Adding or removing a passkey needs fresh 2FA, is audited, and revokes nothing else. `admin reset` clears all passkeys.
+    - Changing the panel domain invalidates passkeys registered for the old one; the UI says so before the change.
+    - Stored: credential ID, public key, sign counter, transports, AAGUID, name, created and last-used times. No attestation requirement (`none`), so any authenticator works.
+    - Library: one maintained WebAuthn library (e.g. `go-webauthn/webauthn`), justified with a footprint measurement. Control plane only: it must not link into agent mode, and S4 must stay unchanged.
+    - New ADR (passkeys) and a `security` threat-model update: challenge single-use and expiry, origin and RP-ID checks, counter regression handling, user-verification policy, and the same back-off as login.
+- **Footprint:** S2 → ≤ 62 MB; certmagic timers measured and listed; passkey library delta measured (S2 only, S4 unchanged).
 - **Security:** IDNA validation; only the panel domain routes to the control plane; changing it needs fresh 2FA.
 - **Tests:**
   - goldens;
@@ -344,7 +356,8 @@ Full step plan in **Part B**.
   - boot with a failing route;
   - Pebble: issuance, failure while HTTP stays up, reload safety;
   - IPv6;
-  - Playwright.
+  - passkeys: registration and sign-in with a virtual authenticator (Playwright/CDP), wrong origin and wrong RP ID refused, replayed challenge refused, counter regression handled, passkey not offered on the IP address, TOTP fallback still works, `admin reset` clears passkeys;
+  - Playwright, with accessibility checks for the passkey screens.
 - **Reviewers:** `security`, `systems`, `footprint`, `accessibility`.
 - **Exit evidence:** Pebble tests green; a manual real-domain check; bench green.
 
@@ -1130,6 +1143,7 @@ Panics are recovered and recorded as an `error` outcome.
 | 5 | GitHub push-to-deploy + generic webhook, commit status | M5 |
 | 6 | Blue-green, health gate, automatic rollback, one-click rollback from snapshots; auto-cancel superseded | M3a |
 | 7 | Domains with automatic HTTPS and actionable diagnostics; TLS never takes a running app down | M4 |
+| 7a | Passkeys for the panel (WebAuthn), with TOTP and recovery codes as fallback | M4 |
 | 8 | Env vars & secrets (encrypted, audited reveal) | M2 (secretbox), M3b |
 | 9 | Postgres / MySQL / Redis + scheduled S3 backups + restore | M6 |
 | 10 | Metrics, live logs, log search, basic alerts; email/webhook/Telegram | M8 |
@@ -1203,7 +1217,9 @@ Panics are recovered and recorded as an `error` outcome.
 - **Q7:** Docker Engine 25+ (API 1.44), as recommended.
 - **Branch protection:** yes. `bench-gate` becomes a required check pinned to GitHub Actions, with code-owner review on `.github/`. It is set up once step 1 has added the check.
 - **M1 scope:** accepted, including goleak as a test-only dependency, removing `--debug-allow-remote`, the debug unix socket and CODEOWNERS. Start M1.
-- Q2–Q6 and Q8 are still open and will be asked before the milestone that needs each one.
+- **Q2 (2026-11-20):** HTTPS on the server IP with a self-signed panel certificate whose fingerprint is compared against the console. The user can add a panel domain afterwards; once it has a real certificate, the IP address redirects to it.
+- **Q8 (2026-11-20):** no. API tokens can't run destructive, sensitive or SessionOnly actions, and can never manage tokens, auth settings or users.
+- Q3–Q6 are still open and will be asked before the milestone that needs each one.
 
 ## Must be settled before M1 starts (settled 2026-11-20)
 

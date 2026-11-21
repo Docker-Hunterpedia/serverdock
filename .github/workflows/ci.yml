@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review is not in the default set; it starts the bench when a draft is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *" # nightly full bench on main, amd64 + arm64
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,8 +36,92 @@ jobs:
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@"${GOVULNCHECK_VERSION}" ./...
 
+  # The single-page app (Node is needed here and in `make web` only). Its output,
+  # web/build, is uploaded once; the build and bench jobs embed it with -tags spa.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: svelte-check
+        run: npm run check
+      - name: build, gzip and check the 250 KB JavaScript budget
+        run: npm run build
+      - name: generated API types match docs/api/openapi.json
+        run: |
+          npm run types
+          git diff --exit-code -- src/lib/api-types.ts || { echo "run 'make web-types' and commit"; exit 1; }
+      - name: npm audit (runtime dependencies)
+        run: npm audit --omit=dev
+      - name: npm audit (all dependencies, high and above)
+        # Dev dependencies (vite, the plugins) write the shipped bundle, so they count.
+        run: npm audit --audit-level=high
+      - name: report sizes
+        run: |
+          js=$(find build -name '*.js' -exec gzip -9 -c {} + | wc -c)
+          echo "web build: JavaScript gzip-9 total $js bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-build
+          path: web/build
+          if-no-files-found: error
+          retention-days: 7
+
+  # Playwright + axe against the real binary (-tags spa) on high ports with a temp
+  # data directory: the A5 projects (desktop, phone, 320 px, 200% zoom, dark,
+  # reduced motion, forced colours, WebKit). Zero axe violations, no CSP violations.
+  e2e:
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
+      - name: build the binary with the app embedded
+        run: |
+          CGO_ENABLED=0 go build -tags spa -trimpath -o bin/serverdock ./cmd/serverdock
+          bin/serverdock version | tee /dev/stderr | grep -q ' ui=spa$'
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - name: install the browsers
+        run: npx playwright install --with-deps chromium webkit
+        working-directory: web
+      - name: playwright
+        run: npx playwright test
+        working-directory: web
+      - name: flaky tests (fails above 3)
+        if: always()
+        run: node e2e/flaky-report.mjs
+        working-directory: web
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: playwright-results
+          path: web/e2e/.results
+          if-no-files-found: ignore
+          retention-days: 7
+
   build:
-    needs: lint-test
+    needs: [lint-test, web]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -42,12 +131,21 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
       - name: build
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" -o serverdock-linux-${{ matrix.goarch }} ./cmd/serverdock
+        run: go build -tags spa -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::8}" -o serverdock-linux-${{ matrix.goarch }} ./cmd/serverdock
+      - name: assert the app is embedded (ui=spa)
+        run: |
+          f=serverdock-linux-${{ matrix.goarch }}
+          go version -m "$f" | grep -q -- '-tags=spa' || { echo "built without -tags spa"; exit 1; }
+          if [ "${{ matrix.goarch }}" = amd64 ]; then ./"$f" version | tee /dev/stderr | grep -q ' ui=spa$'; fi
       - name: report sizes
         run: |
           f=serverdock-linux-${{ matrix.goarch }}
@@ -83,17 +181,28 @@ jobs:
           AFTER: ${{ github.event.after }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           SHA: ${{ github.sha }}
-        run: .github/scripts/bench-needed.sh
+        run: |
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            echo "bench=true" >> "$GITHUB_OUTPUT"
+            echo "reason=scheduled or manual full bench" >> "$GITHUB_OUTPUT"
+          else
+            .github/scripts/bench-needed.sh
+          fi
 
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
-  # reports only. Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
+  # reports only and runs nightly (schedule) or on manual dispatch, not per push.
+  # Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
+  # Draft PRs skip the bench: it runs when the PR is marked ready and on every
+  # push after that, on every push to main, and nightly.
   bench:
-    needs: [lint-test, changes]
-    if: needs.changes.outputs.bench == 'true'
+    needs: [lint-test, changes, web]
+    if: >-
+      needs.changes.outputs.bench == 'true' &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        runner: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest","ubuntu-24.04-arm"]') || fromJSON('["ubuntu-latest"]') }}
         scenario: ["1", "2", "3", "4"]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -102,6 +211,10 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
       - name: bench scenario ${{ matrix.scenario }}
         # The arm64 runner only reports; the ubuntu-latest job gates.
         continue-on-error: ${{ matrix.runner != 'ubuntu-latest' }}
@@ -117,10 +230,16 @@ jobs:
           name: bench-${{ matrix.runner }}-s${{ matrix.scenario }}
           path: bench/results/
 
-  # The one required check for the bench. It always runs and fails closed: a
-  # skipped, cancelled or failed dependency can never read as a pass. (The
+  # The one required check for the bench. It always runs (on a draft PR it fails on
+  # purpose, below) and fails closed: a skipped, cancelled or failed dependency
+  # can never read as a pass. (The
   # expanded "bench (...)" checks do not exist when the matrix is skipped, so
   # they cannot be required.)
+  # On a draft PR the bench is skipped and the gate FAILS on purpose ("the bench
+  # has not run on this code"). It must not be skipped: GitHub counts a skipped
+  # required check as passing, which would leave a green gate on the head SHA
+  # until the ready_for_review run replaces it. A draft cannot be merged, so the
+  # red gate costs nothing; marking the PR ready runs the full bench.
   bench-gate:
     needs: [changes, bench]
     if: always() # never !cancelled(): a skipped gate counts as passing
@@ -132,8 +251,15 @@ jobs:
       BENCH_NEEDED: ${{ needs.changes.outputs.bench }}
       BENCH_RESULT: ${{ needs.bench.result }}
       REASON: ${{ needs.changes.outputs.reason }}
+      EVENT: ${{ github.event_name }}
+      DRAFT: ${{ github.event.pull_request.draft }}
     steps:
       - run: |
+          if [ "$EVENT" = pull_request ] && [ "$DRAFT" = true ]; then
+            echo "draft PR: the bench has not run on this code (it runs when the PR is marked ready)"
+            echo "bench: not run (draft PR)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           [ "$CHANGES_RESULT" = success ] || { echo "changes job did not succeed"; exit 1; }
           if [ "$BENCH_NEEDED" = true ] && [ "$BENCH_RESULT" != success ]; then
             echo "bench required but result is $BENCH_RESULT"; exit 1

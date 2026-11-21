@@ -1,0 +1,350 @@
+/* Global styles and design tokens. Components use only the custom properties
+   below: no hard-coded colours anywhere else (plan 0003, A4). */
+:root {
+	color-scheme: light dark;
+
+	--bg: #ffffff;
+	--surface: #f4f5f7;
+	--text: #1a1d21;
+	--muted: #4a5260;
+	--border: #6b7280;
+	--accent: #0b57d0;
+	--accent-text: #ffffff;
+	--focus: #0b57d0;
+	--focus-width: 3px;
+	--danger: #b3261e;
+
+	--bar-height: 3.5rem;
+	--target: 2.75rem; /* 44 px at the default size */
+	--scroll-padding-top: calc(var(--bar-height) + 1rem);
+	--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	--mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #14171c;
+		--surface: #1c2027;
+		--text: #e8eaed;
+		--muted: #b4bac4;
+		--border: #8a919d;
+		--accent: #8ab4f8;
+		--accent-text: #0b1b3a;
+		--focus: #8ab4f8;
+		--danger: #f2b8b5;
+	}
+}
+
+@media (prefers-contrast: more) {
+	:root {
+		--text: #000000;
+		--muted: #1a1d21;
+		--border: #000000;
+		--focus-width: 4px;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--text: #ffffff;
+			--muted: #ffffff;
+			--border: #ffffff;
+		}
+	}
+}
+
+@media (forced-colors: active) {
+	:root {
+		--bg: Canvas;
+		--surface: Canvas;
+		--text: CanvasText;
+		--muted: CanvasText;
+		--border: CanvasText;
+		--accent: LinkText;
+		--accent-text: Canvas;
+		--focus: Highlight;
+		--danger: CanvasText;
+	}
+	button,
+	.button {
+		border: 2px solid ButtonText;
+		background: ButtonFace;
+		color: ButtonText;
+	}
+	:focus-visible {
+		outline-color: Highlight;
+	}
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	scroll-padding-top: var(--scroll-padding-top);
+	scroll-behavior: smooth;
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font: 1rem/1.5 var(--font);
+}
+
+.app-root {
+	display: contents;
+}
+
+a {
+	color: var(--accent);
+	text-underline-offset: 0.15em;
+}
+
+/* SvelteKit's visually hidden route announcer (see vite.config.ts). */
+.sd-announcer {
+	position: absolute;
+	left: 0;
+	top: 0;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	overflow: hidden;
+	white-space: nowrap;
+	width: 1px;
+	height: 1px;
+}
+
+h1 {
+	font-size: 1.5rem;
+	line-height: 1.25;
+	margin: 0 0 1rem;
+}
+
+h1:focus {
+	outline: none; /* focused programmatically on route change; never a tab stop */
+}
+
+h2 {
+	font-size: 1.125rem;
+	margin: 0 0 0.5rem;
+}
+
+:focus-visible {
+	outline: var(--focus-width) solid var(--focus);
+	outline-offset: 2px;
+}
+
+button {
+	font: inherit;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	min-height: var(--target);
+	min-width: var(--target);
+	padding: 0.5rem 1rem;
+	cursor: pointer;
+}
+
+/* Reduced motion: nothing moves; at most an opacity fade of 100 ms or less. */
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0s !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0s !important;
+		scroll-behavior: auto !important;
+	}
+}
+
+/* ---- forms and cards (sign-in, setup) ---- */
+.card {
+	max-width: 32rem;
+	margin: 2rem auto;
+	padding: 1.5rem;
+	border: 1px solid var(--border);
+	border-radius: 0.75rem;
+	background: var(--surface);
+}
+@media (max-width: 40rem) {
+	.card {
+		margin: 0;
+		border-radius: 0;
+		border-width: 0 0 1px 0;
+		min-height: 100vh;
+		min-height: 100dvh;
+	}
+}
+.brand-line {
+	margin: 0 0 0.5rem;
+	color: var(--muted);
+	font-weight: 600;
+}
+.stepper {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem 1rem;
+	list-style: none;
+	margin: 0 0 1rem;
+	padding: 0;
+	color: var(--muted);
+	font-size: 0.875rem;
+}
+.stepper [aria-current='step'] {
+	color: var(--text);
+	font-weight: 700;
+	border-bottom: 2px solid var(--text);
+}
+.field {
+	margin: 0 0 1rem;
+}
+.field label {
+	display: block;
+	font-weight: 600;
+	margin-bottom: 0.25rem;
+}
+.field input {
+	display: block;
+	width: 100%;
+	min-height: var(--target);
+	padding: 0.5rem 0.75rem;
+	font: inherit;
+	color: var(--text);
+	background: var(--bg);
+	border: 2px solid var(--border);
+	border-radius: 0.5rem;
+}
+.hint {
+	margin: 0 0 0.375rem;
+	color: var(--muted);
+	font-size: 0.9375rem;
+}
+.error {
+	margin: 0.375rem 0 0;
+	color: var(--danger);
+	font-weight: 600;
+}
+.field input[aria-invalid='true'] {
+	border-color: var(--danger);
+}
+.alerts .alert {
+	margin: 0 0 1rem;
+}
+.alerts .alert.shown {
+	border: 2px solid var(--danger);
+	border-radius: 0.5rem;
+	padding: 0.75rem 1rem;
+	color: var(--text);
+	background: var(--bg);
+}
+.alerts .alert p {
+	margin: 0;
+	font-weight: 600;
+}
+.alerts .alert ul {
+	margin: 0.5rem 0 0;
+	padding-left: 1.25rem;
+}
+.alerts .status:not(:empty) {
+	margin: 0 0 1rem;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	background: var(--bg);
+}
+.actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	margin-top: 1rem;
+}
+button.primary,
+a.primary {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: var(--target);
+	padding: 0.5rem 1.25rem;
+	font: inherit;
+	font-weight: 700;
+	color: var(--accent-text);
+	background: var(--accent);
+	border: 2px solid var(--accent);
+	border-radius: 0.5rem;
+	text-decoration: none;
+	cursor: pointer;
+}
+button[aria-disabled='true'] {
+	opacity: 0.7;
+	cursor: not-allowed;
+}
+button.link {
+	background: none;
+	border: 0;
+	color: var(--accent);
+	text-decoration: underline;
+	padding: 0.5rem 0.25rem;
+}
+code,
+.code {
+	font-family: var(--mono);
+	font-size: 0.9375rem;
+	word-break: break-all;
+}
+.codeblock {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.5rem 0.75rem;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	margin: 0 0 1rem;
+}
+.codeblock code {
+	flex: 1 1 12rem;
+}
+.sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+/* The QR code keeps its own colours in every theme (scanners need dark on light). */
+:root {
+	--qr-fg: #000000;
+	--qr-bg: #ffffff;
+}
+.qr {
+	display: block;
+	width: 12rem;
+	min-width: 10.625rem;
+	max-width: 100%;
+	height: auto;
+	forced-color-adjust: none;
+	background: var(--qr-bg);
+	border: 1px solid var(--border);
+}
+.banner {
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	padding: 0.75rem 1rem;
+	margin: 0 0 1rem;
+	background: var(--surface);
+	max-width: 40rem;
+}
+.qr-bg {
+	fill: var(--qr-bg);
+}
+.qr-fg {
+	fill: var(--qr-fg);
+}

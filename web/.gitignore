@@ -1,0 +1,8 @@
+node_modules/
+build/
+.svelte-kit/
+.dev/
+e2e/.auth.json*
+e2e/.results/
+playwright-report/
+test-results/

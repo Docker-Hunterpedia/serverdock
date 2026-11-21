@@ -178,7 +178,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent connections are disabled", http.StatusServiceUnavailable)
 		return
 	}
-	ip := limits.ClientIP(r, false) // direct TLS listener: never trust X-Forwarded-For
+	ip := limits.ClientIP(r) // direct TLS listener, no proxy mark: X-Forwarded-For is ignored
 	if blocked, retry := h.fails.Blocked(ip); blocked {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry/time.Second)+1))
 		http.Error(w, "too many failed attempts", http.StatusTooManyRequests)

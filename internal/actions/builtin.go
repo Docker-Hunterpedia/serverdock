@@ -21,6 +21,20 @@ type Deps struct {
 	}
 	// DB is a reader on the database, for audit.verify.
 	DB *sql.DB
+	// PanelCert returns the panel certificate's public data; nil when the server
+	// runs without the HTTPS panel (--proxy=false), in which case system.panel_cert
+	// is not registered.
+	PanelCert func() PanelCert
+}
+
+// PanelCert is the output of system.panel_cert: public data only.
+type PanelCert struct {
+	// Fingerprint is the SHA-256 of the certificate, colon-separated hex.
+	Fingerprint string    `json:"fingerprint"`
+	Created     time.Time `json:"created"`
+	NotAfter    time.Time `json:"not_after"`
+	// RenewSoon is true when fewer than 60 days remain; restarting renews it.
+	RenewSoon bool `json:"renew_soon"`
 }
 
 // None is the input of an action that takes no arguments.
@@ -96,6 +110,13 @@ func RegisterBuiltins(r *Registry, d Deps) {
 			return DockerInfo{Available: true, Engine: engine, API: api}, nil
 		},
 	})
+	if d.PanelCert != nil {
+		Register(r, Def[None, PanelCert]{
+			Name: "system.panel_cert", Summary: "The panel certificate's fingerprint and dates.",
+			Risk: RiskRead, Scope: ScopeRead,
+			Execute: func(context.Context, Call, None) (PanelCert, error) { return d.PanelCert(), nil },
+		})
+	}
 	Register(r, Def[None, AuditVerifyResult]{
 		Name: "audit.verify", Summary: "Walk the audit chain and report the first broken row.",
 		Risk: RiskRead, Scope: ScopeAdmin, // a full scan: admins only

@@ -1,10 +1,12 @@
 package limits
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,36 +150,121 @@ func TestIPv6KeyedBySlash64(t *testing.T) {
 	}
 }
 
-func TestClientIPAndXFF(t *testing.T) {
-	req := func(remote string, xff ...string) *http.Request {
-		r := httptest.NewRequest("GET", "/", nil)
-		r.RemoteAddr = remote
-		for _, x := range xff {
-			r.Header.Add("X-Forwarded-For", x)
+func fwdReq(remote string, marked bool, xff ...string) *http.Request {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = remote
+	for _, x := range xff {
+		r.Header.Add("X-Forwarded-For", x)
+	}
+	if marked {
+		r = r.WithContext(WithProxyMark(r.Context()))
+	}
+	return r
+}
+
+// Without the mark X-Forwarded-For is never read: not from a public peer, and
+// not from loopback either (loopback is trusted for nothing).
+func TestXFFIgnoredWithoutSocketMark(t *testing.T) {
+	for _, remote := range []string{"203.0.113.5:1234", "127.0.0.1:1", "[::1]:1", "@", ""} {
+		want := remote
+		if h, _, err := net.SplitHostPort(remote); err == nil {
+			want = h
+			if ip := net.ParseIP(h); ip != nil {
+				want = Key(ip) // the peer's own key, never the forwarded one
+			}
 		}
-		return r
+		got := ClientIP(fwdReq(remote, false, "198.51.100.1"))
+		if got != want {
+			t.Errorf("remote %q: key %q, want %q", remote, got, want)
+		}
 	}
-	// From a non-loopback peer, XFF is ignored (even when the proxy is "trusted").
-	if got := ClientIP(req("203.0.113.5:1234", "198.51.100.1"), true); got != "203.0.113.5" {
-		t.Errorf("non-loopback peer: %s", got)
-	}
-	// From loopback with trust: the last hop.
-	if got := ClientIP(req("127.0.0.1:1", "6.6.6.6, 198.51.100.7"), true); got != "198.51.100.7" {
-		t.Errorf("loopback last hop: %s", got)
-	}
-	if got := ClientIP(req("[::1]:1", "1.1.1.1", "198.51.100.8"), true); got != "198.51.100.8" {
-		t.Errorf("last header: %s", got)
-	}
-	// Loopback but not trusted, junk XFF, or none: the peer.
-	if got := ClientIP(req("127.0.0.1:1", "198.51.100.7"), false); got != "127.0.0.1" {
-		t.Errorf("untrusted: %s", got)
-	}
-	if got := ClientIP(req("127.0.0.1:1", "not-an-ip"), true); got != "127.0.0.1" {
-		t.Errorf("junk XFF: %s", got)
-	}
-	if got := ClientIP(req("[2001:db8::7]:9"), false); got != "2001:db8::/64" {
+	if got := ClientIP(fwdReq("[2001:db8::7]:9", false)); got != "2001:db8::/64" {
 		t.Errorf("v6 peer: %s", got)
 	}
+}
+
+// With the mark, the single forwarded value is the client.
+func TestClientIPFromMarkedConnection(t *testing.T) {
+	cases := map[string]string{
+		"198.51.100.7":    "198.51.100.7",
+		" 198.51.100.7 ":  "198.51.100.7",
+		"2001:db8:1:2::9": "2001:db8:1:2::/64",
+		"::ffff:10.1.2.3": "10.1.2.3",
+		"fe80::1%eth0":    "fe80::/64",
+	}
+	for in, want := range cases {
+		if got := ClientIP(fwdReq("@", true, in)); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}
+
+// "Forwarded" and X-Real-IP are passed through by Caddy from the client, so they
+// are never a source of the client address, marked connection or not.
+func TestForwardedAndXRealIPNeverTrusted(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		r := fwdReq("203.0.113.5:1", marked, "198.51.100.7")
+		r.Header.Set("Forwarded", "for=6.6.6.6")
+		r.Header.Set("X-Real-IP", "7.7.7.7")
+		want := "203.0.113.5"
+		if marked {
+			want = "198.51.100.7"
+		}
+		if got := ClientIP(r); got != want {
+			t.Errorf("marked=%v: %s, want %s", marked, got, want)
+		}
+		// With no X-Forwarded-For at all they still do not count.
+		r2 := fwdReq("203.0.113.5:1", marked)
+		r2.Header.Set("Forwarded", "for=6.6.6.6")
+		r2.Header.Set("X-Real-IP", "7.7.7.7")
+		if got := ClientIP(r2); got != "203.0.113.5" {
+			t.Errorf("marked=%v without XFF: %s", marked, got)
+		}
+	}
+}
+
+// Anything but exactly one header holding exactly one IP is an error, and
+// ClientIP then falls back to the peer rather than trusting a piece of it.
+func TestMultipleXFFValuesRejected(t *testing.T) {
+	bad := [][]string{
+		nil,
+		{""},
+		{"6.6.6.6", "198.51.100.7"},
+		{"6.6.6.6, 198.51.100.7"},
+		{"198.51.100.7,"},
+		{"not-an-ip"},
+		{"198.51.100.7:8080"},
+		{"198.51.100.7 6.6.6.6"},
+		{"[::1]"},
+	}
+	for _, xff := range bad {
+		r := fwdReq("@", true, xff...)
+		if _, err := ParseForwarded(r.Header); !errors.Is(err, ErrForwarded) {
+			t.Errorf("%q accepted: %v", xff, err)
+		}
+		if got := ClientIP(r); got != "@" {
+			t.Errorf("%q: key %q, want the peer", xff, got)
+		}
+	}
+}
+
+func FuzzParseForwarded(f *testing.F) {
+	for _, s := range []string{"198.51.100.7", "::1", "a, b", "", ",", "1.2.3.4,5.6.7.8", "fe80::1%x", "\x00", "1.2.3"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, v string) {
+		h := http.Header{}
+		h.Add("X-Forwarded-For", v)
+		ip, err := ParseForwarded(h)
+		if err != nil {
+			return
+		}
+		// Whatever is accepted is one clean address, never a list.
+		if !ip.IsValid() || ip.Zone() != "" || strings.ContainsAny(strings.TrimSpace(v), ", ") {
+			t.Fatalf("accepted %q as %v", v, ip)
+		}
+		_ = Key(net.IP(ip.AsSlice()))
+	})
 }
 
 // fakeListener hands out conns with chosen remote addresses.

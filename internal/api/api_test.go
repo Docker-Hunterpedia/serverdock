@@ -19,12 +19,14 @@ import (
 func get(t *testing.T, h http.Handler, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "127.0.0.1:8443"
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
 func TestHealthz(t *testing.T) {
-	h := New(web.FS()).Handler()
+	h := New(Config{SPA: web.FS()}).Handler()
 	rec := get(t, h, "GET", "/healthz")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok"`) {
 		t.Fatalf("%d %q", rec.Code, rec.Body)
@@ -38,7 +40,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestEmbeddedSPA(t *testing.T) {
-	h := New(web.FS()).Handler()
+	h := New(Config{SPA: web.FS()}).Handler()
 	for _, p := range []string{"/", "/services/abc"} {
 		rec := get(t, h, "GET", p)
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "<title>ServerDock</title>") {
@@ -52,7 +54,7 @@ func TestSPAFallbackAndAssets(t *testing.T) {
 		"index.html":    {Data: []byte("INDEX")},
 		"assets/app.js": {Data: []byte("JS")},
 	}
-	h := New(spa).Handler()
+	h := New(Config{SPA: spa}).Handler()
 	if rec := get(t, h, "GET", "/assets/app.js"); rec.Code != 200 || rec.Body.String() != "JS" {
 		t.Errorf("asset: %d %q", rec.Code, rec.Body)
 	}
@@ -68,24 +70,29 @@ func TestSPAFallbackAndAssets(t *testing.T) {
 	}
 }
 
-func TestExtraRoute(t *testing.T) {
-	s := New(web.FS())
-	s.Handle("GET /agent/connect", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "hub")
-	}))
-	if rec := get(t, s.Handler(), "GET", "/agent/connect"); rec.Body.String() != "hub" {
-		t.Fatalf("got %q", rec.Body)
-	}
-}
-
 func TestDebugMem(t *testing.T) {
-	rec := get(t, DebugHandler(), "GET", "/debug/mem")
+	srv := New(Config{SPA: web.FS()})
+	rec := get(t, srv.DebugHandler(), "GET", "/debug/mem")
 	var m map[string]any
 	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &m) != nil || m["goroutines"] == nil {
 		t.Fatalf("%d %q", rec.Code, rec.Body)
 	}
-	if rec := get(t, DebugHandler(), "GET", "/healthz"); rec.Code != 404 {
+	if rec := get(t, srv.DebugHandler(), "GET", "/healthz"); rec.Code != 404 {
 		t.Errorf("debug mux leaks other routes: %d", rec.Code)
+	}
+	// ...and the control plane never serves the debug routes (not the SPA either).
+	for _, p := range []string{"/debug/mem", "/debug/goroutines", "/debug/agents", "/debug/agents/x/logs/y", "/debug/"} {
+		if rec := get(t, srv.Handler(), "GET", p); rec.Code != 404 {
+			t.Errorf("GET %s on the control plane = %d, want 404", p, rec.Code)
+		}
+	}
+}
+
+func TestDebugGoroutinesDumpsStacks(t *testing.T) {
+	srv := New(Config{SPA: web.FS()})
+	rec := get(t, srv.DebugHandler(), "GET", "/debug/goroutines")
+	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.Contains(rec.Body.String(), "goroutine ") {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String()[:min(200, rec.Body.Len())])
 	}
 }
 
@@ -136,16 +143,13 @@ func TestServeGracefulShutdown(t *testing.T) {
 // Agents connect to the hub's own TLS listener; the control plane must answer
 // 404 for /agent/*, not the SPA fallback.
 func TestAgentPathsAre404(t *testing.T) {
-	srv := New(fstest.MapFS{"index.html": {Data: []byte("<html>spa</html>")}})
-	for _, p := range []string{"/agent/connect", "/agent/", "/agent/x/y"} {
-		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
-		if rec.Code != http.StatusNotFound {
+	srv := New(Config{SPA: fstest.MapFS{"index.html": {Data: []byte("<html>spa</html>")}}})
+	for _, p := range []string{"/agent/connect", "/agent/", "/agent/x/y", "/api/v1/nothing"} {
+		if rec := get(t, srv.Handler(), "GET", p); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", p, rec.Code)
 		}
 	}
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/some/route", nil))
+	rec := get(t, srv.Handler(), "GET", "/some/route")
 	if rec.Code != 200 {
 		t.Errorf("SPA fallback broken: %d", rec.Code)
 	}

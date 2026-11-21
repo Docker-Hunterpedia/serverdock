@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"time"
 )
 
 // Errors of the intent/outcome flow.
@@ -18,6 +19,9 @@ var (
 	// result is returned alongside with AuditOutcomeRecorded=false.
 	ErrAuditOutcome = errors.New("action ran but its audit outcome could not be recorded")
 )
+
+// IntentWait is the longest Execute waits for the intent row to be written.
+const IntentWait = 2 * time.Second
 
 // Outcome is the result of Execute.
 type Outcome[T any] struct {
@@ -40,7 +44,11 @@ type Outcome[T any] struct {
 //     naming the action, target and request id (never the arguments).
 func Execute[T any](ctx context.Context, a Appender, log *slog.Logger, rd Redactor, intent Entry, fn func(context.Context) (T, error)) (Outcome[T], error) {
 	intent.Phase, intent.Result, intent.IntentID, intent.Error = PhaseIntent, ResultPending, 0, ""
-	intentID, err := a.Append(ctx, intent)
+	// The intent write is bounded: a stuck writer must not hold a request open
+	// (it fails as "audit unavailable" and the action is not run).
+	ictx, cancel := context.WithTimeout(ctx, IntentWait)
+	intentID, err := a.Append(ictx, intent)
+	cancel()
 	if err != nil {
 		log.Error("audit intent write failed; action not run", "action", intent.Action, "target", intent.Target, "request_id", intent.RequestID)
 		return Outcome[T]{}, fmt.Errorf("%w: %w", ErrAuditUnavailable, err)

@@ -28,13 +28,15 @@ Goal: decisions locked and a skeleton that proves the footprint.
 
 Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 
-- [ ] Install script with pre-flight checks, setup token, admin + TOTP, first-run onboarding
+- [x] Setup token, admin + TOTP with recovery codes, first-run onboarding UI over HTTPS — built in M2 ([plan 0003](plans/0003-m2-auth-first-run-spa.md) steps 5–12; tests: `TestFirstRunOverHTTP` in `internal/api/authflow_test.go`, Playwright `web/e2e/setup.spec.ts`; [security.md](security.md#m2-close-out-status))
+- [ ] Install script with pre-flight checks (M7a)
 - [ ] Signed releases (cosign); `serverdock bench` published with each release
 - [x] Action registry (typed ops, risk tiers, audit log) — the base for everything else — built in M1 (`internal/actions`, `internal/audit`, `internal/redact`; policy-table, tamper-detection and sentinel tests; no HTTP route yet, those arrive in M2)
 - [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked)
 - [ ] GitHub push-to-deploy + generic webhook, commit status
 - [ ] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys
 - [ ] Domains with automatic HTTPS (embedded Caddy) and actionable diagnostics; TLS problems never take a running app down
+- [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4)
 - [ ] Env vars & secrets (encrypted, audited reveal)
 - [ ] Postgres / MySQL / Redis one-click + scheduled S3 backups + restore
 - [ ] Metrics (cgroup), live logs, log search, basic alerts; email/webhook/Telegram notifications
@@ -45,14 +47,16 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables
 - [ ] "Update available" notice for app images
 - [ ] IPv6 support; Docker API version negotiation + supported Docker range + Docker RC in CI *(negotiation and the Engine 25+ range are built (M1 step 4); IPv6 and the RC CI matrix are not)*
-- [ ] Token expiry; `serverdock uninstall`, `start/stop/status`, `doctor --bundle`
+- [x] Token expiry — API tokens require an expiry (default 90 days, at most 365), built in M2 (`TestTokenExpiryDefaultMaximumAndRequired` in `internal/auth/authactions_test.go`; Playwright `web/e2e/security.spec.ts`)
+- [ ] `serverdock uninstall`, `start/stop/status`, `doctor --bundle`
 - [ ] Docs site with first-deploy guide; in-UI docs links and empty-state hints
 - [ ] Self-update with candidate + rollback; ServerDock state backup + rehearse restore
-- [ ] REST API (OpenAPI)
+- [x] REST API (OpenAPI) — built in M2: `POST /api/v1/actions/{name}` over the action registry, with a generated OpenAPI 3.1 document ([`docs/api/openapi.json`](api/openapi.json), `make openapi`; `TestOpenAPIGolden`, `TestRESTActionPolicyMatrix` in `internal/api/rest_test.go`)
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
-- [ ] Accessible, phone-usable UI for all of the above
+- [ ] Accessible, phone-usable UI baseline — built in M2 and checked by axe (zero violations in eight Playwright projects: desktop, 390 px, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit; `web/e2e/`), covering the shell, setup, sign-in, Overview and Settings › Security. **Ticked when the maintainer's manual screen-reader passes for steps 12 and 13 are recorded in PR #3** (checklists in [plan 0003](plans/0003-m2-auth-first-run-spa.md#step-12-manual-screen-reader-pass-checklist-for-the-maintainer))
+- [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar)
 
-**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle ≤ 80 MB / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
+**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 
 ## Phase 2 — Multi-server & builds
 
@@ -87,7 +91,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Master key re-key; agent cert renewal/revocation; BYO TLS certs; per-project alert routing
 - [ ] Compose conformance test suite
 
-**Exit:** 3 servers (one behind NAT) managed from one panel; remote agent ≤ 50 MB with proxy; template CI green.
+**Exit:** 3 servers (one behind NAT) managed from one panel; remote node ≤ 100 MB with proxy (tripwire 50 MB, ADR 0011); template CI green.
 
 ## Phase 3 — Light built-in AI
 

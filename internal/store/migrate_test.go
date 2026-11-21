@@ -660,12 +660,13 @@ func copyFixture(t *testing.T, name string) string {
 // migration list: editing an applied migration changes its checksum and fails here.
 func TestV2FixtureOpensAndMigrates(t *testing.T) {
 	dir := copyFixture(t, "v2.db")
-	// 1. Nothing pending: opens as is, no backup, data intact, checksums match.
+	// 1. The builtin list has grown past v2 (0003 auth): the fixture opens, a
+	// verified backup of v2 is taken first, and the audit chain and meta row survive.
 	s, err := openWithT(t, dir, Options{})
 	if err != nil {
 		t.Fatalf("the v2 fixture no longer opens with the builtin migrations: %v", err)
 	}
-	if got := versions(t, s.R); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+	if got := versions(t, s.R); len(got) != len(builtin) || got[0] != 1 || got[1] != 2 || got[2] != 3 {
 		t.Fatalf("versions %v", got)
 	}
 	var n int
@@ -677,24 +678,6 @@ func TestV2FixtureOpensAndMigrates(t *testing.T) {
 	if err := s.R.QueryRow(`SELECT value FROM meta WHERE key='fixture'`).Scan(&v); err != nil || v != "v2" {
 		t.Fatalf("meta fixture row: %q %v", v, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, backupDir)); err == nil {
-		t.Error("a backup was taken with nothing to migrate")
-	}
-	s.Close()
-
-	// 2. A future migration 3 runs on top: a verified backup of v2 first, rows kept.
-	next := Migration{3, "0003_next", "CREATE TABLE next_feature (x INTEGER) STRICT; INSERT INTO next_feature VALUES (1);"}
-	s, err = openWithT(t, dir, Options{Migrations: append(append([]Migration{}, builtin...), next)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := versions(t, s.R); len(got) != 3 {
-		t.Fatalf("versions after migrating %v", got)
-	}
-	s.R.QueryRow(`SELECT count(*) FROM audit_log`).Scan(&n)
-	if n != 5 {
-		t.Errorf("audit rows after migrating: %d", n)
-	}
 	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*-v0002-v0003.db"))
 	if len(bs) != 1 {
 		t.Fatalf("backups %v", bs)
@@ -702,9 +685,79 @@ func TestV2FixtureOpensAndMigrates(t *testing.T) {
 	if err := quickCheck(ctx, bs[0]); err != nil {
 		t.Errorf("backup quick_check: %v", err)
 	}
-	// The v2 fixture's append-only triggers survived the upgrade.
+	// The auth tables exist and are empty; the audit triggers survived.
+	for _, tbl := range []string{"users", "recovery_codes", "sessions", "auth_pending", "auth_known_ips", "api_tokens", "setup_state"} {
+		if err := s.R.QueryRow(`SELECT count(*) FROM ` + tbl).Scan(&n); err != nil || n != 0 {
+			t.Errorf("%s: %d %v", tbl, n, err)
+		}
+	}
 	if _, err := s.W.Exec(`DELETE FROM audit_log WHERE id = 1`); err == nil {
 		t.Error("audit_log lost its append-only trigger")
+	}
+	s.Close()
+
+	// 2. Reopening: nothing pending, no second backup.
+	s, err = openWithT(t, dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*")); len(bs) != 1 {
+		t.Errorf("backups after a plain reopen: %v", bs)
+	}
+
+	// 3. A future migration runs on top of v3, with its own backup.
+	next := Migration{len(builtin) + 1, "next", "CREATE TABLE next_feature (x INTEGER) STRICT; INSERT INTO next_feature VALUES (1);"}
+	s, err = openWithT(t, dir, Options{Migrations: append(append([]Migration{}, builtin...), next)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := versions(t, s.R); len(got) != len(builtin)+1 {
+		t.Fatalf("versions after migrating %v", got)
+	}
+}
+
+// Migration 0003 on a fresh database creates every table and column the plan lists.
+func TestAuthMigrationColumns(t *testing.T) {
+	s, err := openWithT(t, t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := map[string]string{
+		"users":          "id username password_hash totp_seed totp_pending_seed totp_pending_expires_at totp_pending_enrollment_hash totp_pending_tries totp_confirmed_at totp_last_counter totp_enrolled_host scope setup_ip setup_at password_changed_at totp_fail_since_login totp_fail_last_at totp_fail_last_ip created_at",
+		"recovery_codes": "user_id hash used_at",
+		"sessions":       "id_hash public_id user_id created_at last_seen_at idle_expires_at abs_expires_at mfa_fresh_until reauth_failures ip_key user_agent notice_json",
+		"auth_pending":   "id_hash user_id expires_at tries_left ip_key created_at",
+		"auth_known_ips": "user_id ip_key last_ok_at",
+		"api_tokens":     "id user_id name prefix hash scope created_at expires_at last_used_at revoked_at",
+		"setup_state":    "id token_hash expires_at enrollment_hash pending_seed created_at",
+	}
+	for table, cols := range want {
+		rows, err := s.R.Query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rows.Next() {
+			var c string
+			rows.Scan(&c)
+			got = append(got, c)
+		}
+		rows.Close()
+		if strings.Join(got, " ") != cols {
+			t.Errorf("%s columns:\n got %v\nwant %s", table, got, cols)
+		}
+	}
+	// username is unique case-insensitively; setup_state holds one row.
+	s.W.Exec(`INSERT INTO users (username, created_at) VALUES ('Admin', 1)`)
+	if _, err := s.W.Exec(`INSERT INTO users (username, created_at) VALUES ('admin', 1)`); err == nil {
+		t.Error("usernames are case-sensitive")
+	}
+	s.W.Exec(`INSERT INTO setup_state (id, token_hash, expires_at, created_at) VALUES (1, x'00', 1, 1)`)
+	if _, err := s.W.Exec(`INSERT INTO setup_state (id, token_hash, expires_at, created_at) VALUES (2, x'00', 1, 1)`); err == nil {
+		t.Error("setup_state accepted a second row")
 	}
 }
 

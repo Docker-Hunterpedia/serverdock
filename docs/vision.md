@@ -20,7 +20,7 @@ Self-hosted panels like Coolify and Dokploy made "your own Heroku" popular, but 
 
 | Principle | What it means in practice |
 |---|---|
-| **Light** | Single node (panel + agent + proxy) idles **under 80 MB RAM and <1% CPU**. Remote agent under 25 MB. Numbers are published, reproducible (`serverdock bench`) and tracked in CI. |
+| **Light** | Single node (panel + agent + proxy) idles **well under 200 MB RAM (target ~80 MB) and <1% CPU**; each extra server under 100 MB (target ~50 MB). The slim remote agent (Phase 2) aims for ~20 MB. Numbers are published, reproducible (`serverdock bench`) and tracked in CI. |
 | **Safe** | No shell strings, ever: typed operations on the Docker API. Agents dial out, so there are no stored SSH keys and no inbound ports. 2FA on dangerous actions, audit log, signed releases. |
 | **Honest** | The UI shows real state, says `unknown` when it doesn't know, and never reports success before the work is done. Failures come with the evidence and a next step. |
 | **Simple** | One binary, one command to install, SQLite inside. No Redis, no Swarm, no Kubernetes required. |

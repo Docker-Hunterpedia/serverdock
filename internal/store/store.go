@@ -135,11 +135,15 @@ func lockDir(dir string) (*os.File, error) {
 		}
 		if !time.Now().Before(deadline) {
 			f.Close()
-			return nil, fmt.Errorf("store: another ServerDock server is already using %s", dir)
+			return nil, fmt.Errorf("%w: %s", ErrLocked, dir)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// ErrLocked is returned by Open when another ServerDock process (the server, or
+// `admin reset`) holds the data-directory lock.
+var ErrLocked = errors.New("store: another ServerDock process is already using the data directory")
 
 // lockWait is how long lockDir waits on a contended lock (a variable for tests).
 var lockWait = time.Second

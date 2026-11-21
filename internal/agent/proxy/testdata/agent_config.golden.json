@@ -1,0 +1,51 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "disabled": true
+  },
+  "apps": {
+    "http": {
+      "grace_period": "10s",
+      "servers": {
+        "main": {
+          "automatic_https": {
+            "disable": true
+          },
+          "idle_timeout": "2m",
+          "listen": [
+            ":8080"
+          ],
+          "max_header_bytes": 65536,
+          "read_header_timeout": "10s",
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "sdbench-srv:80"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "level": "WARN"
+      }
+    }
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/data/caddy"
+  }
+}

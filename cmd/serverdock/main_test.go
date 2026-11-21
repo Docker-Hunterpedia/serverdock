@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/Docker-Hunterpedia/serverdock/web"
 )
 
 func TestRun(t *testing.T) {
@@ -13,7 +15,7 @@ func TestRun(t *testing.T) {
 		outHas string
 		errHas string
 	}{
-		{[]string{"version"}, 0, "serverdock dev", ""},
+		{[]string{"version"}, 0, "serverdock dev ui=" + web.UI, ""},
 		{nil, 2, "", "usage:"},
 		{[]string{"bogus"}, 2, "", "unknown command"},
 		{[]string{"help"}, 0, "usage:", ""},

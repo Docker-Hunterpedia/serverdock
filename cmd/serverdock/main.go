@@ -1,10 +1,12 @@
-// Command serverdock is the single ServerDock binary: server | agent | audit | version.
+// Command serverdock is the single ServerDock binary: server | agent | audit | admin | version.
 package main
 
 import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/Docker-Hunterpedia/serverdock/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -21,7 +23,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, "serverdock", version)
+		// ui=spa|placeholder says whether the real app is embedded: the release and the
+		// bench assert ui=spa, so a binary built without the web build cannot ship.
+		fmt.Fprintln(stdout, "serverdock", version, "ui="+web.UI)
 		return 0
 	case "server":
 		return serverMain(args[1:], stderr)
@@ -29,6 +33,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return agentMain(args[1:], stderr)
 	case "audit":
 		return auditMain(args[1:], stdout, stderr)
+	case "admin":
+		return adminResetMain(args[1:], os.Stdin, stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0
@@ -40,5 +46,5 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: serverdock <server|agent|audit|version> [flags]")
+	fmt.Fprintln(w, "usage: serverdock <server|agent|audit|admin|version> [flags]")
 }

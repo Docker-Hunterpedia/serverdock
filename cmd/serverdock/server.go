@@ -22,11 +22,15 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
+	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
+	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
+	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
 )
@@ -35,17 +39,24 @@ const (
 	serverMemLimit = 64 << 20
 	shutdownGrace  = 10 * time.Second
 
-	internalMaxConns   = 256
+	controlMaxConns    = 256 // one Caddy in front: no per-IP cap, every connection is ours
 	agentMaxConns      = 128 // idle TLS connections are cheap; the per-IP cap does the real work
 	agentHeaderTimeout = 5 * time.Second
 	agentMaxConnsPerIP = 4
 )
 
 type serverConfig struct {
-	Data     string
-	Listen   string
-	Internal string
-	Proxy    bool
+	Data   string
+	Listen string
+	// HTTPSListen is the panel's HTTPS address served by the embedded proxy;
+	// Listen then only redirects to it. PanelHosts are extra names the panel
+	// certificate carries (and, from M2 step 6a, the Host allowlist accepts).
+	HTTPSListen string
+	PanelHosts  []string
+	// ControlSocket is the control plane's unix socket (mode 0600 inside a 0700
+	// directory). Empty means DATA/run/cp.sock. There is no TCP listener.
+	ControlSocket string
+	Proxy         bool
 	// DebugSocket, if set, serves /debug/* on a unix socket (mode 0600 inside
 	// a 0700 directory). There is no TCP debug listener.
 	DebugSocket string
@@ -76,7 +87,10 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.Data, "data", "/var/lib/serverdock", "data directory")
 	fs.StringVar(&c.Listen, "listen", ":80", "public listen address (served by the embedded proxy)")
-	fs.StringVar(&c.Internal, "internal", "127.0.0.1:7070", "control-plane listen address (loopback)")
+	var hosts stringList
+	fs.StringVar(&c.HTTPSListen, "https-listen", ":443", "panel HTTPS listen address (served by the embedded proxy). --listen only redirects to it, using this port as seen inside the process: behind Docker port mapping (for example -p 8443:443) the redirect points at 443")
+	fs.Var(&hosts, "panel-host", "extra DNS name or IP address of the panel, added to its certificate; repeatable")
+	fs.StringVar(&c.ControlSocket, "control-socket", "", "control-plane unix socket (default DATA/run/cp.sock; 0600 inside a 0700 directory)")
 	fs.BoolVar(&c.Proxy, "proxy", true, "run the embedded Caddy proxy in the local agent")
 	fs.StringVar(&c.DebugSocket, "debug-socket", "", "serve /debug/* on this unix socket path (0600, inside a 0700 directory; off by default)")
 	fs.StringVar(&c.AgentListen, "agent-listen", "", "accept remote (read-only, experimental) agents over TLS on this address, e.g. :7443 (off by default)")
@@ -90,10 +104,31 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		return c, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	c.AgentSANs = sans
+	c.PanelHosts = hosts
+	if err := c.withDefaults(); err != nil {
+		return c, err
+	}
 	if c.AgentMaxSessions < 1 {
 		return c, errors.New("--agent-max-sessions must be at least 1")
 	}
 	return c, nil
+}
+
+// withDefaults fills in the control socket path: DATA/run/cp.sock, made absolute
+// (a socket path must be).
+func (c *serverConfig) withDefaults() error {
+	if c.HTTPSListen == "" {
+		c.HTTPSListen = ":443"
+	}
+	if c.ControlSocket != "" {
+		return nil
+	}
+	abs, err := filepath.Abs(c.Data)
+	if err != nil {
+		return fmt.Errorf("--data %q: %w", c.Data, err)
+	}
+	c.ControlSocket = filepath.Join(abs, "run", "cp.sock")
+	return nil
 }
 
 // applyMemLimit sets a soft memory limit unless GOMEMLIMIT is set.
@@ -104,6 +139,7 @@ func applyMemLimit(limit int64) {
 }
 
 func serverMain(args []string, stderr io.Writer) int {
+	restrictUmask() // before any file is created: new files are 0600, new directories 0700
 	cfg, err := parseServerFlags(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -127,10 +163,11 @@ func serverMain(args []string, stderr io.Writer) int {
 // serverAddrs are the bound addresses, reported through the ready callback so
 // tests can use random free ports.
 type serverAddrs struct {
-	Internal string
-	Debug    string // debug unix socket path; empty when off
-	Listen   string // public proxy address; empty when --proxy=false
-	Agent    string // agent TLS listener address; empty when off
+	Control string // control-plane unix socket path
+	Debug   string // debug unix socket path; empty when off
+	Listen  string // public HTTP (redirect-only) address; empty when --proxy=false
+	HTTPS   string // panel HTTPS address; empty when --proxy=false
+	Agent   string // agent TLS listener address; empty when off
 	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
 	// agent listener is off.
 	CAFingerprint string
@@ -138,6 +175,17 @@ type serverAddrs struct {
 
 // validate checks the agent flags and the token before anything is started.
 func (c serverConfig) validate() error {
+	if c.HTTPSListen != "" {
+		if _, _, err := net.SplitHostPort(c.HTTPSListen); err != nil {
+			return fmt.Errorf("--https-listen %q: %w", c.HTTPSListen, err)
+		}
+		if c.Proxy && c.HTTPSListen == c.Listen {
+			return errors.New("--https-listen and --listen must be different addresses")
+		}
+	}
+	if c.ControlSocket != "" && c.DebugSocket != "" && filepath.Clean(c.ControlSocket) == filepath.Clean(c.DebugSocket) {
+		return errors.New("--control-socket and --debug-socket must be different paths")
+	}
 	if c.AgentListen == "" && len(c.AgentSANs) > 0 {
 		return errors.New("--agent-san requires --agent-listen")
 	}
@@ -160,11 +208,48 @@ func (c serverConfig) validate() error {
 // runServer runs the control plane until ctx is cancelled. Shutdown order:
 // the local agent (and with it Caddy) stops first, then the control plane.
 func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready func(serverAddrs)) (retErr error) {
+	if err := cfg.withDefaults(); err != nil {
+		return err
+	}
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.Data, 0o750); err != nil {
-		return fmt.Errorf("data dir: %w", err)
+	// Startup order (plan 0003): Prepare, then the data-directory lock inside
+	// store.Open, then keys, certificates and the agent token, then every
+	// listener. Nothing writes under DATA before the lock, so a second server on
+	// the same DATA fails here without touching the first one's files.
+	if err := datadir.Prepare(cfg.Data); err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, cfg.Data)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	// The master key seals TOTP seeds; creating it (or refusing to start without
+	// it) belongs to this point of the startup order.
+	box, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
+		return secretbox.CiphertextsExist(ctx, st.R, secretbox.Columns())
+	})
+	if err != nil {
+		return err
+	}
+	if keyCreated {
+		log.Info("master key created", "path", secretbox.KeyPath(cfg.Data))
+	}
+	if lvl := os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"); lvl != "" && lvl != "WARN" && lvl != "ERROR" {
+		// Test-only knob: a verbose proxy log is not for production use.
+		log.Warn("SERVERDOCK_TEST_PROXY_LOG_LEVEL is set: the embedded proxy logs at a verbose level, which is for tests only", "level", lvl)
+	}
+	// The panel leaf is only needed when the proxy serves the panel.
+	var panel *pki.Panel
+	if cfg.Proxy {
+		if panel, err = pki.EnsurePanelLeaf(pki.PanelOptions{Dir: filepath.Join(cfg.Data, "pki"), Hosts: cfg.PanelHosts, Log: log}); err != nil {
+			return err
+		}
+		// Logged at every start; browsers show the same value in the certificate
+		// details. It is never shown on an unauthenticated page.
+		log.Info("panel certificate", "sha256", panel.Fingerprint, "expires", panel.NotAfter.UTC().Format(time.DateOnly), "file", panel.CertFile)
 	}
 	token := cfg.AgentToken
 	var mgr *pki.Manager
@@ -184,11 +269,22 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 		log.Info("hub CA ready; agents pin this fingerprint with --ca-fingerprint", "fingerprint", mgr.CAFingerprint())
 	}
-	st, err := store.Open(ctx, cfg.Data)
+	// The setup token (server, no admin yet only): written at every start while
+	// no admin exists. Only its path is logged, never the token.
+	hasher := auth.NewHasher() // one per process: every password check shares its semaphore
+	authStore := auth.NewStore(st, box, hasher, auth.Options{Log: log})
+	setup, err := authStore.PrepareSetup(ctx)
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	if setup != nil {
+		fp := ""
+		if panel != nil {
+			fp = panel.Fingerprint
+		}
+		_, port, _ := net.SplitHostPort(cfg.HTTPSListen)
+		log.Info(auth.StartupNotice(*setup, fp, port))
+	}
 	auditLog, err := audit.New(st, log)
 	if err != nil {
 		return err
@@ -209,15 +305,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 	}()
 	addrs := serverAddrs{}
-	rawInternal, err := net.Listen("tcp", cfg.Internal)
+	rawControl, err := listenPrivateSocket(cfg.ControlSocket)
 	if err != nil {
-		return fmt.Errorf("listen internal: %w", err)
+		return fmt.Errorf("--control-socket: %w", err)
 	}
-	// 256 connections in total; no per-IP cap here, because every request from
-	// our own Caddy arrives from the same loopback address.
-	ln := limits.NewListener(rawInternal, internalMaxConns, 0, nil)
+	// 256 connections in total; no per-IP cap here, because every connection
+	// comes from our own Caddy.
+	ln := limits.NewListener(rawControl, controlMaxConns, 0, nil)
 	opened = append(opened, ln)
-	addrs.Internal = rawInternal.Addr().String()
+	addrs.Control = cfg.ControlSocket
 	var agentLn, debugLn net.Listener
 	if mgr != nil {
 		raw, err := net.Listen("tcp", cfg.AgentListen)
@@ -231,8 +327,8 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		addrs.Agent, addrs.CAFingerprint = raw.Addr().String(), mgr.CAFingerprint()
 	}
 	if cfg.DebugSocket != "" {
-		if debugLn, err = listenDebugSocket(cfg.DebugSocket); err != nil {
-			return err
+		if debugLn, err = listenPrivateSocket(cfg.DebugSocket); err != nil {
+			return fmt.Errorf("--debug-socket: %w", err)
 		}
 		opened = append(opened, debugLn)
 		addrs.Debug = cfg.DebugSocket
@@ -245,16 +341,37 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentCtx, agentCancel := context.WithCancel(ctx)
 	defer agentCancel()
 
-	srv := api.New(web.FS())
 	maxSessions := cfg.AgentMaxSessions
 	if maxSessions <= 0 {
 		maxSessions = hub.DefaultMaxSessions
 	}
 	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	lim := api.NewLimits(nil)
+	docker := dockerapi.New(cfg.DockerSocket)
+	defer docker.Close()
+	logDockerVersion(ctx, docker, log)
+	// The action registry behind the REST handler: built-ins and the session-only
+	// auth actions, never auth.admin_reset. The one-time system invoker is
+	// deliberately not taken here, and the api package never receives it.
+	deps := actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R}
+	if panel != nil {
+		deps.PanelCert = func() actions.PanelCert {
+			return actions.PanelCert{Fingerprint: panel.Fingerprint, Created: panel.NotBefore, NotAfter: panel.NotAfter,
+				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
+		}
+	}
+	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
+	srv := api.New(api.Config{
+		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
+		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
+		DebugExtra: []func(*http.ServeMux){h.DebugRoutes}, Log: log,
+	})
 	started = true
 	cpErr := make(chan error, 3)
 	cpRunning := 1
-	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace) }()
+	// Only this listener is marked as "from our proxy": Caddy dials it, and its
+	// X-Forwarded-For (exactly one value) is the client address.
+	go func() { cpErr <- api.Serve(cpCtx, ln, srv.Handler(), shutdownGrace, api.WithTrustedProxy(log)) }()
 	if agentLn != nil {
 		// Only GET /agent/connect is served here; it is not behind Caddy, so a
 		// proxy reload cannot drop agents (ADR 0009).
@@ -271,26 +388,18 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	if debugLn != nil {
 		cpRunning++
-		go func() { cpErr <- api.Serve(cpCtx, debugLn, api.DebugHandler(h.DebugRoutes), shutdownGrace) }()
+		go func() { cpErr <- api.Serve(cpCtx, debugLn, srv.DebugHandler(), shutdownGrace) }()
 	}
-	log.Info("control plane listening", "internal", addrs.Internal)
+	log.Info("control plane listening", "socket", addrs.Control)
 
 	// In-process local agent; it owns the embedded Caddy when --proxy is set.
 	if cfg.Proxy {
-		addrs.Listen = cfg.Listen
+		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
 	var session sync.WaitGroup
-	docker := dockerapi.New(cfg.DockerSocket)
-	defer docker.Close()
-	logDockerVersion(ctx, docker, log)
-	// The action registry: built-ins only, and no HTTP route reaches it in M1
-	// (M2 adds them). The SystemInvoker is deliberately not taken here.
-	reg := actions.New(auditLog, log)
-	actions.RegisterBuiltins(reg, actions.Deps{Version: version, Started: time.Now(), Audit: auditLog, Docker: docker, DB: st.R})
-	_ = reg
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
@@ -299,7 +408,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
-			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: addrs.Internal, Proxy: cfg.Proxy,
+			Panel: panelProxy(panel, cfg),
+			// Read by the secret-sentinel test only (not a flag, not in --help).
+			ProxyLogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
+			DataDir:       cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
 			if ready != nil {
 				ready(addrs)
@@ -338,4 +450,22 @@ type noLogs struct{}
 
 func (noLogs) Logs(context.Context, string, int, io.Writer) error {
 	return errors.New("docker logs are not available")
+}
+
+// panelProxy is the proxy's HTTPS panel part, nil when there is no panel leaf.
+func panelProxy(p *pki.Panel, cfg serverConfig) *proxy.Panel {
+	if p == nil {
+		return nil
+	}
+	return &proxy.Panel{Listen: cfg.HTTPSListen, CertFile: p.CertFile, Hosts: cfg.PanelHosts}
+}
+
+// newServerRegistry is the server's action registry: the built-ins only. It never
+// gets auth.admin_reset: that action is console-only and exists solely in the
+// registry `serverdock admin reset` builds (TestServerRegistryHasNoAdminReset).
+func newServerRegistry(sink actions.Sink, log *slog.Logger, deps actions.Deps, as *auth.Store, ad auth.ActionDeps) *actions.Registry {
+	reg := actions.New(sink, log)
+	actions.RegisterBuiltins(reg, deps)
+	auth.RegisterAuthActions(reg, as, ad)
+	return reg
 }

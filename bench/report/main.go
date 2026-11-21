@@ -53,6 +53,8 @@ type Gate struct {
 	Unit   string  `json:"unit"`
 	Pass   bool    `json:"pass"`
 	Report bool    `json:"report_only,omitempty"`
+	// Tripwire marks a warning gate: never fails the run, needs a written reason.
+	Tripwire bool `json:"tripwire,omitempty"`
 }
 
 // ScenarioResult is the aggregate for one scenario.
@@ -94,11 +96,16 @@ type limits struct {
 }
 
 // Gated scenarios are the two shapes people deploy (ADR 0008): a single node
-// and a remote node with its own proxy.
+// and a remote node with its own proxy. Hard ceilings per ADR 0011.
 var scenarioLimits = map[int]limits{
-	2: {80, 1.0},
-	4: {50, 0.5},
+	2: {200, 1.0},
+	4: {100, 0.5},
 }
+
+// tripwireRSS is the early-warning size per gated scenario (ADR 0011): going
+// above it never fails the run, but the report flags it and the PR must give
+// a written reason (footprint review).
+var tripwireRSS = map[int]float64{2: 80, 4: 50}
 
 // hardRSS is an absolute memory ceiling (no tolerance). Empty until the slim
 // agent build (Phase 2) brings back scenario 3 with its 20 MB / 25 MB hard gate.
@@ -214,6 +221,10 @@ func scenario(id int, runs []RunStats) ScenarioResult {
 				Pass: r.VmRSSMedian <= h*mb})
 		}
 	}
+	if t, ok := tripwireRSS[id]; ok {
+		r.Gates = append(r.Gates, Gate{Name: "VmRSS tripwire (warning)", Value: r.VmRSSMedian / mb, Limit: t, Unit: "MB",
+			Pass: r.VmRSSMedian <= t*mb, Report: true, Tripwire: true})
+	}
 	if t, ok := reportRSS[id]; ok {
 		r.Gates = append(r.Gates, Gate{Name: "VmRSS target (report only)", Value: r.VmRSSMedian / mb, Limit: t, Unit: "MB",
 			Pass: r.VmRSSMedian <= t*mb, Report: true})
@@ -289,6 +300,9 @@ func writeGates(b *strings.Builder, gs []Gate) {
 			res = "FAIL"
 			if g.Report {
 				res = "above target (report only)"
+			}
+			if g.Tripwire {
+				res = "⚠ above tripwire: give a written reason in the PR (ADR 0011)"
 			}
 		}
 		fmt.Fprintf(b, "| %s | %.2f %s | %.2f %s | %s |\n", g.Name, g.Value, g.Unit, g.Limit, g.Unit, res)

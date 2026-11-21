@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -185,5 +186,157 @@ func TestProxyServesSPAWebSocketAndReload(t *testing.T) {
 	}
 	if got := body(t, "http://"+addr2+"/moved"); got != "SPA-TWO /moved" {
 		t.Fatalf("after listener move: %q", got)
+	}
+}
+
+// The remote agent's own Caddy config must not change when the server learns to
+// proxy to a unix socket: this golden was generated before that change (plan
+// 0003, M2 step 2; the S4 footprint depends on it).
+func TestAgentBuildConfigGolden(t *testing.T) {
+	b, err := BuildConfig(Config{DataDir: "/data", Listen: ":8080", Upstream: "sdbench-srv:80"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := json.Indent(&got, b, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	got.WriteByte('\n')
+	want, err := os.ReadFile("testdata/agent_config.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != string(want) {
+		t.Fatalf("agent proxy config changed:\n%s", got.String())
+	}
+}
+
+func TestUnixUpstreamConfig(t *testing.T) {
+	up := UnixUpstream("/var/lib/serverdock/run/cp.sock")
+	if up != "unix//var/lib/serverdock/run/cp.sock" {
+		t.Fatal(up)
+	}
+	b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: up})
+	if err != nil || !strings.Contains(string(b), `"dial":"unix//var/lib/serverdock/run/cp.sock"`) {
+		t.Fatalf("%s %v", b, err)
+	}
+	for _, bad := range []string{"unix/relative.sock", "unix/"} {
+		if _, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: bad}); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestPanelConfig(t *testing.T) {
+	build := func(https string) map[string]any {
+		b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: UnixUpstream("/data/run/cp.sock"),
+			Panel: &Panel{Listen: https, CertFile: "/data/pki/panel.pem"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	cfg := build(":443")
+	apps := cfg["apps"].(map[string]any)
+	servers := apps["http"].(map[string]any)["servers"].(map[string]any)
+	panel, main := servers["panel"].(map[string]any), servers["main"].(map[string]any)
+
+	// :443: TLS policy with both SNI defaults, limits, automatic HTTPS off, proxied to the socket.
+	pol := panel["tls_connection_policies"].([]any)[0].(map[string]any)
+	if pol["default_sni"] != "localhost" || pol["fallback_sni"] != "localhost" || pol["protocol_min"] != "tls1.2" {
+		t.Errorf("policy %v", pol)
+	}
+	if panel["listen"].([]any)[0] != ":443" || panel["read_header_timeout"] != "10s" || panel["idle_timeout"] != "2m" || panel["max_header_bytes"] != float64(64<<10) {
+		t.Errorf("panel server %v", panel)
+	}
+	if panel["automatic_https"].(map[string]any)["disable"] != true {
+		t.Error("automatic https is on")
+	}
+	h := panel["routes"].([]any)[0].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if h["handler"] != "reverse_proxy" || h["upstreams"].([]any)[0].(map[string]any)["dial"] != "unix//data/run/cp.sock" {
+		t.Errorf("panel handler %v", h)
+	}
+	tls := apps["tls"].(map[string]any)
+	lf := tls["certificates"].(map[string]any)["load_files"].([]any)[0].(map[string]any)
+	if lf["certificate"] != "/data/pki/panel.pem" || lf["key"] != "/data/pki/panel.pem" || tls["disable_ocsp_stapling"] != true {
+		t.Errorf("tls app %v", tls)
+	}
+	// No managed certificates, so no storage clean-up pass.
+	if tls["disable_storage_clean"] != true {
+		t.Errorf("tls app %v: storage clean is on", tls)
+	}
+	// HTTP/1.1 and HTTP/2 only: no HTTP/3 (no UDP listener, no Alt-Svc).
+	if got := panel["protocols"].([]any); len(got) != 2 || got[0] != "h1" || got[1] != "h2" {
+		t.Errorf("panel protocols %v, want [h1 h2]", got)
+	}
+	if _, ok := main["protocols"]; ok {
+		t.Error(":80 sets protocols; it is plain HTTP and needs none")
+	}
+
+	// :80: one redirect route, never a reverse proxy; Caddy logs at WARN.
+	routes := main["routes"].([]any)
+	if len(routes) != 3 { // IPv6 with a port, other literals and localhost, then 421
+		t.Fatalf("main routes %v", routes)
+	}
+	r := routes[1].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	loc := r["headers"].(map[string]any)["Location"].([]any)[0]
+	if r["handler"] != "static_response" || r["status_code"] != float64(308) || loc != "https://{http.request.host}{http.request.uri}" {
+		t.Errorf("redirect %v", r)
+	}
+	last := routes[2].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if last["status_code"] != float64(421) || routes[2].(map[string]any)["match"] != nil {
+		t.Errorf("the last :80 route is not an unconditional 421: %v", last)
+	}
+	if strings.Contains(string(mustJSON(t, main)), "reverse_proxy") {
+		t.Error(":80 reaches the control plane")
+	}
+	if cfg["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)["level"] != "WARN" {
+		t.Error("Caddy is not at WARN")
+	}
+
+	// A non-443 HTTPS port is part of Location.
+	r = build("127.0.0.1:8443")["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)["main"].(map[string]any)["routes"].([]any)[1].(map[string]any)["handle"].([]any)[0].(map[string]any)
+	if loc := r["headers"].(map[string]any)["Location"].([]any)[0]; loc != "https://{http.request.host}:8443{http.request.uri}" {
+		t.Errorf("Location %v", loc)
+	}
+
+	for _, bad := range []Config{
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: "nope", CertFile: "/x"}},
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: ":443", CertFile: "relative.pem"}},
+		{DataDir: "/d", Listen: ":80", Upstream: "127.0.0.1:1", Panel: &Panel{Listen: ":80", CertFile: "/x"}},
+	} {
+		if _, err := BuildConfig(bad); err == nil {
+			t.Errorf("%+v accepted", bad.Panel)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestProxyLogLevel(t *testing.T) {
+	level := func(l string) any {
+		b, err := BuildConfig(Config{DataDir: "/data", Listen: ":80", Upstream: "127.0.0.1:1", LogLevel: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		json.Unmarshal(b, &cfg)
+		return cfg["logging"].(map[string]any)["logs"].(map[string]any)["default"].(map[string]any)["level"]
+	}
+	for in, want := range map[string]string{"": "WARN", "DEBUG": "DEBUG", "INFO": "INFO", "ERROR": "ERROR", "warn": "WARN", "TRACE": "WARN", "debug": "WARN"} {
+		if got := level(in); got != want {
+			t.Errorf("%q: %v, want %s", in, got, want)
+		}
 	}
 }
