@@ -238,18 +238,22 @@ func TestDummyHashWithin20PercentOfARealOne(t *testing.T) {
 		t.Skip("timing")
 	}
 	h := NewHasher()
+	// The background FreeOSMemory after each release would overlap the next
+	// measurement; it is not part of what an attacker can time per attempt.
+	h.freeMem = func() {}
 	phc, _ := h.Hash(bg, "some real password")
-	best := func(f func()) time.Duration {
-		m := time.Hour
-		for i := 0; i < 7; i++ {
-			t0 := time.Now()
-			f()
-			m = min(m, time.Since(t0))
-		}
-		return m
+	// Interleave the two so both see the same machine load (shared CI runners,
+	// -race), and keep the best of each.
+	timeIt := func(f func()) time.Duration {
+		t0 := time.Now()
+		f()
+		return time.Since(t0)
 	}
-	real := best(func() { h.Verify(bg, phc, "wrong password") })
-	dummy := best(func() { h.VerifyDummy(bg, "wrong password") })
+	real, dummy := time.Hour, time.Hour
+	for i := 0; i < 9; i++ {
+		real = min(real, timeIt(func() { h.Verify(bg, phc, "wrong password") }))
+		dummy = min(dummy, timeIt(func() { h.VerifyDummy(bg, "wrong password") }))
+	}
 	ratio := float64(dummy) / float64(real)
 	t.Logf("real %v dummy %v ratio %.2f", real, dummy, ratio)
 	if ratio < 0.8 || ratio > 1.2 {
