@@ -104,7 +104,7 @@ func runAgent(ctx context.Context, cfg agentConfig, log *slog.Logger) error {
 	logDockerVersion(ctx, docker, log)
 	return agent.RunClient(ctx, agent.ClientConfig{
 		URL: cfg.Server, CAFingerprint: cfg.CAFingerprint, Token: cfg.Token, ID: cfg.ID, Log: log,
-		Logs: docker,
+		Logs: docker, Version: version,
 	})
 }
 

@@ -5,16 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
-// Stream protocol: the server opens a yamux stream and writes one JSON line,
-// for example {"op":"logs","container":"abc","tail":100}\n. The agent answers
-// with raw log bytes until the stream ends.
+// Stream protocol v0 (the `logs` op, unchanged): the server opens a yamux
+// stream and writes one JSON line, for example
+// {"op":"logs","container":"abc","tail":100}\n. The agent answers with raw log
+// bytes until the stream ends. Every other op speaks v1 (v1.go, ADR 0012).
 const (
-	// MaxOpLine bounds the op line the agent will read.
+	// MaxOpLine bounds the v0 op line the agent will read.
 	MaxOpLine = 4096
 	// OpLogs streams container logs.
 	OpLogs = "logs"
+	// OpHello is the version handshake.
+	OpHello = "hello"
 	// MinTail and MaxTail bound the log tail.
 	MinTail = 1
 	MaxTail = 5000
@@ -24,16 +28,25 @@ const (
 // an op on a remote agent session unless RemoteOK is set (docs/security.md
 // rule 9: remote agents are read-only until Phase 2), so forgetting the field
 // fails safe.
+//
+// MaxResult, MaxProgressLines and Timeout apply to v1 ops (v1.go): MaxResult 0
+// means DefaultMaxResult; MaxProgressLines 0 means the op sends no progress
+// lines; Timeout 0 means the op is bounded by its context only (`events`), so
+// every other op sets one.
 type OpSpec struct {
-	Name     string
-	RemoteOK bool
+	Name             string
+	RemoteOK         bool
+	MaxResult        int
+	MaxProgressLines int
+	Timeout          time.Duration
 }
 
-// opSpecs is the table of every op the agent protocol knows. `logs` is the only
-// op with RemoteOK. A new op must stay local-only unless it is read-only and
-// security-reviewed (a test pins the allowlist).
+// opSpecs is the table of every op the agent protocol knows. `hello` and
+// `logs` are the only ops with RemoteOK. A new op must stay local-only unless
+// it is read-only and security-reviewed (a test pins the allowlist).
 var opSpecs = []OpSpec{
 	{Name: OpLogs, RemoteOK: true},
+	{Name: OpHello, RemoteOK: true, MaxResult: MaxHelloResult, Timeout: HelloTimeout},
 }
 
 // Specs returns a copy of the op table.
@@ -59,11 +72,18 @@ type Op struct {
 	Op        string `json:"op"`
 	Container string `json:"container"`
 	Tail      int    `json:"tail"`
+	// Follow is optional: absent means true. The hub never sends it to a v0
+	// session (an M1/M2 agent refuses the unknown field).
+	Follow *bool `json:"follow,omitempty"`
 }
+
+// Following reports whether the log stream follows new output.
+func (o Op) Following() bool { return o.Follow == nil || *o.Follow }
 
 // Validate checks the op fields.
 func (o Op) Validate() error {
-	if _, ok := SpecFor(o.Op); !ok {
+	// Only `logs` speaks v0; every other op is a v1 request.
+	if o.Op != OpLogs {
 		return fmt.Errorf("unknown op %q", o.Op)
 	}
 	if !ValidContainerID(o.Container) {

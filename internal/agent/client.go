@@ -30,7 +30,9 @@ type ClientConfig struct {
 	// ID names this agent; sent as ?id=.
 	ID   string
 	Logs LogSource
-	Log  *slog.Logger
+	// Version is the agent build version reported by `hello`.
+	Version string
+	Log     *slog.Logger
 
 	Backoff     Backoff
 	DialTimeout time.Duration // handshake only
@@ -182,7 +184,8 @@ func runOnce(ctx context.Context, cfg *ClientConfig) (connectedAt time.Time, err
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	nc := websocket.NetConn(sctx, c, websocket.MessageBinary)
-	return connectedAt, ServeSession(sctx, nc, cfg.Logs, cfg.KeepAlive, cfg.Log)
+	// A dial-out agent is always remote mode: it serves only RemoteOK ops.
+	return connectedAt, Serve(sctx, nc, Config{Logs: cfg.Logs, Version: cfg.Version, Mode: ModeRemote}, cfg.KeepAlive, cfg.Log)
 }
 
 // httpClient returns the client used for the WebSocket handshake. For wss it

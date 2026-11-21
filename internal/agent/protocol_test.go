@@ -84,7 +84,7 @@ func TestBackoffSchedule(t *testing.T) {
 // local-only. Marking a new op RemoteOK fails here until security has reviewed
 // it as read-only.
 func TestOpSpecTableRemoteOKRule(t *testing.T) {
-	readOnly := map[string]bool{OpLogs: true}
+	readOnly := map[string]bool{OpLogs: true, OpHello: true}
 	seen := map[string]bool{}
 	for _, s := range Specs() {
 		if s.Name == "" || seen[s.Name] {

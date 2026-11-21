@@ -189,6 +189,27 @@ func TestLogsNonTTYDemuxes(t *testing.T) {
 	}
 }
 
+// TestLogsFollowFalseEndsAtTail: follow=0 goes to Docker and the call returns
+// when Docker ends the stream after the tail.
+func TestLogsFollowFalseEndsAtTail(t *testing.T) {
+	fd := &fakeDocker{logsBody: frame(1, "tail line\n")}
+	c := New(startFakeDocker(t, fd))
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- c.LogsFollow(context.Background(), "web-1", 5, false, &out) }()
+	select {
+	case err := <-done:
+		if err != nil || out.String() != "tail line\n" {
+			t.Fatalf("%q %v", out.String(), err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LogsFollow(false) did not end at the tail")
+	}
+	if p := <-fd.logsPath; !strings.Contains(p, "follow=0") {
+		t.Errorf("request %q: want follow=0", p)
+	}
+}
+
 func TestLogsTTYCopiesRaw(t *testing.T) {
 	fd := &fakeDocker{tty: true, logsBody: []byte("raw tty output\r\n")}
 	c := New(startFakeDocker(t, fd))
@@ -419,10 +440,12 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 			continue
 		}
 		usesHelper, usesHC := false, false
+		name0 := fn.Name.Name
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			if sel, ok := n.(*ast.SelectorExpr); ok {
 				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "c" {
-					if helpers[sel.Sel.Name] {
+					// Logs delegates to LogsFollow, which is itself checked here.
+					if helpers[sel.Sel.Name] || (name0 == "Logs" && sel.Sel.Name == "LogsFollow") {
 						usesHelper = true
 					}
 					if sel.Sel.Name == "hc" {

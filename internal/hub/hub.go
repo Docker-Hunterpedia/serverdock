@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -67,6 +68,8 @@ type Hub struct {
 	compare  func(tok string) bool
 	fails    *limits.Keyed // failed token checks per client IP
 	failLogs *limits.Keyed // one auth-failure log line per IP per minute
+	// protoLogs: one protocol-violation line per op name per minute.
+	protoLogs *limits.Keyed
 
 	mu       sync.Mutex
 	seq      uint64
@@ -96,6 +99,7 @@ func New(ctx context.Context, token string, log *slog.Logger, opts ...Option) *H
 		maxSessions: DefaultMaxSessions,
 		fails:       limits.NewKeyed(AuthFailuresPerMinute, AuthFailureBurst, limits.MaxKeys, nil),
 		failLogs:    limits.NewKeyed(1, 1, limits.MaxKeys, nil),
+		protoLogs:   limits.NewKeyed(1, 1, limits.MaxKeys, nil),
 	}
 	if token != "" {
 		h.tokenHash, h.hasToken = sha256.Sum256([]byte(token)), true
@@ -121,6 +125,18 @@ type Session struct {
 	remote string
 	// specFor looks up an op's spec; agent.SpecFor, replaced only by tests.
 	specFor func(string) (agent.OpSpec, bool)
+	specMu  sync.RWMutex // guards specFor (tests replace it while the handshake runs)
+
+	log       *slog.Logger
+	protoLogs *limits.Keyed // one protocol-violation log line per op name per minute
+	// version is the negotiated protocol version: 0 until `hello` succeeds, and
+	// 0 for an M1/M2 agent (logs only). It only ever enables v1 ops the op table
+	// already allows this session; it never widens the remote op set.
+	version   atomic.Int32
+	agentMu   sync.Mutex
+	agentVer  string
+	helloDone chan struct{} // closed when the handshake has finished (either way)
+	helloOnce sync.Once
 }
 
 // Info describes a session for the debug listing.
@@ -231,7 +247,8 @@ func (h *Hub) attach(ctx context.Context, id, remote string, conn net.Conn, keep
 	}
 	h.mu.Lock()
 	h.seq++
-	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, streamCap(id)), remote: remote, specFor: agent.SpecFor}
+	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, streamCap(id)), remote: remote, specFor: agent.SpecFor,
+		log: h.log, protoLogs: h.protoLogs, helloDone: make(chan struct{})}
 	old := h.sessions[id]
 	h.sessions[id] = s
 	h.mu.Unlock()
@@ -245,6 +262,7 @@ func (h *Hub) attach(ctx context.Context, id, remote string, conn net.Conn, keep
 	// not enough: yamux keeps an accepted-then-closed stream and its buffered
 	// data until the close timeout, which an agent could use to pin memory.
 	var drain sync.WaitGroup
+	drain.Go(func() { s.hello(ctx) })
 	drain.Go(func() {
 		if _, err := ys.AcceptStream(); err == nil {
 			h.log.Warn("agent opened a stream; ending its session (protocol violation)", "agent", id, "remote", remote)
@@ -288,10 +306,33 @@ func (h *Hub) List() []Info {
 	return out
 }
 
-// Logs opens a log stream. Closing the returned stream half-closes (FIN) it;
-// the agent cancels its Docker request when it sees that. Cancelling ctx closes it.
+// Logs opens a log stream that follows new output. Closing the returned stream
+// half-closes (FIN) it; the agent cancels its Docker request when it sees that.
+// Cancelling ctx closes it.
 func (s *Session) Logs(ctx context.Context, container string, tail int) (io.ReadCloser, error) {
+	return s.logs(ctx, container, tail, true)
+}
+
+// LogsOnce is Logs that ends after the tail (follow=false). It needs a v1
+// session: the `follow` field is never sent to a v0 agent, which would refuse
+// it, so on a v0 or not-yet-negotiated session it fails with ErrNeedsV1.
+func (s *Session) LogsOnce(ctx context.Context, container string, tail int) (io.ReadCloser, error) {
+	return s.logs(ctx, container, tail, false)
+}
+
+// ErrNeedsV1 is returned for an op or option that needs protocol v1 on a
+// session that is v0 (an M1/M2 agent) or whose handshake has not finished.
+var ErrNeedsV1 = errors.New("hub: this agent does not support this operation (protocol v0)")
+
+func (s *Session) logs(ctx context.Context, container string, tail int, follow bool) (io.ReadCloser, error) {
 	op := agent.Op{Op: agent.OpLogs, Container: container, Tail: tail}
+	if !follow {
+		if s.Version() < 1 {
+			return nil, ErrNeedsV1
+		}
+		f := false
+		op.Follow = &f // sent only to a v1 session; absent means follow
+	}
 	if err := op.Validate(); err != nil {
 		return nil, err
 	}
@@ -307,6 +348,41 @@ func (s *Session) Logs(ctx context.Context, container string, tail int) (io.Read
 	}
 	st.setStop(context.AfterFunc(ctx, st.shut))
 	return st, nil
+}
+
+// Version is the negotiated protocol version (0 until `hello` succeeds; 0 for
+// an M1/M2 agent).
+func (s *Session) Version() int { return int(s.version.Load()) }
+
+// AgentVersion is the agent's cleaned version string ("" for v0).
+func (s *Session) AgentVersion() string {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	return s.agentVer
+}
+
+// HelloDone is closed when the handshake has finished, successfully or not.
+func (s *Session) HelloDone() <-chan struct{} { return s.helloDone }
+
+// hello runs the handshake once per session. Any failure leaves the session at
+// v0, the safe direction (no v1 op is sent): an M1/M2 agent answers with the
+// error line its handleStream writes for a request it cannot parse, and that
+// is not a protocol violation.
+func (s *Session) hello(ctx context.Context) {
+	defer s.helloOnce.Do(func() { close(s.helloDone) })
+	raw, err := s.call(ctx, agent.OpHello, agent.HelloArgs{HubMaxV: agent.ProtocolVersion}, nil, true)
+	if err != nil {
+		s.log.Debug("agent speaks protocol v0 (logs only)", "agent", s.ID, "err", err)
+		return
+	}
+	var r agent.HelloResult
+	if err := agent.DecodeArgs(raw, &r); err != nil || r.V < 1 {
+		return
+	}
+	s.agentMu.Lock()
+	s.agentVer = agent.CleanText(r.Agent, agent.MaxAgentVersion)
+	s.agentMu.Unlock()
+	s.version.Store(int32(min(r.V, agent.ProtocolVersion)))
 }
 
 // ErrLocalOnly is returned when an op that is not RemoteOK is requested on a remote session.
@@ -327,12 +403,41 @@ var ErrUnknownOp = errors.New("hub: unknown operation")
 // hub's own open rate, which an agent cannot influence: opens happen only for an
 // operator's request (the debug route today, the panel later).
 func (s *Session) open(name string) (*stream, error) {
-	spec, ok := s.specFor(name)
+	return s.openStream(name, true)
+}
+
+// spec looks an op up in the session's op table.
+func (s *Session) spec(name string) (agent.OpSpec, bool) {
+	s.specMu.RLock()
+	f := s.specFor
+	s.specMu.RUnlock()
+	return f(name)
+}
+
+// setSpecFor replaces the op lookup; tests only.
+func (s *Session) setSpecFor(f func(string) (agent.OpSpec, bool)) {
+	s.specMu.Lock()
+	s.specFor = f
+	s.specMu.Unlock()
+}
+
+// openStream is open; useSlot false is for `hello` only: one stream per
+// session, bounded by its 5 s timeout, that must not take one of the
+// operator-facing slots (a silent agent would otherwise hold one for 5 s).
+func (s *Session) openStream(name string, useSlot bool) (*stream, error) {
+	spec, ok := s.spec(name)
 	if !ok {
 		return nil, ErrUnknownOp
 	}
 	if !spec.RemoteOK && s.ID != LocalID {
 		return nil, ErrLocalOnly
+	}
+	if !useSlot {
+		ys, err := s.ys.OpenStream()
+		if err != nil {
+			return nil, err
+		}
+		return &stream{Stream: ys, release: func() {}}, nil
 	}
 	select {
 	case s.sem <- struct{}{}:

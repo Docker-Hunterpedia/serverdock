@@ -286,6 +286,12 @@ func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
 // the 8-byte-header multiplexed stream is demultiplexed; for TTY containers
 // the raw stream is copied.
 func (c *Client) Logs(ctx context.Context, id string, tail int, w io.Writer) error {
+	return c.LogsFollow(ctx, id, tail, true, w)
+}
+
+// LogsFollow is Logs with an explicit follow flag. With follow false Docker
+// ends the stream after the tail, so the call returns when the tail is written.
+func (c *Client) LogsFollow(ctx context.Context, id string, tail int, follow bool, w io.Writer) error {
 	if !agent.ValidContainerID(id) {
 		return errors.New("dockerapi: invalid container id")
 	}
@@ -306,7 +312,11 @@ func (c *Client) Logs(ctx context.Context, id string, tail int, w io.Writer) err
 	if err := json.Unmarshal(body, &info); err != nil {
 		return fmt.Errorf("dockerapi: inspect: %w", err)
 	}
-	q := url.Values{"follow": {"1"}, "stdout": {"1"}, "stderr": {"1"}, "tail": {strconv.Itoa(tail)}}
+	followV := "0"
+	if follow {
+		followV = "1"
+	}
+	q := url.Values{"follow": {followV}, "stdout": {"1"}, "stderr": {"1"}, "tail": {strconv.Itoa(tail)}}
 	resp, err := c.stream(ctx, "/containers/"+esc+"/logs?"+q.Encode())
 	if err != nil {
 		return err

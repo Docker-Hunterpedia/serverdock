@@ -27,7 +27,7 @@ func TestLocalOnlyOpRefusedOnRemoteAllowedOnLocal(t *testing.T) {
 	e := newEnv(t)
 	startAgent(t, e.wsURL(), "remote1", newFakeLogs(), nil)
 	remote := waitSession(t, e.hub, "remote1", 0)
-	remote.specFor = testSpecs
+	remote.setSpecFor(testSpecs)
 	if st, err := remote.open("test-write-op"); !errors.Is(err, ErrLocalOnly) || st != nil {
 		t.Fatalf("remote local-only op: stream=%v err=%v", st, err)
 	}
@@ -57,7 +57,7 @@ func TestLocalOnlyOpRefusedOnRemoteAllowedOnLocal(t *testing.T) {
 	go func() { _ = h.Attach(ctx, LocalID, a, 0) }()
 	go func() { _ = agent.ServeSession(ctx, b, newFakeLogs(), 0, quiet) }()
 	local := waitSession(t, h, LocalID, 0)
-	local.specFor = testSpecs
+	local.setSpecFor(testSpecs)
 	st, err := local.open("test-write-op")
 	if err != nil {
 		t.Fatalf("local op refused: %v", err)
