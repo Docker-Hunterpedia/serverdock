@@ -345,7 +345,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if maxSessions <= 0 {
 		maxSessions = hub.DefaultMaxSessions
 	}
-	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions), hub.WithLocalVersion(version))
 	lim := api.NewLimits(nil)
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
@@ -403,7 +403,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
-		_ = agent.ServeSession(agentCtx, pipeAgent, docker, 0, log)
+		_ = agent.Serve(agentCtx, pipeAgent, agent.Config{Logs: docker, Version: version, Mode: agent.ModeLocal}, 0, log)
 	})
 	agentDone := make(chan error, 1)
 	go func() {

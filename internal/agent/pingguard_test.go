@@ -141,12 +141,12 @@ func TestPingGuardClosesTheConnectionAndReportsIt(t *testing.T) {
 }
 
 // The agent side has the same guard: a hub (or anything on the other end) that
-// floods pings ends ServeSession instead of piling up goroutines.
-func TestServeSessionEndsOnAPingFlood(t *testing.T) {
+// floods pings ends Serve instead of piling up goroutines.
+func TestServeEndsOnAPingFlood(t *testing.T) {
 	a, b := net.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeSession(context.Background(), b, blockingLogs{calls: &atomic.Int32{}}, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		done <- Serve(context.Background(), b, Config{Logs: blockingLogs{calls: &atomic.Int32{}}}, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 	go func() {
 		buf := make([]byte, 0, 12*200)
@@ -162,7 +162,7 @@ func TestServeSessionEndsOnAPingFlood(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeSession survived a ping flood")
+		t.Fatal("Serve survived a ping flood")
 	}
 }
 

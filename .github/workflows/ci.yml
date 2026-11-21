@@ -189,6 +189,48 @@ jobs:
             .github/scripts/bench-needed.sh
           fi
 
+  # Docker integration tests (-tags integration): the real Docker on the runner
+  # and a local registry:2 on loopback, with the test app image built from
+  # internal/agent/dockerapi/testdata/app and pushed to it. Runs when `changes`
+  # says code changed (the same decision as the bench), so a docs-only PR skips
+  # it; a skipped job is not a failure. Not needed by the bench jobs.
+  integration:
+    needs: [changes]
+    if: needs.changes.outputs.bench == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # registry:2, pinned by digest (the multi-arch index).
+      REGISTRY_IMAGE: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      SD_TEST_APP_IMAGE: 127.0.0.1:5000/sd-testapp:1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: start a local registry on 127.0.0.1:5000
+        run: |
+          docker run -d --name sd-registry -p 127.0.0.1:5000:5000 "$REGISTRY_IMAGE"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5000/v2/ >/dev/null && exit 0
+            sleep 1
+          done
+          echo "registry did not start"; docker logs sd-registry; exit 1
+      - name: build and push the test app image
+        run: |
+          docker build -t "$SD_TEST_APP_IMAGE" internal/agent/dockerapi/testdata/app
+          docker push "$SD_TEST_APP_IMAGE"
+      - name: go test -race -tags integration
+        # Only packages that have integration-tagged tests; add new ones here.
+        run: go test -race -tags integration -count=1 ./internal/agent/dockerapi/... ./internal/agentops/...
+      - name: registry log on failure
+        if: failure()
+        run: docker logs sd-registry || true
+
   # One job per scenario and runner. ubuntu-latest gates; the arm64 runner
   # reports only and runs nightly (schedule) or on manual dispatch, not per push.
   # Scenarios 2 and 4 gate; 1 and 3 are report only (ADR 0008).
