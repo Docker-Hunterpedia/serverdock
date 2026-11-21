@@ -386,6 +386,9 @@ test.describe('sign in', () => {
 		void admin;
 		await page.clock.install();
 		await page.goto(url(server, '/login'));
+		// Paused, so only runFor moves the countdown: an installed clock also follows
+		// real time, and slow steps (axe on WebKit) would add ticks.
+		await page.clock.pauseAt(new Date(Date.now() + 60_000));
 		await page.route('**/api/v1/auth/login', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '125' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
 		await page.getByLabel('Username').fill('admin');
 		await page.getByLabel('Password').fill('whatever password');
@@ -394,7 +397,7 @@ test.describe('sign in', () => {
 		await expect(status(page)).toHaveText('Too many attempts. Try again in 3 minutes.');
 		await expect(submit).toHaveAttribute('aria-disabled', 'true');
 		await expect(page.getByText('Try again in 2:05')).toBeVisible(); // the visible count
-		await expectNoAxeViolations(page, 'sign in, back-off');
+		// No axe here: axe waits on timers, which a paused clock never fires (next test).
 		await page.clock.runFor(3_000); // visible text moves, the announcement does not
 		await expect(status(page)).toHaveText('Too many attempts. Try again in 3 minutes.');
 		await page.clock.runFor(2_000);
@@ -408,6 +411,17 @@ test.describe('sign in', () => {
 		await page.clock.runFor(10_000);
 		await expect(status(page)).toHaveText('You can try again now.');
 		await expect(submit).toHaveAttribute('aria-disabled', 'false');
+	});
+
+	test('the back-off state has no axe violations', async ({ page, server, admin }) => {
+		void admin;
+		await page.goto(url(server, '/login'));
+		await page.route('**/api/v1/auth/login', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '125' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
+		await page.getByLabel('Username').fill('admin');
+		await page.getByLabel('Password').fill('whatever password');
+		await page.getByRole('button', { name: 'Sign in' }).click();
+		await expect(status(page)).toHaveText('Too many attempts. Try again in 3 minutes.');
+		await expectNoAxeViolations(page, 'sign in, back-off');
 	});
 
 	test('the two-factor step warns a minute before it ends, never moves focus, then says sign in again', async ({ page, server, admin }) => {
@@ -505,6 +519,9 @@ test.describe('step 12 review fixes', () => {
 		void admin;
 		await page.clock.install();
 		await page.goto(url(server, '/login'));
+		// Paused, so only runFor moves the countdown: an installed clock also follows
+		// real time, and slow steps (axe on WebKit) would add ticks.
+		await page.clock.pauseAt(new Date(Date.now() + 60_000));
 		await page.route('**/api/v1/auth/login', (r) => r.fulfill({ status: 429, headers: { 'Retry-After': '125' }, contentType: 'application/json', body: '{"error":{"code":"rate_limited","message":"x","request_id":"r"}}' }));
 		await page.getByLabel('Username').fill('admin');
 		await page.getByLabel('Password').fill('whatever password');

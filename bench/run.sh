@@ -177,18 +177,23 @@ wait_ready_sock() { # waits for /healthz on the control socket
 
 # burst base_url [accepted status codes, default 200]. curl never follows redirects (no -L), so
 # a 308 is counted as a 308. https URLs use -k: the panel's certificate is self-signed.
+# One -o per URL: with a single -o the second URL's bodies went to stdout and could glue onto
+# a status line ("...</html>200"), so a good response was counted as a failure.
 # BURST_VIA=sock sends it through the control socket instead of the host's curl.
 burst() {
   accept=${2:-200}
   half=$((BURST / 2)); rest=$((BURST - half))
   if [ "${BURST_VIA:-}" = sock ]; then
-    ok=$(cp_curl -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
-          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -Ec "^($accept)$" || true)
+    codes=$(cp_curl -o /dev/null -o /dev/null -w '%{http_code} %{url} %{errormsg}\n' --parallel --parallel-max 10 \
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" || true)
   else
-    ok=$(curl -sk -o /dev/null -w '%{http_code}\n' --parallel --parallel-max 10 \
-          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" | grep -Ec "^($accept)$" || true)
+    codes=$(curl -sk -o /dev/null -o /dev/null -w '%{http_code} %{url} %{errormsg}\n' --parallel --parallel-max 10 \
+          "$1/healthz?n=[1-$half]" "$1/?n=[1-$rest]" || true)
   fi
+  ok=$(printf '%s\n' "$codes" | grep -Ec "^($accept) " || true)
   log "burst: $ok/$BURST requests returned $accept"
+  # Name what was not accepted (code 000 = no HTTP response; errormsg says why).
+  printf '%s\n' "$codes" | grep -Ev "^($accept) " | grep -v '^$' | head -n 10 | sed 's/^/[bench]   not accepted: /' >&2 || true
   [ "$ok" -eq "$BURST" ]
 }
 
