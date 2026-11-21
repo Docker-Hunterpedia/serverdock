@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -208,6 +209,7 @@ func FuzzParseV1Request(f *testing.F) {
 		`{"v":1,"op":"hello","args":{"hub_max_v":1}}`, `{"v":1,"op":"hello"}`, `{"v":1,"op":"hello"} x`,
 		`{"v":2,"op":"hello"}`, `{"op":"logs","container":"a","tail":1}`, ``, `{"v":1,"op":"hello","args":null}`,
 		`{"v":1,"op":"hello","op":"hello"}`, `{"V":1,"op":"hello"}`, `{"v":1,"OP":"hello"}`,
+		`{"v":1,"op":"hello","args":{"hub_max_v":1,"hub_max_v":2}}`, `{"v":1,"op":"hello","args":[{"Type":"volume","type":"bind"}]}`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -459,3 +461,126 @@ func TestAgentErrorAndHelloLinesStayUnderTheirCaps(t *testing.T) {
 }
 
 func mustSpec(name string) OpSpec { s, _ := SpecFor(name); return s }
+
+// strictProbe is a destination type for the checkKeys tests.
+type strictProbe struct {
+	Items []struct {
+		Type string `json:"type"`
+	} `json:"items"`
+	Ptrs []*struct {
+		Name string `json:"name"`
+	} `json:"ptrs"`
+	Grid [][]struct {
+		X int `json:"x"`
+	} `json:"grid"`
+	Labels map[string]string `json:"labels"`
+	Nested map[string]struct {
+		K string `json:"k"`
+	} `json:"nested"`
+	Raw json.RawMessage `json:"raw"`
+	Any any             `json:"any"`
+}
+
+func TestCheckKeysDescendsIntoArraysAndMaps(t *testing.T) {
+	bad := []string{
+		`{"items":[{"Type":"volume","type":"bind"}]}`, // case variant of a known key inside an array element
+		`{"items":[{"type":"a","type":"b"}]}`,         // duplicate inside an array element
+		`{"items":[{"type":"a"},{"nope":1}]}`,         // unknown field in the second element
+		`{"ptrs":[{"name":"a","name":"b"}]}`,          // pointer element
+		`{"grid":[[{"x":1,"X":2}]]}`,                  // array of arrays
+		`{"labels":{"a":"1","a":"2"}}`,                // duplicate map key
+		`{"nested":{"a":{"k":"1"},"a":{"k":"2"}}}`,    // duplicate key at the map level
+		`{"nested":{"a":{"k":"1","k":"2"}}}`,          // duplicate inside a map value
+		`{"nested":{"a":{"K":"1"}}}`,                  // unknown field inside a map value
+		`{"any":{"a":1,"a":2}}`,                       // interface values: duplicates only
+		`{"any":[{"a":1,"a":2}]}`,                     // ... also inside arrays
+		`{"labels":{"a":"1"},"labels":{}}`,            // duplicate top-level key
+		`{"items":[{"type":"a"}`,                      // truncated
+	}
+	for _, s := range bad {
+		if err := checkKeys([]byte(s), reflect.TypeOf(strictProbe{})); err == nil {
+			t.Errorf("accepted %s", s)
+		}
+	}
+	good := []string{
+		`{}`,
+		`{"items":[{"type":"a"},{"type":"b"}],"ptrs":[{"name":"x"},null]}`,
+		`{"grid":[[{"x":1}],[]]}`,
+		`{"labels":{"a":"1","A":"2"}}`, // different keys, even if they differ only by case
+		`{"nested":{"a":{"k":"1"},"b":{"k":"2"}}}`,
+		`{"raw":{"a":1,"a":2}}`, // RawMessage contents are checked where they are decoded
+		`{"any":{"a":1,"b":[1,{"c":2}]}}`,
+	}
+	for _, s := range good {
+		if err := checkKeys([]byte(s), reflect.TypeOf(strictProbe{})); err != nil {
+			t.Errorf("refused %s: %v", s, err)
+		}
+	}
+}
+
+// decodeStrict is the entry point: the same cases through it, with the real
+// destination types.
+func TestDecodeStrictRefusesCaseVariantsInsideArrays(t *testing.T) {
+	var p strictProbe
+	if err := decodeStrict([]byte(`{"items":[{"Type":"volume","type":"bind"}]}`), &p); err == nil {
+		t.Fatal("accepted a case-variant key inside an array element")
+	}
+	if err := decodeStrict([]byte(`{"items":[{"type":"bind"}]}`), &p); err != nil || p.Items[0].Type != "bind" {
+		t.Fatalf("refused a good body: %v", err)
+	}
+}
+
+// fieldByTag fails closed on a field without a json tag name, so every type
+// that goes through decodeStrict (and anything nested in it) must tag every
+// field: an untagged or embedded field would make its keys "unknown".
+func TestProtocolTypesTagEveryField(t *testing.T) {
+	roots := []any{Request{}, Line{}, OpError{}, HelloArgs{}, HelloResult{}, Op{}}
+	seen := map[reflect.Type]bool{}
+	var walk func(t reflect.Type)
+	walk = func(ty reflect.Type) {
+		for ty.Kind() == reflect.Pointer || ty.Kind() == reflect.Slice || ty.Kind() == reflect.Array || ty.Kind() == reflect.Map {
+			ty = ty.Elem()
+		}
+		if ty.Kind() != reflect.Struct || seen[ty] {
+			return
+		}
+		seen[ty] = true
+		for i := 0; i < ty.NumField(); i++ {
+			f := ty.Field(i)
+			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			if name == "" || name == "-" || f.Anonymous {
+				t.Errorf("%s.%s has no json tag name (or is embedded)", ty, f.Name)
+			}
+			walk(f.Type)
+		}
+	}
+	for _, r := range roots {
+		walk(reflect.TypeOf(r))
+	}
+	if len(seen) < 5 {
+		t.Fatalf("only %d types walked", len(seen))
+	}
+}
+
+// What checkKeys accepts must decode with no duplicate key anywhere: a second
+// decode of the accepted bytes into a generic value must see each object once.
+func FuzzCheckKeys(f *testing.F) {
+	for _, s := range []string{
+		`{"items":[{"Type":"volume","type":"bind"}]}`, `{"items":[{"type":"a"}]}`, `{"labels":{"a":"1","a":"2"}}`,
+		`{"nested":{"a":{"k":"1"}}}`, `{"grid":[[{"x":1}]]}`, `{"any":[{"a":1,"a":2}]}`, `{`, `[]`, ``,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if err := checkKeys(b, reflect.TypeOf(strictProbe{})); err != nil {
+			return
+		}
+		var p strictProbe
+		if err := json.Unmarshal(b, &p); err != nil {
+			return
+		}
+		if bytes.Contains(b, []byte(`"Items"`)) || bytes.Contains(b, []byte(`"ITEMS"`)) {
+			t.Fatalf("accepted a case-variant key: %q", b)
+		}
+	})
+}

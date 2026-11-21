@@ -115,10 +115,14 @@ func decodeStrict(b []byte, dst any) error {
 }
 
 // checkKeys walks the JSON object in b (the same bytes decodeStrict then
-// decodes) and refuses a duplicate key and any key that is not exactly a json
-// tag name of the destination struct (recursively for nested struct fields).
-// Values of non-struct fields (json.RawMessage, maps, slices) are skipped here;
-// their own decoder applies the same rule when they are decoded.
+// decodes) and refuses a duplicate key anywhere (encoding/json keeps the last
+// of a duplicate, in structs and in maps) and any key that is not exactly a
+// json tag name of the destination struct. It descends into nested structs,
+// pointers, slices and arrays (each element is checked against the element
+// type) and map values (checked against the value type). Only the contents of
+// a json.RawMessage are skipped; they are decoded, and so checked, again by
+// the code that owns them (DecodeArgs). Values of interface type get the
+// duplicate-key check only.
 func checkKeys(b []byte, t reflect.Type) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	tok, err := dec.Token()
@@ -131,19 +135,29 @@ func checkKeys(b []byte, t reflect.Type) error {
 	return checkObject(dec, t)
 }
 
-func structOf(t reflect.Type) (reflect.Type, bool) {
+var rawMessageType = reflect.TypeOf(json.RawMessage(nil))
+
+// derefType strips pointers.
+func derefType(t reflect.Type) reflect.Type {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t != nil && t.Kind() == reflect.Struct {
-		return t, true
-	}
-	return nil, false
+	return t
 }
 
-// checkObject runs after the opening brace has been read.
+// checkObject runs after the opening brace has been read. t is the type the
+// object decodes into (nil or an interface: no field check).
 func checkObject(dec *json.Decoder, t reflect.Type) error {
-	st, isStruct := structOf(t)
+	t = derefType(t)
+	var st, mt reflect.Type
+	if t != nil {
+		switch t.Kind() {
+		case reflect.Struct:
+			st = t
+		case reflect.Map:
+			mt = t.Elem()
+		}
+	}
 	seen := map[string]bool{}
 	for dec.More() {
 		kt, err := dec.Token()
@@ -156,33 +170,57 @@ func checkObject(dec *json.Decoder, t reflect.Type) error {
 		}
 		seen[key] = true
 		var ft reflect.Type
-		if isStruct {
+		switch {
+		case st != nil:
 			f, ok := fieldByTag(st, key)
 			if !ok {
 				return fmt.Errorf("unknown field %q", CleanText(key, 64))
 			}
 			ft = f.Type
+		case mt != nil:
+			ft = mt
 		}
-		vt, err := dec.Token()
-		if err != nil {
+		if err := checkValue(dec, ft); err != nil {
 			return err
-		}
-		if d, ok := vt.(json.Delim); ok {
-			if d == '{' {
-				if _, nested := structOf(ft); nested {
-					if err := checkObject(dec, ft); err != nil {
-						return err
-					}
-					continue
-				}
-			}
-			if err := skipContainer(dec); err != nil {
-				return err
-			}
 		}
 	}
 	_, err := dec.Token() // the closing brace
 	return err
+}
+
+// checkArray runs after the opening bracket has been read.
+func checkArray(dec *json.Decoder, t reflect.Type) error {
+	t = derefType(t)
+	var et reflect.Type
+	if t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
+		et = t.Elem()
+	}
+	for dec.More() {
+		if err := checkValue(dec, et); err != nil {
+			return err
+		}
+	}
+	_, err := dec.Token() // the closing bracket
+	return err
+}
+
+// checkValue consumes one value of type t from dec.
+func checkValue(dec *json.Decoder, t reflect.Type) error {
+	vt, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	d, ok := vt.(json.Delim)
+	if !ok {
+		return nil // a scalar
+	}
+	if t == rawMessageType {
+		return skipContainer(dec) // checked again where it is decoded
+	}
+	if d == '{' {
+		return checkObject(dec, t)
+	}
+	return checkArray(dec, t)
 }
 
 // skipContainer consumes tokens up to the end of the container just opened.
@@ -203,6 +241,11 @@ func skipContainer(dec *json.Decoder) error {
 	return nil
 }
 
+// fieldByTag finds the field whose json tag name is exactly key. It fails
+// closed: a field with no json tag name (untagged, "-", or an embedded struct,
+// which encoding/json would flatten) is never matched, so a protocol type may
+// not rely on untagged fields. TestProtocolTypesTagEveryField enforces that
+// every type decoded through decodeStrict tags every field.
 func fieldByTag(t reflect.Type, key string) (reflect.StructField, bool) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)

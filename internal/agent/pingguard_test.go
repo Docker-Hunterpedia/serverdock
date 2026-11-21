@@ -142,7 +142,7 @@ func TestPingGuardClosesTheConnectionAndReportsIt(t *testing.T) {
 
 // The agent side has the same guard: a hub (or anything on the other end) that
 // floods pings ends Serve instead of piling up goroutines.
-func TestServeSessionEndsOnAPingFlood(t *testing.T) {
+func TestServeEndsOnAPingFlood(t *testing.T) {
 	a, b := net.Pipe()
 	done := make(chan error, 1)
 	go func() {
