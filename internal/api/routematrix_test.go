@@ -400,6 +400,7 @@ func known() map[string]AuthKind {
 		"POST /api/v1/actions/{name}":             SessionOrToken,
 		"GET /api/v1/openapi.json":                SessionOrToken,
 		"GET /debug/mem":                          DebugSocket,
+		"GET /debug/goroutines":                   DebugSocket,
 		"GET /debug/agents":                       DebugSocket,
 		"GET /debug/agents/{id}/logs/{container}": DebugSocket,
 		"GET /test/session-or-token":              SessionOrToken,

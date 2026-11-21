@@ -265,6 +265,17 @@ func TestPanelConfig(t *testing.T) {
 	if lf["certificate"] != "/data/pki/panel.pem" || lf["key"] != "/data/pki/panel.pem" || tls["disable_ocsp_stapling"] != true {
 		t.Errorf("tls app %v", tls)
 	}
+	// No managed certificates, so no storage clean-up pass.
+	if tls["disable_storage_clean"] != true {
+		t.Errorf("tls app %v: storage clean is on", tls)
+	}
+	// HTTP/1.1 and HTTP/2 only: no HTTP/3 (no UDP listener, no Alt-Svc).
+	if got := panel["protocols"].([]any); len(got) != 2 || got[0] != "h1" || got[1] != "h2" {
+		t.Errorf("panel protocols %v, want [h1 h2]", got)
+	}
+	if _, ok := main["protocols"]; ok {
+		t.Error(":80 sets protocols; it is plain HTTP and needs none")
+	}
 
 	// :80: one redirect route, never a reverse proxy; Caddy logs at WARN.
 	routes := main["routes"].([]any)

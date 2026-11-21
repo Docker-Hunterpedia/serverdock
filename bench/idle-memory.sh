@@ -26,7 +26,13 @@
 # (its listener and handlers), so run once with NO_DEBUG_READ=1 as a control. The script
 # prints at which sample each read happened.
 #
-# Environment: WINDOW=300 INTERVAL=5 SKIP_BUILD=1 NO_DEBUG_READ=1 IMAGE=serverdock-bench:local
+# GODEBUG (for example GODEBUG=disablethp=1) is passed through to the server, for the THP A/B.
+# The THP settings of the machine the container runs on are printed first, and AnonHugePages
+# is sampled next to RssAnon (MEASURE_THP=1 in bench/measure.sh).
+#
+# GOROUTINES_OUT=path keeps the goroutine dump taken at the end of the window.
+#
+# Environment: WINDOW=300 INTERVAL=5 SKIP_BUILD=1 NO_DEBUG_READ=1 GODEBUG=... IMAGE=serverdock-bench:local
 set -eu
 cd "$(dirname "$0")/.."
 IMAGE=${IMAGE:-serverdock-bench:local}
@@ -45,8 +51,8 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker volume rm "$VOL" >/dev/null 2>&1 || true
 docker volume create "$VOL" >/dev/null
 # The volume root is root-owned; hand it to the image's nonroot uid before the server runs.
-docker run --rm -v "$VOL":/debug --user 0:0 --entrypoint /bin/sh busybox:1 -c 'chown 65532:65532 /debug && chmod 700 /debug' >/dev/null 2>&1 || true
-docker run -d --name "$NAME" --memory 1g --cpus 1 -p 127.0.0.1::443 -v "$VOL":/debug "$IMAGE" \
+docker run --rm -v "$VOL":/debug --user 0:0 --entrypoint /bin/sh busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 -c 'chown 65532:65532 /debug && chmod 700 /debug' >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --memory 1g --cpus 1 -p 127.0.0.1::443 -v "$VOL":/debug ${GODEBUG:+-e GODEBUG="$GODEBUG"} "$IMAGE" \
   server --data /data --proxy=true --listen :80 --debug-socket /debug/sd.sock >/dev/null
 ADDR=$(docker port "$NAME" 443/tcp | head -n1)
 i=0
@@ -67,8 +73,12 @@ PY
 }
 json() { python3 -I -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 post() { curl -sSk -b "$WORK/jar" -c "$WORK/jar" -H 'Content-Type: application/json' -H "Origin: https://$ADDR" -X POST "https://$ADDR$1" -d "$2"; }
+dbg_get() { docker run --rm --user 65532:65532 -v "$VOL":/debug "$CURL" -sS --unix-socket /debug/sd.sock "http://debug$1"; }
 dbg_mem() { docker run --rm --user 65532:65532 -v "$VOL":/debug "$CURL" -sS --unix-socket /debug/sd.sock http://debug/debug/mem; }
 
+ALPINE=alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+THP=$(docker run --rm "$ALPINE" sh -c 'printf "transparent_hugepage/enabled: %s; defrag: %s; khugepaged/max_ptes_none: %s" "$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>&1)" "$(cat /sys/kernel/mm/transparent_hugepage/defrag 2>&1)" "$(cat /sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none 2>&1)"' 2>&1) || THP="unreadable"
+log "THP: $THP${GODEBUG:+ (GODEBUG=$GODEBUG)}"
 log "warm-up 20 s"; sleep 20
 docker cp "$NAME:/data/setup-token" "$WORK/token" >/dev/null
 TOKEN=$(tr -d '\n' <"$WORK/token")
@@ -84,7 +94,7 @@ for _ in 1 2 3; do
   [ "$(post /api/v1/auth/2fa "{\"code\":\"$(totp "$SECRET")\"}" | json "['username']")" = admin ] || { log "sign-in failed"; exit 1; }
 done
 log "last sign-in done: sampling RssAnon every ${INTERVAL}s for ${WINDOW}s (no traffic from here on)"
-bench/measure.sh "$NAME" "$WINDOW" "$INTERVAL" "$WORK/rss.tsv" >/dev/null 2>&1 &
+MEASURE_THP=1 bench/measure.sh "$NAME" "$WINDOW" "$INTERVAL" "$WORK/rss.tsv" >/dev/null 2>&1 &
 MEASURE=$!
 T0=$(date +%s)
 sleep 60
@@ -95,6 +105,10 @@ else echo '{}' >"$WORK/mem60.json"; echo - >"$WORK/read60.idx"; fi
 wait "$MEASURE"
 if [ -z "${NO_DEBUG_READ:-}" ]; then
   dbg_mem >"$WORK/memend.json" 2>/dev/null || echo '{}' >"$WORK/memend.json"
+  # A goroutine dump of the idle server, to check that every timer-parked goroutine has a
+  # Background work row (docs/architecture.md). GOROUTINES_OUT keeps it next to the results.
+  dbg_get /debug/goroutines >"${GOROUTINES_OUT:-$WORK/goroutines.txt}" 2>/dev/null || true
+  [ -z "${GOROUTINES_OUT:-}" ] || log "goroutine dump written to $GOROUTINES_OUT"
 else echo '{}' >"$WORK/memend.json"; fi
 
 python3 -I - "$WORK/rss.tsv" "$WORK/rss.tsv.mode" "$WORK/mem60.json" "$WORK/memend.json" "$INTERVAL" "$WORK/read60.idx" <<'PY'
@@ -102,6 +116,7 @@ import json, sys
 tsv, mode, m60, mend, interval, ridx = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), open(sys.argv[6]).read().strip()
 rows = [l.rstrip("\n").split("\t") for l in open(tsv)][1:]
 anon = [int(r[3]) / 1e6 for r in rows]
+huge = [int(r[10]) / 1e6 for r in rows if len(r) > 10]
 per_min = max(1, 60 // interval)
 first, last = sum(anon[:per_min]) / len(anon[:per_min]), sum(anon[-per_min:]) / len(anon[-per_min:])
 rng = max(anon) - min(anon)
@@ -115,6 +130,8 @@ print(f"idle RssAnon, {len(anon)} samples every {interval}s after the last sign-
 print(f"  min {min(anon):.1f} MB  max {max(anon):.1f} MB  range {rng:.1f} MB  first minute {first:.1f} MB  last minute {last:.1f} MB")
 print("  series (MB): " + " ".join(f"{a:.1f}" for a in anon[::max(1, len(anon)//30)]))
 print(f"  verdict: {verdict}")
+if huge:
+    print(f"  AnonHugePages (MB): min {min(huge):.1f} max {max(huge):.1f}; series: " + " ".join(f"{a:.0f}" for a in huge[::max(1, len(huge)//30)]))
 print(f"  the +60 s debug read finished at sample {ridx} ('-' = control run, no debug reads)")
 for label, f in (("+60 s", m60), ("end", mend)):
     try:

@@ -304,7 +304,38 @@ func TestNoTCPControlListener(t *testing.T) {
 			t.Errorf("listening TCP ports %v, want only the proxy's %s and %s", ports, p80, p443)
 		}
 	}
+	// HTTP/3 is off on the panel: Caddy opens no UDP socket at all.
+	if n, ok := udpSockets(p2.Cmd.Process.Pid); ok && n != 0 {
+		t.Errorf("the server holds %d UDP sockets; the panel is HTTP/1.1 and HTTP/2 only", n)
+	}
 	p2.Stop()
+}
+
+// udpSockets counts the UDP sockets the process holds, read from /proc (Linux).
+func udpSockets(pid int) (n int, ok bool) {
+	fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+	if err != nil {
+		return 0, false
+	}
+	inodes := map[string]bool{}
+	for _, fd := range fds {
+		if l, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, fd.Name())); err == nil && strings.HasPrefix(l, "socket:[") {
+			inodes[strings.TrimSuffix(strings.TrimPrefix(l, "socket:["), "]")] = true
+		}
+	}
+	for _, f := range []string{"udp", "udp6"} {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", pid, f))
+		if err != nil {
+			return 0, false
+		}
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			fields := strings.Fields(line)
+			if len(fields) > 9 && inodes[fields[9]] {
+				n++
+			}
+		}
+	}
+	return n, true
 }
 
 func atoiOr0(s string) int { n, _ := strconv.Atoi(s); return n }

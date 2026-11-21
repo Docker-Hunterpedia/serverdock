@@ -13,9 +13,12 @@ export default defineConfig({
 	outputDir: 'e2e/.results',
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
-	retries: 0,
+	// One retry on CI, and the run reports how many tests needed it: e2e/flaky-report.mjs
+	// (a CI step) prints the count and fails above a small threshold, so a flaky test
+	// is visible and cannot hide behind the retry.
+	retries: process.env.CI ? 1 : 0,
 	workers: process.env.CI ? 2 : undefined,
-	reporter: process.env.CI ? [['list'], ['github']] : 'list',
+	reporter: process.env.CI ? [['list'], ['github'], ['json', { outputFile: 'e2e/.results/report.json' }]] : 'list',
 	globalSetup: './e2e/global-setup.ts',
 	use: {
 		baseURL: BASE_URL,

@@ -1,0 +1,299 @@
+goroutine 451 [running]:
+runtime/pprof.writeGoroutineStacks({0x2d86600, 0x13aa6fb00c30})
+	runtime/pprof/pprof.go:816 +0x6c
+runtime/pprof.writeGoroutine({0x2d86600?, 0x13aa6fb00c30?}, 0x13aa6fdfe808?)
+	runtime/pprof/pprof.go:779 +0x2c
+runtime/pprof.(*Profile).WriteTo(0x2eba790?, {0x2d86600?, 0x13aa6fb00c30?}, 0xc?)
+	runtime/pprof/pprof.go:405 +0x144
+github.com/Docker-Hunterpedia/serverdock/internal/api.debugGoroutines({0x2d9aa00, 0x13aa6fb00c30}, 0x800?)
+	github.com/Docker-Hunterpedia/serverdock/internal/api/routes.go:174 +0xfc
+net/http.HandlerFunc.ServeHTTP(0x13aa6fd68780?, {0x2d9aa00?, 0x13aa6fb00c30?}, 0x13aa6f9de0f0?)
+	net/http/server.go:2362 +0x38
+net/http.(*ServeMux).ServeHTTP(0x13aa6fd00024?, {0x2d9aa00, 0x13aa6fb00c30}, 0x13aa6fd6e500)
+	net/http/server.go:2927 +0x194
+github.com/Docker-Hunterpedia/serverdock/internal/api.headers.func1({0x2d9aa00, 0x13aa6fb00c30}, 0x13aa6fd6e500)
+	github.com/Docker-Hunterpedia/serverdock/internal/api/middleware.go:183 +0x138
+net/http.HandlerFunc.ServeHTTP(0x2d9aa00?, {0x2d9aa00?, 0x13aa6fb00c30?}, 0x2f47dc0?)
+	net/http/server.go:2362 +0x38
+net/http.MaxBytesHandler.func1({0x2d9aa00, 0x13aa6fb00c30}, 0x13aa6fd6e3c0)
+	net/http/server.go:4317 +0xf4
+net/http.HandlerFunc.ServeHTTP(0x0?, {0x2d9aa00?, 0x13aa6fb00c30?}, 0x13aa6fdfeae0?)
+	net/http/server.go:2362 +0x38
+net/http.serverHandler.ServeHTTP({0x13aa6fc40000?}, {0x2d9aa00?, 0x13aa6fb00c30?}, 0x1?)
+	net/http/server.go:3440 +0xb0
+net/http.(*conn).serve(0x13aa6fe9e000, {0x2d9f218, 0x13aa6fcd68d0})
+	net/http/server.go:2161 +0x5a0
+created by net/http.(*Server).Serve in goroutine 24
+	net/http/server.go:3608 +0x3e8
+
+goroutine 1 [select, 6 minutes]:
+main.runServer({0x2d9f480, 0x13aa6fb85d40}, {{0xffffd4100f12, 0x5}, {0xffffd4100f2e, 0x3}, {0x1430cce, 0x4}, {0x0, 0x0, ...}, ...}, ...)
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:424 +0x1da8
+main.serverMain({0x13aa6fa34020, 0x7, 0x7}, {0x2d85580, 0x13aa6fa08030})
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:156 +0x364
+main.run({0x13aa6fa34010?, 0x0?, 0x0?}, {0x2d85580?, 0x13aa6fa08028?}, {0x2d85580, 0x13aa6fa08030})
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/main.go:31 +0x240
+main.main()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/main.go:16 +0x6c
+
+goroutine 6 [syscall, 6 minutes]:
+os/signal.signal_recv()
+	runtime/sigqueue.go:152 +0x114
+os/signal.loop()
+	os/signal/signal_unix.go:23 +0x1c
+created by os/signal.Notify.func2.1 in goroutine 1
+	os/signal/signal.go:164 +0x28
+
+goroutine 7 [select, 6 minutes]:
+os/signal.NotifyContext.func1()
+	os/signal/signal.go:304 +0x74
+created by os/signal.NotifyContext in goroutine 1
+	os/signal/signal.go:303 +0x144
+
+goroutine 8 [select, 6 minutes]:
+database/sql.(*DB).connectionOpener(0x13aa6f942000, {0x2d9f250, 0x13aa6fd72000})
+	database/sql/sql.go:1266 +0x84
+created by database/sql.OpenDB in goroutine 1
+	database/sql/sql.go:846 +0x11c
+
+goroutine 51 [select, 6 minutes]:
+database/sql.(*DB).connectionOpener(0x13aa6f942340, {0x2d9f250, 0x13aa6fd728c0})
+	database/sql/sql.go:1266 +0x84
+created by database/sql.OpenDB in goroutine 1
+	database/sql/sql.go:846 +0x11c
+
+goroutine 29 [select, 6 minutes]:
+net.(*pipe).read(0x13aa6fc16880, {0x13aa6fd18000, 0x1000, 0x20b630?})
+	net/pipe.go:159 +0xe4
+net.(*pipe).Read(0x13aa6fb8be38?, {0x13aa6fd18000?, 0x13aa6f9449d8?, 0x13aa6fb8be20?})
+	net/pipe.go:142 +0x20
+github.com/Docker-Hunterpedia/serverdock/internal/agent.(*pingGuard).Read(0x13aa6fa32cc0, {0x13aa6fd18000, 0x13aa6fc45a40?, 0x1000})
+	github.com/Docker-Hunterpedia/serverdock/internal/agent/pingguard.go:56 +0x30
+bufio.(*Reader).Read(0x13aa6fa32d80, {0x13aa6fc45a40, 0xc, 0x138e590?})
+	bufio/bufio.go:245 +0x188
+io.ReadAtLeast({0x2d855c0, 0x13aa6fa32d80}, {0x13aa6fc45a40, 0xc, 0xc}, 0xc)
+	io/io.go:335 +0x90
+io.ReadFull(...)
+	io/io.go:354
+github.com/hashicorp/yamux.(*Session).recvLoop(0x13aa6fd06270)
+	github.com/hashicorp/yamux@v0.1.2/session.go:553 +0x90
+github.com/hashicorp/yamux.(*Session).recv(0x13aa6fd06270)
+	github.com/hashicorp/yamux@v0.1.2/session.go:532 +0x20
+created by github.com/hashicorp/yamux.newSession in goroutine 80
+	github.com/hashicorp/yamux@v0.1.2/session.go:119 +0x350
+
+goroutine 30 [select, 6 minutes]:
+github.com/hashicorp/yamux.(*Session).sendLoop(0x13aa6fd06270)
+	github.com/hashicorp/yamux@v0.1.2/session.go:484 +0xb8
+github.com/hashicorp/yamux.(*Session).send(0x13aa6fd06270)
+	github.com/hashicorp/yamux@v0.1.2/session.go:473 +0x20
+created by github.com/hashicorp/yamux.newSession in goroutine 80
+	github.com/hashicorp/yamux@v0.1.2/session.go:120 +0x398
+
+goroutine 28 [select, 6 minutes]:
+github.com/hashicorp/yamux.(*Session).AcceptStream(0x13aa6fd060d0)
+	github.com/hashicorp/yamux@v0.1.2/session.go:243 +0x5c
+github.com/Docker-Hunterpedia/serverdock/internal/hub.(*Hub).attach.func1()
+	github.com/Docker-Hunterpedia/serverdock/internal/hub/hub.go:249 +0x44
+sync.(*WaitGroup).Go.func1()
+	sync/waitgroup.go:258 +0x48
+created by sync.(*WaitGroup).Go in goroutine 79
+	sync/waitgroup.go:238 +0x78
+
+goroutine 27 [select, 6 minutes]:
+github.com/hashicorp/yamux.(*Session).sendLoop(0x13aa6fd060d0)
+	github.com/hashicorp/yamux@v0.1.2/session.go:484 +0xb8
+github.com/hashicorp/yamux.(*Session).send(0x13aa6fd060d0)
+	github.com/hashicorp/yamux@v0.1.2/session.go:473 +0x20
+created by github.com/hashicorp/yamux.newSession in goroutine 79
+	github.com/hashicorp/yamux@v0.1.2/session.go:120 +0x398
+
+goroutine 26 [select, 6 minutes]:
+net.(*pipe).read(0x13aa6fc16800, {0x13aa6fdb1000, 0x1000, 0x75254?})
+	net/pipe.go:159 +0xe4
+net.(*pipe).Read(0x0?, {0x13aa6fdb1000?, 0x2?, 0x0?})
+	net/pipe.go:142 +0x20
+github.com/Docker-Hunterpedia/serverdock/internal/agent.(*pingGuard).Read(0x13aa6fa32b40, {0x13aa6fdb1000, 0x13aa6fc45a30?, 0x1000})
+	github.com/Docker-Hunterpedia/serverdock/internal/agent/pingguard.go:56 +0x30
+bufio.(*Reader).Read(0x13aa6fa32c00, {0x13aa6fc45a30, 0xc, 0x138e590?})
+	bufio/bufio.go:245 +0x188
+io.ReadAtLeast({0x2d855c0, 0x13aa6fa32c00}, {0x13aa6fc45a30, 0xc, 0xc}, 0xc)
+	io/io.go:335 +0x90
+io.ReadFull(...)
+	io/io.go:354
+github.com/hashicorp/yamux.(*Session).recvLoop(0x13aa6fd060d0)
+	github.com/hashicorp/yamux@v0.1.2/session.go:553 +0x90
+github.com/hashicorp/yamux.(*Session).recv(0x13aa6fd060d0)
+	github.com/hashicorp/yamux@v0.1.2/session.go:532 +0x20
+created by github.com/hashicorp/yamux.newSession in goroutine 79
+	github.com/hashicorp/yamux@v0.1.2/session.go:119 +0x350
+
+goroutine 25 [IO wait, 6 minutes]:
+internal/poll.runtime_pollWait(0xffff6f97d000, 0x72)
+	runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x13aa6fa6f880?, 0x260148?, 0x0)
+	internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Accept(0x13aa6fa6f880)
+	internal/poll/fd_unix.go:618 +0x210
+net.(*netFD).accept(0x13aa6fa6f880)
+	net/fd_unix.go:149 +0x28
+net.(*UnixListener).accept(0x13aa6fbdddd8?)
+	net/unixsock_posix.go:172 +0x20
+net.(*UnixListener).Accept(0x13aa6fba0ab0)
+	net/unixsock.go:275 +0x2c
+github.com/Docker-Hunterpedia/serverdock/internal/limits.(*Listener).Accept(0x13aa6fd72eb0)
+	github.com/Docker-Hunterpedia/serverdock/internal/limits/limits.go:340 +0x78
+net/http.(*Server).Serve(0x13aa6fd6fa40, {0x2d9a6d0, 0x13aa6fd72eb0})
+	net/http/server.go:3578 +0x2a8
+github.com/Docker-Hunterpedia/serverdock/internal/api.Serve.func1()
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:97 +0x28
+created by github.com/Docker-Hunterpedia/serverdock/internal/api.Serve in goroutine 77
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:97 +0x1b0
+
+goroutine 24 [IO wait]:
+internal/poll.runtime_pollWait(0xffff6f97ce00, 0x72)
+	runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x13aa6fa6fa00?, 0x30128?, 0x0)
+	internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Accept(0x13aa6fa6fa00)
+	internal/poll/fd_unix.go:618 +0x210
+net.(*netFD).accept(0x13aa6fa6fa00)
+	net/fd_unix.go:149 +0x28
+net.(*UnixListener).accept(0x13aa6fbdbe58?)
+	net/unixsock_posix.go:172 +0x20
+net.(*UnixListener).Accept(0x13aa6fba0b40)
+	net/unixsock.go:275 +0x2c
+net/http.(*Server).Serve(0x13aa6fd6f900, {0x2d9a6a0, 0x13aa6fcb3300})
+	net/http/server.go:3578 +0x2a8
+github.com/Docker-Hunterpedia/serverdock/internal/api.Serve.func1()
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:97 +0x28
+created by github.com/Docker-Hunterpedia/serverdock/internal/api.Serve in goroutine 78
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:97 +0x1b0
+
+goroutine 77 [select, 6 minutes]:
+github.com/Docker-Hunterpedia/serverdock/internal/api.Serve({0x2d9f250, 0x13aa6fd72f00}, {0x2d9a6d0, 0x13aa6fd72eb0}, {0x2d85660, 0x13aa6f9337b8}, 0x2540be400, {0x13aa6fbdcfc0, 0x1, 0x2db6c28?})
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:98 +0x1fc
+main.runServer.func5()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:374 +0x90
+created by main.runServer in goroutine 1
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:374 +0x18e0
+
+goroutine 78 [select, 6 minutes]:
+github.com/Docker-Hunterpedia/serverdock/internal/api.Serve({0x2d9f250, 0x13aa6fd72f00}, {0x2d9a6a0, 0x13aa6fcb3300}, {0x2d85660, 0x13aa6f933560}, 0x2540be400, {0x0, 0x0, 0x1090db8?})
+	github.com/Docker-Hunterpedia/serverdock/internal/api/api.go:98 +0x1fc
+main.runServer.func7()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:391 +0x74
+created by main.runServer in goroutine 1
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:391 +0x1a8c
+
+goroutine 79 [select, 6 minutes]:
+github.com/Docker-Hunterpedia/serverdock/internal/hub.(*Hub).attach(0x13aa6fa6fb80, {0x2d9f250, 0x13aa6fd72f00}, {0x1431c68, 0x5}, {0x143cda7, 0xa}, {0x2da71e0, 0x13aa6fc16800}, 0x0)
+	github.com/Docker-Hunterpedia/serverdock/internal/hub/hub.go:264 +0x798
+github.com/Docker-Hunterpedia/serverdock/internal/hub.(*Hub).Attach(...)
+	github.com/Docker-Hunterpedia/serverdock/internal/hub/hub.go:222
+main.runServer.func8()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:404 +0x44
+sync.(*WaitGroup).Go.func1()
+	sync/waitgroup.go:258 +0x48
+created by sync.(*WaitGroup).Go in goroutine 1
+	sync/waitgroup.go:238 +0x78
+
+goroutine 80 [select, 6 minutes]:
+github.com/hashicorp/yamux.(*Session).AcceptStream(0x13aa6fd06270)
+	github.com/hashicorp/yamux@v0.1.2/session.go:243 +0x5c
+github.com/Docker-Hunterpedia/serverdock/internal/agent.ServeSession({0x2d9f250, 0x13aa6fd72f50}, {0x2da71e0, 0x13aa6fc16880}, {0x2d85540, 0x13aa6fcb3440}, 0x0, 0x13aa6fd4dea0)
+	github.com/Docker-Hunterpedia/serverdock/internal/agent/session.go:70 +0x360
+main.runServer.func9()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:406 +0x34
+sync.(*WaitGroup).Go.func1()
+	sync/waitgroup.go:258 +0x48
+created by sync.(*WaitGroup).Go in goroutine 1
+	sync/waitgroup.go:238 +0x78
+
+goroutine 81 [chan receive, 6 minutes]:
+github.com/Docker-Hunterpedia/serverdock/internal/agent.RunLocal({0x2d9f250, 0x13aa6fd72f50}, {{0xffffd4100f12, 0x5}, {0xffffd4100f2e, 0x3}, {0x13aa6fa51878, 0x16}, 0x1, {0x0, ...}, ...}, ...)
+	github.com/Docker-Hunterpedia/serverdock/internal/agent/local.go:44 +0x218
+main.runServer.func10()
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:410 +0x204
+created by main.runServer in goroutine 1
+	github.com/Docker-Hunterpedia/serverdock/cmd/serverdock/server.go:409 +0x1d38
+
+goroutine 89 [select, 6 minutes]:
+github.com/caddyserver/certmagic.(*Cache).maintainAssets(0x13aa6fc17480, 0x0)
+	github.com/caddyserver/certmagic@v0.25.6/maintain.go:69 +0x288
+created by github.com/caddyserver/certmagic.NewCache in goroutine 81
+	github.com/caddyserver/certmagic@v0.25.6/cache.go:110 +0x14c
+
+goroutine 91 [select]:
+github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy.(*metricsUpstreamsHealthyUpdater).init.func1()
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/reverseproxy/metrics.go:77 +0xb8
+created by github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy.(*metricsUpstreamsHealthyUpdater).init in goroutine 81
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/reverseproxy/metrics.go:61 +0x64
+
+goroutine 92 [IO wait, 6 minutes]:
+internal/poll.runtime_pollWait(0xffff6f97cc00, 0x72)
+	runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x13aa6fc17c80?, 0x100?, 0x0)
+	internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Accept(0x13aa6fc17c80)
+	internal/poll/fd_unix.go:618 +0x210
+net.(*netFD).accept(0x13aa6fc17c80)
+	net/fd_unix.go:149 +0x28
+net.(*TCPListener).accept(0x13aa6fe98000)
+	net/tcpsock_posix.go:159 +0x24
+net.(*TCPListener).Accept(0x13aa6fe98000)
+	net/tcpsock.go:387 +0x2c
+github.com/caddyserver/caddy/v2/modules/caddyhttp.(*http2Listener).Accept(0x13aa6fe940c0)
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/http2listener.go:34 +0x28
+net/http.(*Server).Serve(0x13aa6fc6c000, {0x2d9adf0, 0x13aa6fe940c0})
+	net/http/server.go:3578 +0x2a8
+created by github.com/caddyserver/caddy/v2/modules/caddyhttp.(*App).Start in goroutine 81
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/app.go:633 +0xfe4
+
+goroutine 93 [IO wait, 5 minutes]:
+internal/poll.runtime_pollWait(0xffff6f97ca00, 0x72)
+	runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x13aa6fe9a080?, 0x2f40128?, 0x0)
+	internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Accept(0x13aa6fe9a080)
+	internal/poll/fd_unix.go:618 +0x210
+net.(*netFD).accept(0x13aa6fe9a080)
+	net/fd_unix.go:149 +0x28
+net.(*TCPListener).accept(0x13aa6fe98100)
+	net/tcpsock_posix.go:159 +0x24
+net.(*TCPListener).Accept(0x13aa6fe98100)
+	net/tcpsock.go:387 +0x2c
+crypto/tls.(*listener).Accept(0x13aa6fe84588)
+	crypto/tls/tls.go:78 +0x28
+github.com/caddyserver/caddy/v2/modules/caddyhttp.(*http2Listener).Accept(0x13aa6fe94160)
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/http2listener.go:34 +0x28
+net/http.(*Server).Serve(0x13aa6fc6c140, {0x2d9adf0, 0x13aa6fe94160})
+	net/http/server.go:3578 +0x2a8
+created by github.com/caddyserver/caddy/v2/modules/caddyhttp.(*App).Start in goroutine 81
+	github.com/caddyserver/caddy/v2@v2.11.9/modules/caddyhttp/app.go:633 +0xfe4
+
+goroutine 452 [IO wait]:
+internal/poll.runtime_pollWait(0xffff6f97c400, 0x72)
+	runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x13aa6fc16b00?, 0x13aa6fc40021?, 0x0)
+	internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0x13aa6fc16b00, {0x13aa6fc40021, 0x1, 0x1})
+	internal/poll/fd_unix.go:170 +0x22c
+net.(*netFD).Read(0x13aa6fc16b00, {0x13aa6fc40021?, 0x0?, 0x13aa6fa05c00?})
+	net/fd_posix.go:68 +0x28
+net.(*conn).Read(0x13aa6f924050, {0x13aa6fc40021?, 0x0?, 0xa2764?})
+	net/net.go:196 +0x34
+net/http.(*connReader).backgroundRead(0x13aa6fc40000)
+	net/http/server.go:742 +0x38
+created by net/http.(*connReader).startBackgroundRead in goroutine 451
+	net/http/server.go:738 +0xc0

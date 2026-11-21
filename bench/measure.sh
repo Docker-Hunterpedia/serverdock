@@ -14,6 +14,10 @@
 #   `docker run --pid=host --cgroupns=host --privileged alpine`. Results from the
 #   helper path are INFORMATIONAL only (VM kernel, shared resources).
 #
+# With MEASURE_THP=1 an eleventh column, anonhuge (AnonHugePages from /proc/<pid>/smaps_rollup,
+# bytes), is added. bench/report expects exactly ten columns, so only the idle-memory check
+# sets it.
+#
 # Requires cgroup v2. Nothing is sent to the measured process.
 set -eu
 
@@ -22,7 +26,9 @@ sample_loop() { # pid duration interval
   cg=$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
   dir="/sys/fs/cgroup$cg"
   [ -r "$dir/memory.current" ] || { echo "measure: cgroup v2 files not found at $dir" >&2; exit 3; }
-  printf 't_s\tvmrss\tvmhwm\trssanon\trssfile\tmem_current\tanon\tfile\tinactive_file\tusage_usec\n'
+  printf 't_s\tvmrss\tvmhwm\trssanon\trssfile\tmem_current\tanon\tfile\tinactive_file\tusage_usec'
+  if [ -n "${MEASURE_THP:-}" ]; then printf '\tanonhuge'; fi
+  printf '\n'
   n=$((duration / interval + 1)); i=0
   while [ "$i" -lt "$n" ]; do
     t=$(cut -d' ' -f1 /proc/uptime)
@@ -30,7 +36,9 @@ sample_loop() { # pid duration interval
     cur=$(cat "$dir/memory.current")
     mem=$(awk '$1=="anon"{a=$2} $1=="file"{f=$2} $1=="inactive_file"{i=$2} END{printf "%d\t%d\t%d", a,f,i}' "$dir/memory.stat")
     cpu=$(awk '$1=="usage_usec"{print $2}' "$dir/cpu.stat")
-    printf '%s\t%s\t%s\t%s\t%s\n' "$t" "$proc" "$cur" "$mem" "$cpu"
+    printf '%s\t%s\t%s\t%s\t%s' "$t" "$proc" "$cur" "$mem" "$cpu"
+    if [ -n "${MEASURE_THP:-}" ]; then printf '\t%s' "$(awk '/^AnonHugePages:/{print $2*1024}' "/proc/$pid/smaps_rollup" 2>/dev/null || echo 0)"; fi
+    printf '\n'
     i=$((i + 1))
     if [ "$i" -lt "$n" ]; then sleep "$interval"; fi
   done
@@ -56,6 +64,6 @@ if [ "$(uname -s)" = Linux ] && [ -r "/proc/$pid/status" ] && grep -q "$cid" "/p
 else
   echo helper >"$out.mode"
   self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-  docker run --rm --pid=host --cgroupns=host --privileged -v "$self:/measure.sh:ro" alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf \
+  docker run --rm --pid=host --cgroupns=host --privileged -e MEASURE_THP="${MEASURE_THP:-}" -v "$self:/measure.sh:ro" alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf \
     sh /measure.sh --sample "$pid" "$duration" "$interval" >"$out"
 fi

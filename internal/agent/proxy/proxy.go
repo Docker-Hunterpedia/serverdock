@@ -183,6 +183,9 @@ func BuildConfig(c Config) ([]byte, error) {
 			"panel": limits(m{
 				"listen": []string{c.Panel.Listen},
 				"routes": []m{{"handle": []m{reverseProxy(c.Upstream, nil)}}},
+				// HTTP/1.1 and HTTP/2 only: no HTTP/3, so Caddy opens no UDP listener
+				// and sends no Alt-Svc header (nothing for a browser to switch to).
+				"protocols": []string{"h1", "h2"},
 				"tls_connection_policies": []m{{
 					"protocol_min": "tls1.2",
 					"default_sni":  SNI, // handshakes without SNI (IP literals)
@@ -193,6 +196,9 @@ func BuildConfig(c Config) ([]byte, error) {
 		cfg["apps"].(m)["tls"] = m{
 			"certificates":          m{"load_files": []m{{"certificate": c.Panel.CertFile, "key": c.Panel.CertFile, "format": "pem"}}},
 			"disable_ocsp_stapling": true,
+			// We manage no certificates (the panel leaf is loaded from a file), so the
+			// storage clean-up pass has nothing to do and its timer need not exist.
+			"disable_storage_clean": true,
 		}
 	}
 	return json.Marshal(cfg)

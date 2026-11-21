@@ -81,10 +81,18 @@ func TestDebugMem(t *testing.T) {
 		t.Errorf("debug mux leaks other routes: %d", rec.Code)
 	}
 	// ...and the control plane never serves the debug routes (not the SPA either).
-	for _, p := range []string{"/debug/mem", "/debug/agents", "/debug/agents/x/logs/y", "/debug/"} {
+	for _, p := range []string{"/debug/mem", "/debug/goroutines", "/debug/agents", "/debug/agents/x/logs/y", "/debug/"} {
 		if rec := get(t, srv.Handler(), "GET", p); rec.Code != 404 {
 			t.Errorf("GET %s on the control plane = %d, want 404", p, rec.Code)
 		}
+	}
+}
+
+func TestDebugGoroutinesDumpsStacks(t *testing.T) {
+	srv := New(Config{SPA: web.FS()})
+	rec := get(t, srv.DebugHandler(), "GET", "/debug/goroutines")
+	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.Contains(rec.Body.String(), "goroutine ") {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String()[:min(200, rec.Body.Len())])
 	}
 }
 

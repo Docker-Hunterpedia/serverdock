@@ -263,8 +263,12 @@ test.describe('sensitive changes', () => {
 		await expect(page.locator('#codes-left')).toHaveText('You have 10 unused recovery codes.');
 
 		// Old codes are dead, new ones work.
-		await expect(signInWithRecoveryCode(server, admin.recoveryCodes[3])).rejects.toThrow(/2fa 401|2fa 403|invalid/i);
-		await signInWithRecoveryCode(server, fresh[0]);
+		// (Both checks do an argon2 sign-in; running them together keeps this test well inside
+		// its timeout on a busy CI runner instead of relying on it.)
+		await Promise.all([
+			expect(signInWithRecoveryCode(server, admin.recoveryCodes[3])).rejects.toThrow(/2fa 401|2fa 403|invalid/i),
+			signInWithRecoveryCode(server, fresh[0])
+		]);
 	});
 
 	test('step-up: a stale session asks for a code, a wrong one is explained, Cancel returns focus, the right one continues', async ({ page, server, admin }) => {

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"runtime/pprof"
 	"strings"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
@@ -156,11 +157,21 @@ func (s *Server) table() []Route {
 		{Method: "POST", Pattern: "/api/v1/auth/logout", Auth: Session, Handler: or(a.Logout)},
 		// Debug socket only.
 		{Method: "GET", Pattern: "/debug/mem", Auth: DebugSocket, Handler: http.HandlerFunc(debugMem)},
+		{Method: "GET", Pattern: "/debug/goroutines", Auth: DebugSocket, Handler: http.HandlerFunc(debugGoroutines)},
 		{Method: "GET", Pattern: "/debug/agents", Auth: DebugSocket, Handler: debugMux},
 		{Method: "GET", Pattern: "/debug/agents/{id}/logs/{container}", Auth: DebugSocket, Handler: debugMux},
 	}
 	rs = append(rs, s.restRoutes()...)
 	return append(rs, s.cfg.ExtraRoutes...)
+}
+
+// debugGoroutines writes a full goroutine dump (the same text a SIGQUIT prints, with
+// each goroutine's wait state, e.g. "sleep" or "select, 3 minutes"). The idle-memory
+// check reads it to confirm every timer-parked goroutine has a Background work row.
+// Debug socket only, so it carries stack traces to the service user and nobody else.
+func debugGoroutines(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_ = pprof.Lookup("goroutine").WriteTo(w, 2)
 }
 
 func debugMem(w http.ResponseWriter, _ *http.Request) {

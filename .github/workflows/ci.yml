@@ -108,6 +108,10 @@ jobs:
       - name: playwright
         run: npx playwright test
         working-directory: web
+      - name: flaky tests (fails above 3)
+        if: always()
+        run: node e2e/flaky-report.mjs
+        working-directory: web
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
