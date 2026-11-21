@@ -187,7 +187,8 @@ func TestConcurrentWritersSerialize(t *testing.T) {
 	}
 	wg.Wait()
 	var n int
-	if err := s.R.QueryRow(`SELECT count(*) FROM meta`).Scan(&n); err != nil || n != 11 {
+	// schema_version and install_id (migration 0004) plus the ten rows written here.
+	if err := s.R.QueryRow(`SELECT count(*) FROM meta`).Scan(&n); err != nil || n != 12 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 }
