@@ -36,7 +36,16 @@ Steps 1 to 14 are built on branch `phase-1-m2` (PR #3), each step reviewed as li
 | 13 Settings › Security | `af54e50`, `fec97ba`, `47cefe2` |
 | 14 Record and close | the commits after `47cefe2` on the branch (docs, the v3 fixture, the route-matrix subset through the real Caddy, the idle-memory check) |
 
-**CI bench (PR #3):** *to be filled in once PR #3 is marked ready and the bench has run (S2, S4, binary size, SPA JS, "S2 after one login").*
+**CI bench (PR #3):** run [44853607680](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/44853607680) on `ubuntu-latest` (amd64), 3 runs per scenario, median of medians, 2026-11-21. Every burst 500/500.
+
+| Scenario | VmRSS | Idle CPU | Gate (ADR 0011) | Tripwire | M1 |
+|---|---|---|---|---|---|
+| S1 control plane only (report only) | 46.1 MB | 0.00 % | — | — | not comparable (socket since step 2) |
+| S2 single node | **50.3 MB** | 0.00 % | 210 MB: pass | 80 MB: under | 47.6 MB |
+| S3 remote agent (report only) | 41.5 MB | 0.00 % | — | — | — |
+| S4 remote agent + Caddy | **44.7 MB** | 0.01 % | 105 MB: pass | 50 MB: under | 44.2 MB |
+
+Binary 53.0 MB (19.3 MB gzip -9, M1 18.9 MB). SPA JavaScript 73.2 KB gzip in total, 40.6 KB on first load (budget 250 KB). S2 is also inside plan 0002's old 53 MB allocation, and S4 is back under 45 MB. "S2 after one login" was not measured separately in CI: the [idle-memory check](#idle-memory-check-step-14) covers sign-ins (one rise of about 5 MB from transparent huge pages, then flat; informational, Docker Desktop VM). Two false failures before this run were fixed in the bench and test code, not the product: the burst's curl wrote `/` bodies into its status output (one line read `…</html>200`), and a WebKit countdown test followed real time.
 
 **Idle-memory check (step 14, report only under ADR 0011):** one rise of about 5 MB (transparent huge pages in the Docker Desktop VM), then flat; the Go heap and goroutines flat. Details in [Idle-memory check](#idle-memory-check-step-14).
 
