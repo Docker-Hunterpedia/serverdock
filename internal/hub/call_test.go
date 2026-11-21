@@ -29,6 +29,8 @@ func v1Specs(name string) (agent.OpSpec, bool) {
 		return agent.OpSpec{Name: name, RemoteOK: true, MaxResult: 1024, MaxProgressLines: 3, Timeout: 5 * time.Second}, true
 	case "test-flood":
 		return agent.OpSpec{Name: name, RemoteOK: true, MaxResult: 1024, MaxProgressLines: 1 << 20, Timeout: 20 * time.Second}, true
+	case "test-slow":
+		return agent.OpSpec{Name: name, RemoteOK: true, MaxResult: 1024, Timeout: 150 * time.Millisecond}, true
 	case "test-local":
 		return agent.OpSpec{Name: name, MaxResult: 1024, MaxProgressLines: 3, Timeout: 5 * time.Second}, true
 	}
@@ -78,10 +80,22 @@ func (f *fakeAgent) requests() [][]byte {
 	return append([][]byte(nil), f.reqs...)
 }
 
-func newFakeAgent(t *testing.T, id string, serve func(f *fakeAgent, line []byte, st *yamux.Stream)) *fakeAgent {
+func newFakeAgent(t *testing.T, id string, serve func(f *fakeAgent, line []byte, st *yamux.Stream), opts ...Option) *fakeAgent {
+	t.Helper()
+	f := startFakeAgent(t, id, serve, opts...)
+	select {
+	case <-f.s.HelloDone():
+	case <-time.After(10 * time.Second):
+		t.Fatal("handshake did not finish")
+	}
+	return f
+}
+
+// startFakeAgent is newFakeAgent without waiting for the handshake.
+func startFakeAgent(t *testing.T, id string, serve func(f *fakeAgent, line []byte, st *yamux.Stream), opts ...Option) *fakeAgent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	h := New(ctx, "", quiet)
+	h := New(ctx, "", quiet, append([]Option{withSpecFor(v1Specs)}, opts...)...)
 	a, b := net.Pipe()
 	done := make(chan struct{})
 	go func() { defer close(done); _ = h.Attach(ctx, id, a, 0) }()
@@ -113,11 +127,6 @@ func newFakeAgent(t *testing.T, id string, serve func(f *fakeAgent, line []byte,
 	})
 	t.Cleanup(func() { ys.Close(); cancel(); <-done; wg.Wait() })
 	f.s = waitSession(t, h, id, 0)
-	select {
-	case <-f.s.HelloDone():
-	case <-time.After(10 * time.Second):
-		t.Fatal("handshake did not finish")
-	}
 	return f
 }
 
@@ -135,7 +144,7 @@ func TestHelloNegotiatesV1(t *testing.T) {
 	// A real agent over the in-memory pipe, the way runServer wires the local one.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h := New(ctx, "", quiet)
+	h := New(ctx, "", quiet, WithLocalVersion("9.9.9"))
 	a, b := net.Pipe()
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = h.Attach(ctx, LocalID, a, 0) })
@@ -179,7 +188,7 @@ func TestHelloVersionStringIsCleaned(t *testing.T) {
 // TestM2AgentReplyIsDetectedAsV0: the exact bytes an M1/M2 agent writes for the
 // hub's own hello request, and for an unknown op, leave the session at v0.
 func TestM2AgentReplyIsDetectedAsV0(t *testing.T) {
-	req, _ := agent.MarshalRequest(agent.OpHello, agent.HelloArgs{HubMaxV: agent.ProtocolVersion})
+	req, _ := agent.MarshalRequest(agent.OpHello, agent.HelloArgs{HubMaxV: agent.ProtocolVersion}, 1)
 	reply := m2Reply(bytes.TrimSuffix(req, []byte("\n")))
 	if reply != "serverdock-agent: bad op: json: unknown field \"v\"\n" {
 		t.Fatalf("the M2 reply to the real hello request changed: %q (update this test deliberately)", reply)
@@ -273,7 +282,6 @@ func waitFor(t *testing.T, cond func() bool) {
 // a v1 op on a v0 session is refused.
 func TestV1NeverWidensTheRemoteOpSet(t *testing.T) {
 	f := newFakeAgent(t, "remote1", func(_ *fakeAgent, line []byte, st *yamux.Stream) { helloOK(line, st) })
-	f.s.setSpecFor(v1Specs)
 	if f.s.Version() != 1 {
 		t.Fatal("not v1")
 	}
@@ -285,7 +293,6 @@ func TestV1NeverWidensTheRemoteOpSet(t *testing.T) {
 	}
 	// A v0 session: a v1 op is refused before any stream is opened.
 	v0 := newFakeAgent(t, "old", func(*fakeAgent, []byte, *yamux.Stream) {})
-	v0.s.setSpecFor(v1Specs)
 	before := len(v0.requests())
 	if _, err := v0.s.Call(context.Background(), "test-v1", nil, nil); !errors.Is(err, ErrNeedsV1) {
 		t.Errorf("v1 op on a v0 session: %v", err)
@@ -307,16 +314,16 @@ func TestV1NeverWidensTheRemoteOpSet(t *testing.T) {
 
 // TestRemoteSessionRefusesEveryLocalOnlyOp walks the whole op table.
 func TestRemoteSessionRefusesEveryLocalOnlyOp(t *testing.T) {
-	f := newFakeAgent(t, "remote1", func(_ *fakeAgent, line []byte, st *yamux.Stream) { helloOK(line, st) })
 	specs := append(agent.Specs(), agent.OpSpec{Name: "test-local"})
-	f.s.setSpecFor(func(name string) (agent.OpSpec, bool) {
-		for _, sp := range specs {
-			if sp.Name == name {
-				return sp, true
+	f := newFakeAgent(t, "remote1", func(_ *fakeAgent, line []byte, st *yamux.Stream) { helloOK(line, st) },
+		withSpecFor(func(name string) (agent.OpSpec, bool) {
+			for _, sp := range specs {
+				if sp.Name == name {
+					return sp, true
+				}
 			}
-		}
-		return agent.OpSpec{}, false
-	})
+			return agent.OpSpec{}, false
+		}))
 	n := len(f.requests())
 	for _, sp := range specs {
 		_, err := f.s.open(sp.Name)
@@ -369,7 +376,6 @@ func TestHostileAgentIsRefused(t *testing.T) {
 		json.Unmarshal(line, &req)
 		io.WriteString(st, cases[req.Args.Case])
 	})
-	f.s.setSpecFor(v1Specs)
 	for name := range cases {
 		_, err := f.s.Call(context.Background(), "test-v1", map[string]string{"Case": name}, nil)
 		if !errors.Is(err, ErrAgentProtocol) {
@@ -387,7 +393,6 @@ func TestHostileAgentIsRefused(t *testing.T) {
 		}
 		io.WriteString(st, `{"t":"progress","p":{"n":1}}`+"\n"+okLine(`{"done":true}`))
 	})
-	f2.s.setSpecFor(v1Specs)
 	var got []agent.Line
 	raw, err := f2.s.Call(context.Background(), "test-v1", nil, func(l agent.Line) { got = append(got, l) })
 	if err != nil || string(raw) != `{"done":true}` || len(got) != 1 || got[0].T != agent.LineProgress {
@@ -409,7 +414,7 @@ func TestHelloResultOverCapIsRefused(t *testing.T) {
 		}
 		io.WriteString(st, okLine(`{"v":1,"agent":"`+strings.Repeat("a", 300)+`"}`))
 	})
-	_, err := f.s.Call(context.Background(), agent.OpHello, agent.HelloArgs{HubMaxV: 1}, nil)
+	_, err := f.s.call(context.Background(), agent.OpHello, agent.HelloArgs{HubMaxV: 1}, nil, true)
 	if !errors.Is(err, ErrAgentProtocol) {
 		t.Errorf("hello over 256 B: %v", err)
 	}
@@ -423,7 +428,6 @@ func TestFailedResultIsAnOpError(t *testing.T) {
 		}
 		io.WriteString(st, `{"t":"result","ok":false,"err":{"code":"not_found","msg":"no such \u001b[31mimage‮"}}`+"\n")
 	})
-	f.s.setSpecFor(v1Specs)
 	_, err := f.s.Call(context.Background(), "test-v1", nil, nil)
 	var oe *agent.OpError
 	if !errors.As(err, &oe) || oe.Code != agent.CodeNotFound || oe.Msg != "no such [31mimage" {
@@ -444,21 +448,26 @@ func TestCallCancelledByContext(t *testing.T) {
 		<-block
 	})
 	t.Cleanup(func() { close(block) })
-	f.s.setSpecFor(v1Specs)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := f.s.Call(ctx, "test-v1", nil, nil)
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrOpTimeout) || time.Since(start) > 3*time.Second {
 		t.Errorf("%v after %v", err, time.Since(start))
 	}
+	waitFor(t, func() bool { return len(f.s.sem) == 0 }) // the stream slot is released
+	// The op's own timeout is told apart from the caller's context ending.
+	if _, err := f.s.Call(context.Background(), "test-slow", nil, nil); !errors.Is(err, ErrOpTimeout) {
+		t.Errorf("op timeout: %v", err)
+	}
+	waitFor(t, func() bool { return len(f.s.sem) == 0 })
 }
 
 // The protocol-violation log line is limited to one per op name per minute.
 func TestProtocolViolationLoggedOncePerOpPerMinute(t *testing.T) {
 	var buf syncBuf
 	ctx, cancel := context.WithCancel(context.Background())
-	h := New(ctx, "", slogTo(&buf))
+	h := New(ctx, "", slogTo(&buf), withSpecFor(v1Specs))
 	a, b := net.Pipe()
 	done := make(chan struct{})
 	go func() { defer close(done); _ = h.Attach(ctx, "r", a, 0) }()
@@ -482,7 +491,6 @@ func TestProtocolViolationLoggedOncePerOpPerMinute(t *testing.T) {
 	defer func() { ys.Close(); cancel(); <-done; wg.Wait() }()
 	s := waitSession(t, h, "r", 0)
 	<-s.HelloDone()
-	s.setSpecFor(v1Specs)
 	for i := 0; i < 5; i++ {
 		s.Call(context.Background(), "test-v1", nil, nil)
 	}
@@ -500,3 +508,118 @@ func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
 func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+func lowHelloTimeout(d time.Duration) Option {
+	return withSpecFor(func(name string) (agent.OpSpec, bool) {
+		sp, ok := v1Specs(name)
+		if name == agent.OpHello {
+			sp.Timeout = d
+		}
+		return sp, ok
+	})
+}
+
+// The local agent is this binary: never v0, never asked, helloDone closed at
+// once, version string from the hub option.
+func TestLocalSessionIsNeverStuckAtV0(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := New(ctx, "", quiet, WithLocalVersion("L-1.0\x1b[31m"))
+	a, b := net.Pipe()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = h.Attach(ctx, LocalID, a, 0) }()
+	ys, err := yamux.Server(b, agent.YamuxConfig(0)) // never accepts a stream: a hello would hang
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { ys.Close(); cancel(); <-done }()
+	deadline := time.Now().Add(5 * time.Second)
+	var s *Session
+	for s == nil && time.Now().Before(deadline) {
+		s, _ = h.Get(LocalID)
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s == nil {
+		t.Fatal("no local session")
+	}
+	select {
+	case <-s.HelloDone():
+	default:
+		t.Fatal("helloDone is not closed for the local session")
+	}
+	if s.Version() != agent.ProtocolVersion || s.AgentVersion() != "L-1.0[31m" {
+		t.Errorf("version %d agent %q", s.Version(), s.AgentVersion())
+	}
+}
+
+func TestExportedCallRefusesHello(t *testing.T) {
+	f := newFakeAgent(t, "remote1", func(_ *fakeAgent, line []byte, st *yamux.Stream) { helloOK(line, st) })
+	if _, err := f.s.Call(context.Background(), agent.OpHello, agent.HelloArgs{HubMaxV: 1}, nil); err == nil {
+		t.Error("Call(hello) accepted")
+	}
+}
+
+// A silent agent (accepts the hello stream, never writes or closes) leaves the
+// session at v0 after the hello timeout, and the hub closes the stream.
+func TestSilentAgentFallsBackToV0AndStreamIsClosed(t *testing.T) {
+	closed := make(chan struct{})
+	f := newFakeAgent(t, "silent", func(_ *fakeAgent, _ []byte, st *yamux.Stream) {
+		_, _ = io.Copy(io.Discard, st) // returns when the hub closes its end
+		close(closed)
+	}, lowHelloTimeout(200*time.Millisecond))
+	if f.s.Version() != 0 {
+		t.Fatalf("version %d", f.s.Version())
+	}
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hub did not close the hello stream")
+	}
+	if rc, err := f.s.LogsOnce(context.Background(), "c", 5); !errors.Is(err, ErrNeedsV1) || rc != nil {
+		t.Errorf("LogsOnce on a v0 session: %v", err)
+	}
+}
+
+// A valid reply that arrives after the timeout is ignored.
+func TestSlowAgentReplyAfterTimeoutIsIgnored(t *testing.T) {
+	f := newFakeAgent(t, "slow", func(_ *fakeAgent, line []byte, st *yamux.Stream) {
+		time.Sleep(500 * time.Millisecond)
+		helloOK(line, st)
+	}, lowHelloTimeout(150*time.Millisecond))
+	if f.s.Version() != 0 {
+		t.Fatalf("version %d right after the timeout", f.s.Version())
+	}
+	time.Sleep(800 * time.Millisecond)
+	if f.s.Version() != 0 || f.s.AgentVersion() != "" {
+		t.Errorf("a late hello reply was applied: version %d agent %q", f.s.Version(), f.s.AgentVersion())
+	}
+}
+
+// A call made right after attach waits for the handshake instead of seeing a
+// not-yet-negotiated v0.
+func TestCallRightAfterAttachWaitsForHello(t *testing.T) {
+	f := startFakeAgent(t, "remote1", func(_ *fakeAgent, line []byte, st *yamux.Stream) {
+		if strings.Contains(string(line), `"op":"hello"`) {
+			time.Sleep(300 * time.Millisecond)
+			helloOK(line, st)
+			return
+		}
+		io.WriteString(st, okLine(`{"ok":1}`))
+	})
+	start := time.Now()
+	raw, err := f.s.Call(context.Background(), "test-v1", nil, nil)
+	if err != nil || string(raw) != `{"ok":1}` || time.Since(start) < 250*time.Millisecond {
+		t.Errorf("%s %v after %v", raw, err, time.Since(start))
+	}
+	// Same for LogsOnce on a fresh session.
+	g := startFakeAgent(t, "remote2", func(_ *fakeAgent, line []byte, st *yamux.Stream) {
+		if strings.Contains(string(line), `"op":"hello"`) {
+			time.Sleep(300 * time.Millisecond)
+			helloOK(line, st)
+		}
+	})
+	rc, err := g.s.LogsOnce(context.Background(), "c", 5)
+	if err != nil {
+		t.Fatalf("LogsOnce right after attach: %v", err)
+	}
+	rc.Close()
+}

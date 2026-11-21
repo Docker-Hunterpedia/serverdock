@@ -182,7 +182,7 @@ func TestAgentStreamCap(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = ServeSession(ctx, b, src, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		_ = Serve(ctx, b, Config{Logs: src}, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 	hubSide, err := yamux.Client(a, YamuxConfig(0))
 	if err != nil {

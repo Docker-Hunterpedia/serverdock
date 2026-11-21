@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
 	"regexp"
@@ -101,13 +101,8 @@ func ParseOp(line []byte) (Op, error) {
 		return Op{}, errors.New("op line too long")
 	}
 	var o Op
-	dec := json.NewDecoder(bytesReader(line))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&o); err != nil {
+	if err := decodeStrict(bytes.TrimSuffix(line, []byte("\n")), &o); err != nil {
 		return Op{}, fmt.Errorf("bad op: %w", err)
-	}
-	if dec.More() {
-		return Op{}, errors.New("bad op: trailing data")
 	}
 	return o, o.Validate()
 }

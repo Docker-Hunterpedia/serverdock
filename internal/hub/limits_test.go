@@ -203,7 +203,7 @@ func TestThirtyThirdStreamErrors(t *testing.T) {
 	h := New(ctx, "", quiet)
 	a, b := net.Pipe()
 	go func() { _ = h.Attach(ctx, LocalID, a, 0) }()
-	go func() { _ = agent.ServeSession(ctx, b, holdLogs{}, 0, quiet) }()
+	go func() { _ = agent.Serve(ctx, b, agent.Config{Logs: holdLogs{}}, 0, quiet) }()
 	s := waitSession(t, h, LocalID, 0)
 	var open []io.ReadCloser
 	for i := 0; i < MaxServerStreams; i++ {

@@ -34,25 +34,43 @@ const postResultWait = 2 * time.Second
 // open, independent of the negotiated version). A v1 op other than `hello`
 // needs a session that negotiated v1.
 func (s *Session) Call(ctx context.Context, op string, args any, onLine func(agent.Line)) (json.RawMessage, error) {
+	if op == agent.OpHello {
+		return nil, errors.New("hub: hello is run once by the session itself")
+	}
 	return s.call(ctx, op, args, onLine, false)
 }
 
+// ErrOpTimeout is returned when an op ran past its own timeout (as opposed to
+// the caller's context ending).
+var ErrOpTimeout = errors.New("hub: the operation timed out")
+
 func (s *Session) call(ctx context.Context, op string, args any, onLine func(agent.Line), quiet bool) (json.RawMessage, error) {
-	spec, ok := s.spec(op)
+	spec, ok := s.specFor(op)
 	if !ok {
 		return nil, ErrUnknownOp
 	}
 	if op == agent.OpLogs {
 		return nil, errors.New("hub: logs is a v0 stream op (use Logs)")
 	}
-	if op != agent.OpHello && s.Version() < 1 {
+	if op != agent.OpHello {
+		// A call right after attach waits for the handshake instead of
+		// seeing a not-yet-negotiated v0.
+		if err := s.waitHello(ctx); err != nil {
+			return nil, err
+		}
+	}
+	version := 1 // hello is frozen at v:1
+	if op != agent.OpHello {
+		version = s.Version()
+	}
+	if op != agent.OpHello && version < 1 {
 		// open would let a RemoteOK v1 op through; the version gate is separate.
 		if !spec.RemoteOK && s.ID != LocalID {
 			return nil, ErrLocalOnly
 		}
 		return nil, ErrNeedsV1
 	}
-	req, err := agent.MarshalRequest(op, args)
+	req, err := agent.MarshalRequest(op, args, version)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +81,7 @@ func (s *Session) call(ctx context.Context, op string, args any, onLine func(age
 	defer st.Close()
 	if spec.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, spec.Timeout)
+		ctx, cancel = context.WithTimeoutCause(ctx, spec.Timeout, ErrOpTimeout)
 		defer cancel()
 	}
 	// Closing a yamux stream locally does not wake a blocked Read, so the
@@ -76,10 +94,10 @@ func (s *Session) call(ctx context.Context, op string, args any, onLine func(age
 	if _, err := st.Write(req); err != nil {
 		return nil, ctxOr(ctx, err)
 	}
-	raw, err := s.readResult(st, spec, onLine)
+	raw, err := s.readResult(ctx, st, spec, onLine)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, context.Cause(ctx)
 		}
 		if errors.Is(err, ErrAgentProtocol) && !quiet && s.protoLogs.Take(op) {
 			s.log.Warn("agent broke the op protocol; op failed", "agent", s.ID, "op", op, "err", err)
@@ -91,12 +109,12 @@ func (s *Session) call(ctx context.Context, op string, args any, onLine func(age
 
 func ctxOr(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return context.Cause(ctx)
 	}
 	return err
 }
 
-func (s *Session) readResult(st *stream, spec agent.OpSpec, onLine func(agent.Line)) (json.RawMessage, error) {
+func (s *Session) readResult(ctx context.Context, st *stream, spec agent.OpSpec, onLine func(agent.Line)) (json.RawMessage, error) {
 	br := bufio.NewReaderSize(st, 4096)
 	limit := spec.MaxLineBytes()
 	var total, progress int
@@ -133,7 +151,12 @@ func (s *Session) readResult(st *stream, spec agent.OpSpec, onLine func(agent.Li
 			}
 		case agent.LineResult:
 			// Nothing may follow the result: the stream must end.
+			// A cancel that fires meanwhile has expired the deadline already:
+			// never push it back out (set, then re-check and re-expire).
 			_ = st.SetReadDeadline(time.Now().Add(postResultWait))
+			if ctx.Err() != nil {
+				_ = st.SetReadDeadline(time.Unix(1, 0))
+			}
 			if _, err := br.ReadByte(); err == nil {
 				return nil, protoErr("data after the result")
 			}

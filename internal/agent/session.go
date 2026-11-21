@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hashicorp/yamux"
 )
@@ -46,8 +47,6 @@ func YamuxConfig(keepAlive time.Duration) *yamux.Config {
 	}
 	return cfg
 }
-
-func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // LogSource streams container logs into w until ctx is cancelled or the
 // stream ends.
@@ -93,7 +92,7 @@ type Config struct {
 // handlerTable builds the v1 handlers this mode serves. A handler whose spec is
 // not RemoteOK is left out of a remote table, so the agent process itself
 // refuses it (two-sided LocalOnly; the hub refuses it first).
-func (c Config) handlerTable() map[string]Handler {
+func (c Config) handlerTable() map[string]opEntry {
 	specs := c.specs
 	if specs == nil {
 		specs = opSpecs
@@ -102,7 +101,7 @@ func (c Config) handlerTable() map[string]Handler {
 	if impls == nil {
 		impls = map[string]Handler{OpHello: c.hello}
 	}
-	table := map[string]Handler{}
+	table := map[string]opEntry{}
 	for _, sp := range specs {
 		h, ok := impls[sp.Name]
 		if !ok || sp.Name == OpLogs {
@@ -111,10 +110,24 @@ func (c Config) handlerTable() map[string]Handler {
 		if !sp.RemoteOK && c.Mode != ModeLocal {
 			continue
 		}
-		table[sp.Name] = h
+		table[sp.Name] = opEntry{spec: sp, h: h}
 	}
 	return table
 }
+
+// opEntry is what this agent process serves for one op: the single source of
+// truth for both request parsing and dispatch.
+type opEntry struct {
+	spec OpSpec
+	h    Handler
+}
+
+func (t opTable) lookup(name string) (OpSpec, bool) {
+	e, ok := t[name]
+	return e.spec, ok
+}
+
+type opTable map[string]opEntry
 
 func (c Config) hello(_ context.Context, args json.RawMessage, _ *Out) (any, error) {
 	var a HelloArgs
@@ -124,13 +137,16 @@ func (c Config) hello(_ context.Context, args json.RawMessage, _ *Out) (any, err
 	if a.HubMaxV < 1 || a.HubMaxV > 1000 {
 		return nil, &OpError{Code: CodeInvalid, Msg: "hub_max_v out of range"}
 	}
-	return HelloResult{V: min(a.HubMaxV, ProtocolVersion), Agent: CleanText(c.Version, MaxAgentVersion)}, nil
-}
-
-// ServeSession serves a remote-mode agent (logs and hello only) with no
-// version string. See Serve.
-func ServeSession(ctx context.Context, conn net.Conn, logs LogSource, keepAlive time.Duration, log *slog.Logger) error {
-	return Serve(ctx, conn, Config{Logs: logs}, keepAlive, log)
+	// JSON escaping can grow the version string (< becomes \u003c): shorten it
+	// until the whole result fits MaxHelloResult.
+	r := HelloResult{V: min(a.HubMaxV, ProtocolVersion), Agent: CleanText(c.Version, MaxAgentVersion)}
+	for {
+		b, err := json.Marshal(r)
+		if err != nil || len(b) <= MaxHelloResult || r.Agent == "" {
+			return r, err
+		}
+		r.Agent = cutRune(r.Agent, len(r.Agent)/2)
+	}
 }
 
 // Serve runs the agent side of a connection: a yamux server that accepts
@@ -144,7 +160,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config, keepAlive time.Durati
 	defer sess.Close()
 	stop := context.AfterFunc(ctx, func() { sess.Close() })
 	defer stop()
-	table := cfg.handlerTable()
+	table := opTable(cfg.handlerTable())
 	sem := make(chan struct{}, MaxAgentStreams)
 	for {
 		st, err := sess.AcceptStream()
@@ -175,7 +191,7 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config, keepAlive time.Durati
 // handleStream implements the stream protocol with yamux half-close handling:
 // stream.Close() from the server only sends FIN, so a reader goroutine watches
 // for EOF/error and cancels the request; failed or timed-out writes cancel too.
-func handleStream(ctx context.Context, st *yamux.Stream, cfg Config, table map[string]Handler, log *slog.Logger) {
+func handleStream(ctx context.Context, st *yamux.Stream, cfg Config, table opTable, log *slog.Logger) {
 	defer st.Close()
 	_ = st.SetReadDeadline(time.Now().Add(opReadTimeout))
 	br := bufio.NewReaderSize(st, 4096)
@@ -227,21 +243,17 @@ func handleStream(ctx context.Context, st *yamux.Stream, cfg Config, table map[s
 
 // serveV1 answers one v1 request: strict parse, handler lookup in this mode's
 // table, the op's timeout, and exactly one result line.
-func serveV1(ctx context.Context, st *yamux.Stream, line []byte, table map[string]Handler, startWatch func(), cancel context.CancelFunc, log *slog.Logger) {
-	req, err := ParseV1Request(line)
+func serveV1(ctx context.Context, st *yamux.Stream, line []byte, table opTable, startWatch func(), cancel context.CancelFunc, log *slog.Logger) {
+	// The table is what this process serves: a local-only op on a remote agent
+	// is not in it, so it is refused exactly like an unknown op.
+	req, err := parseV1Request(line, table.lookup)
 	if err != nil {
 		writeResult(st, nil, &OpError{Code: CodeInvalid, Msg: err.Error()})
 		return
 	}
-	h, ok := table[req.Op]
-	if !ok {
-		// Known to the table but not served in this mode (a local-only op on
-		// a remote agent) looks the same as an unknown op.
-		writeResult(st, nil, &OpError{Code: CodeInvalid, Msg: fmt.Sprintf("unknown op %q", CleanText(req.Op, 64))})
-		return
-	}
+	entry := table[req.Op]
+	h, spec := entry.h, entry.spec
 	startWatch()
-	spec, _ := SpecFor(req.Op)
 	if spec.Timeout > 0 {
 		var c context.CancelFunc
 		ctx, c = context.WithTimeout(ctx, spec.Timeout)
@@ -269,6 +281,7 @@ func serveV1(ctx context.Context, st *yamux.Stream, line []byte, table map[strin
 
 // Out lets a v1 handler send progress and event lines.
 type Out struct {
+	mu       sync.Mutex // handlers may report progress from several goroutines
 	st       *yamux.Stream
 	spec     OpSpec
 	cancel   context.CancelFunc
@@ -281,6 +294,8 @@ var ErrOutLimit = errors.New("agent: progress line over the op's limits")
 // Progress sends one progress line (at most MaxProgressLine bytes, at most the
 // op's MaxProgressLines lines).
 func (o *Out) Progress(p any) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.progress >= o.spec.MaxProgressLines {
 		return ErrOutLimit
 	}
@@ -290,6 +305,8 @@ func (o *Out) Progress(p any) error {
 
 // Event sends one event line (events op only).
 func (o *Out) Event(e any) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.spec.Name != OpEvents {
 		return ErrOutLimit
 	}
@@ -332,10 +349,27 @@ func writeResult(st *yamux.Stream, r json.RawMessage, e *OpError) {
 		}
 	}
 	b, err := json.Marshal(l)
+	// JSON escaping grows text (<, > and & become \u003c, quotes get a
+	// backslash): shorten the message until the line fits MaxErrorLine.
+	for err == nil && !ok && len(b) > MaxErrorLine && l.Err.Msg != "" {
+		l.Err.Msg = cutRune(l.Err.Msg, len(l.Err.Msg)/2)
+		b, err = json.Marshal(l)
+	}
 	if err != nil {
 		return
 	}
 	writeLine(st, string(b))
+}
+
+// cutRune returns s cut to at most n bytes on a rune boundary.
+func cutRune(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func writeLine(st *yamux.Stream, s string) {

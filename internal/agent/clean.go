@@ -18,8 +18,9 @@ const (
 
 // CleanText makes a string that came from Docker, a registry, an image, a
 // container or an agent safe to store and show: invalid UTF-8 is replaced with
-// U+FFFD, every control character (C0 including newline and tab, DEL, C1) and
-// every Unicode bidirectional override or isolate is removed, and the result is
+// U+FFFD, every control character (C0 including newline and tab, DEL, C1), every
+// format character (zero-width, soft hyphen, BOM, tag block, bidirectional
+// controls) and the line and paragraph separators are removed, and the result is
 // at most max bytes (cut on a rune boundary). It is the M3a part of G13.
 func CleanText(s string, max int) string { return clean(s, max, false) }
 
@@ -38,7 +39,7 @@ func clean(s string, max int, keepNLTab bool) string {
 			if !keepNLTab {
 				continue
 			}
-		} else if unicode.IsControl(r) || isBidi(r) {
+		} else if unicode.IsControl(r) || isInvisible(r) {
 			continue
 		}
 		if b.Len()+utf8.RuneLen(r) > max {
@@ -49,7 +50,13 @@ func clean(s string, max int, keepNLTab bool) string {
 	return b.String()
 }
 
-func isBidi(r rune) bool {
+// isInvisible reports format characters (Cf: zero-width characters, the soft
+// hyphen, the byte order mark, the tag block, bidi controls) and the line and
+// paragraph separators (Zl, Zp), which can hide or reorder text.
+func isInvisible(r rune) bool {
+	if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+		return true
+	}
 	switch {
 	case r >= 0x202A && r <= 0x202E: // embeddings and overrides
 		return true

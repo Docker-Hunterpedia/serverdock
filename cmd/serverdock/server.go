@@ -345,7 +345,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if maxSessions <= 0 {
 		maxSessions = hub.DefaultMaxSessions
 	}
-	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions), hub.WithLocalVersion(version))
 	lim := api.NewLimits(nil)
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -96,6 +98,11 @@ func decodeStrict(b []byte, dst any) error {
 	if len(b) == 0 || b[0] != '{' {
 		return errors.New("not a JSON object")
 	}
+	// encoding/json matches keys case-insensitively and keeps the last of a
+	// duplicate: refuse both, so what a policy check sees is what is decoded.
+	if err := checkKeys(b, reflect.TypeOf(dst)); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -105,6 +112,109 @@ func decodeStrict(b []byte, dst any) error {
 		return errors.New("trailing bytes after the JSON object")
 	}
 	return nil
+}
+
+// checkKeys walks the JSON object in b (the same bytes decodeStrict then
+// decodes) and refuses a duplicate key and any key that is not exactly a json
+// tag name of the destination struct (recursively for nested struct fields).
+// Values of non-struct fields (json.RawMessage, maps, slices) are skipped here;
+// their own decoder applies the same rule when they are decoded.
+func checkKeys(b []byte, t reflect.Type) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return errors.New("not a JSON object")
+	}
+	return checkObject(dec, t)
+}
+
+func structOf(t reflect.Type) (reflect.Type, bool) {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t != nil && t.Kind() == reflect.Struct {
+		return t, true
+	}
+	return nil, false
+}
+
+// checkObject runs after the opening brace has been read.
+func checkObject(dec *json.Decoder, t reflect.Type) error {
+	st, isStruct := structOf(t)
+	seen := map[string]bool{}
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := kt.(string)
+		if seen[key] {
+			return fmt.Errorf("duplicate key %q", CleanText(key, 64))
+		}
+		seen[key] = true
+		var ft reflect.Type
+		if isStruct {
+			f, ok := fieldByTag(st, key)
+			if !ok {
+				return fmt.Errorf("unknown field %q", CleanText(key, 64))
+			}
+			ft = f.Type
+		}
+		vt, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := vt.(json.Delim); ok {
+			if d == '{' {
+				if _, nested := structOf(ft); nested {
+					if err := checkObject(dec, ft); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if err := skipContainer(dec); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := dec.Token() // the closing brace
+	return err
+}
+
+// skipContainer consumes tokens up to the end of the container just opened.
+func skipContainer(dec *json.Decoder) error {
+	for depth := 1; depth > 0; {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := tok.(json.Delim); ok {
+			if d == '{' || d == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		}
+	}
+	return nil
+}
+
+func fieldByTag(t reflect.Type, key string) (reflect.StructField, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		if name == key {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 // DecodeArgs decodes an op's args strictly into dst. Absent or null args decode
@@ -134,8 +244,15 @@ const requestPrefix = `{"v":`
 func IsV1Request(line []byte) bool { return bytes.HasPrefix(line, []byte(requestPrefix)) }
 
 // MarshalRequest builds a request line (with its newline). args may be nil.
-func MarshalRequest(op string, args any) ([]byte, error) {
-	r := Request{V: ProtocolVersion, Op: op}
+//
+// v is the session's negotiated version. `hello` is frozen: its envelope is
+// always v:1, args {hub_max_v}, result {v, agent}, so a future v2 hub and a v1
+// agent can still negotiate (ADR 0012).
+func MarshalRequest(op string, args any, v int) ([]byte, error) {
+	if op == OpHello {
+		v = 1
+	}
+	r := Request{V: v, Op: op}
 	if args != nil {
 		b, err := json.Marshal(args)
 		if err != nil {
@@ -156,7 +273,12 @@ func MarshalRequest(op string, args any) ([]byte, error) {
 // ParseV1Request decodes a request line (newline removed): at most
 // MaxRequestLine bytes, no unknown envelope field, no byte after the object,
 // version 1 and a known op.
-func ParseV1Request(line []byte) (Request, error) {
+func ParseV1Request(line []byte) (Request, error) { return parseV1Request(line, SpecFor) }
+
+// parseV1Request is ParseV1Request against a lookup (the agent's own table).
+// Any 1 <= v <= ProtocolVersion is accepted, except for `hello`, which is
+// always exactly v:1.
+func parseV1Request(line []byte, lookup func(string) (OpSpec, bool)) (Request, error) {
 	var r Request
 	if len(line) > MaxRequestLine {
 		return r, errors.New("request line too long")
@@ -164,10 +286,10 @@ func ParseV1Request(line []byte) (Request, error) {
 	if err := decodeStrict(line, &r); err != nil {
 		return Request{}, fmt.Errorf("bad request: %w", err)
 	}
-	if r.V != ProtocolVersion {
+	if r.V < 1 || r.V > ProtocolVersion || (r.Op == OpHello && r.V != 1) {
 		return Request{}, fmt.Errorf("unsupported protocol version %d", r.V)
 	}
-	if _, ok := SpecFor(r.Op); !ok || r.Op == OpLogs {
+	if _, ok := lookup(r.Op); !ok || r.Op == OpLogs {
 		return Request{}, fmt.Errorf("unknown op %q", CleanText(r.Op, 64))
 	}
 	return r, nil

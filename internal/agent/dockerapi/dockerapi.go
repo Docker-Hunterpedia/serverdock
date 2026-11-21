@@ -281,6 +281,8 @@ func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
 	return nil
 }
 
+var _ agent.FollowLogSource = (*Client)(nil)
+
 // Logs streams a container's logs (stdout and stderr, following) into w until
 // ctx is cancelled or the container's log stream ends. For non-TTY containers
 // the 8-byte-header multiplexed stream is demultiplexed; for TTY containers

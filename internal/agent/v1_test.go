@@ -34,6 +34,9 @@ func TestCleanText(t *testing.T) {
 		{"cap in bytes", strings.Repeat("a", 600), MaxReasonText, strings.Repeat("a", MaxReasonText)},
 		{"cap never splits a rune", "aé", 2, "a"},
 		{"zero cap", "abc", 0, ""},
+		{"zero-width and BOM", "a\u200bb\u200c\u200dc\u2060d\ufeffe\u00adf", 100, "abcdef"},
+		{"tag block", "a\U000E0041\U000E007Fb", 100, "ab"},
+		{"line and paragraph separators", "a\u2028b\u2029c", 100, "abc"},
 	}
 	for _, c := range cases {
 		got := CleanText(c.in, c.max)
@@ -65,7 +68,7 @@ func TestRemoteOKAllowlistIsHelloAndLogs(t *testing.T) {
 }
 
 func TestParseV1Request(t *testing.T) {
-	good, err := MarshalRequest(OpHello, HelloArgs{HubMaxV: 1})
+	good, err := MarshalRequest(OpHello, HelloArgs{HubMaxV: 1}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,18 +80,22 @@ func TestParseV1Request(t *testing.T) {
 		t.Fatalf("%+v %v", r, err)
 	}
 	bad := map[string]string{
-		"trailing bytes": `{"v":1,"op":"hello","args":{"hub_max_v":1}} x`,
-		"trailing space": `{"v":1,"op":"hello","args":{"hub_max_v":1}} `,
-		"second object":  `{"v":1,"op":"hello"}{"v":1,"op":"hello"}`,
-		"unknown field":  `{"v":1,"op":"hello","extra":1}`,
-		"wrong version":  `{"v":2,"op":"hello"}`,
-		"no version":     `{"op":"hello"}`,
-		"unknown op":     `{"v":1,"op":"exec"}`,
-		"logs is not v1": `{"v":1,"op":"logs"}`,
-		"leading space":  ` {"v":1,"op":"hello"}`,
-		"not an object":  `[1]`,
-		"empty":          ``,
-		"over 64 KiB":    `{"v":1,"op":"hello","args":{"x":"` + strings.Repeat("a", MaxRequestLine) + `"}}`,
+		"trailing bytes":      `{"v":1,"op":"hello","args":{"hub_max_v":1}} x`,
+		"trailing space":      `{"v":1,"op":"hello","args":{"hub_max_v":1}} `,
+		"second object":       `{"v":1,"op":"hello"}{"v":1,"op":"hello"}`,
+		"unknown field":       `{"v":1,"op":"hello","extra":1}`,
+		"duplicate key":       `{"v":1,"op":"hello","op":"hello"}`,
+		"case-variant key":    `{"V":1,"op":"hello"}`,
+		"case-variant op key": `{"v":1,"Op":"hello"}`,
+		"hello must be v1":    `{"v":2,"op":"hello"}`,
+		"wrong version":       `{"v":2,"op":"hello"}`,
+		"no version":          `{"op":"hello"}`,
+		"unknown op":          `{"v":1,"op":"exec"}`,
+		"logs is not v1":      `{"v":1,"op":"logs"}`,
+		"leading space":       ` {"v":1,"op":"hello"}`,
+		"not an object":       `[1]`,
+		"empty":               ``,
+		"over 64 KiB":         `{"v":1,"op":"hello","args":{"x":"` + strings.Repeat("a", MaxRequestLine) + `"}}`,
 	}
 	for name, b := range bad {
 		if _, err := ParseV1Request([]byte(b)); err == nil {
@@ -98,6 +105,11 @@ func TestParseV1Request(t *testing.T) {
 	var a HelloArgs
 	if err := DecodeArgs(json.RawMessage(`{"hub_max_v":1,"x":2}`), &a); err == nil {
 		t.Error("unknown arg field accepted")
+	}
+	for _, in := range []string{`{"hub_max_v":1,"hub_max_v":2}`, `{"Hub_Max_V":1}`, `{"HUB_MAX_V":1}`} {
+		if err := DecodeArgs(json.RawMessage(in), &a); err == nil {
+			t.Errorf("%s accepted", in)
+		}
 	}
 	if err := DecodeArgs(json.RawMessage(`{"hub_max_v":1} `), &a); err == nil {
 		t.Error("trailing bytes after args accepted")
@@ -120,21 +132,25 @@ func TestParseAgentLine(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		"trailing bytes":     `{"t":"progress","p":{}} x`,
-		"two objects":        `{"t":"progress","p":{}}{"t":"progress","p":{}}`,
-		"unknown field":      `{"t":"progress","p":{},"z":1}`,
-		"event off-events":   `{"t":"event","e":{}}`,
-		"progress with r":    `{"t":"progress","p":{},"r":{}}`,
-		"result no ok":       `{"t":"result","r":{}}`,
-		"ok with err":        `{"t":"result","ok":true,"r":{},"err":{"code":"docker","msg":"x"}}`,
-		"err with r":         `{"t":"result","ok":false,"r":{},"err":{"code":"docker","msg":"x"}}`,
-		"unknown code":       `{"t":"result","ok":false,"err":{"code":"boom","msg":"x"}}`,
-		"unknown type":       `{"t":"log"}`,
-		"oversize result":    `{"t":"result","ok":true,"r":{"x":"` + strings.Repeat("a", 64) + `"}}`,
-		"oversize progress":  `{"t":"progress","p":{"x":"` + strings.Repeat("a", MaxProgressLine) + `"}}`,
-		"invalid UTF-8":      "{\"t\":\"progress\",\"p\":{\"x\":\"\xff\"}}",
-		"raw escape byte":    "{\"t\":\"progress\",\"p\":{\"x\":\"\x1b[31m\"}}",
-		"leading whitespace": ` {"t":"progress","p":{}}`,
+		"trailing bytes":      `{"t":"progress","p":{}} x`,
+		"two objects":         `{"t":"progress","p":{}}{"t":"progress","p":{}}`,
+		"unknown field":       `{"t":"progress","p":{},"z":1}`,
+		"event off-events":    `{"t":"event","e":{}}`,
+		"progress with r":     `{"t":"progress","p":{},"r":{}}`,
+		"result no ok":        `{"t":"result","r":{}}`,
+		"ok with err":         `{"t":"result","ok":true,"r":{},"err":{"code":"docker","msg":"x"}}`,
+		"err with r":          `{"t":"result","ok":false,"r":{},"err":{"code":"docker","msg":"x"}}`,
+		"unknown code":        `{"t":"result","ok":false,"err":{"code":"boom","msg":"x"}}`,
+		"unknown type":        `{"t":"log"}`,
+		"oversize result":     `{"t":"result","ok":true,"r":{"x":"` + strings.Repeat("a", 64) + `"}}`,
+		"oversize progress":   `{"t":"progress","p":{"x":"` + strings.Repeat("a", MaxProgressLine) + `"}}`,
+		"invalid UTF-8":       "{\"t\":\"progress\",\"p\":{\"x\":\"\xff\"}}",
+		"raw escape byte":     "{\"t\":\"progress\",\"p\":{\"x\":\"\x1b[31m\"}}",
+		"leading whitespace":  ` {"t":"progress","p":{}}`,
+		"duplicate key":       `{"t":"progress","t":"result","p":{}}`,
+		"case-variant key":    `{"T":"progress","p":{}}`,
+		"duplicate in err":    `{"t":"result","ok":false,"err":{"code":"docker","code":"policy","msg":"x"}}`,
+		"case-variant in err": `{"t":"result","ok":false,"err":{"Code":"docker","msg":"x"}}`,
 	}
 	for name, l := range bad {
 		if _, err := ParseAgentLine([]byte(l), spec); err == nil {
@@ -157,6 +173,7 @@ func FuzzParseAgentLine(f *testing.F) {
 		`{"t":"progress","p":{"a":1}}`, `{"t":"result","ok":true,"r":{}}`,
 		`{"t":"result","ok":false,"err":{"code":"docker","msg":"x"}}`, `{"t":"event","e":{}}`,
 		`{"t":"progress","p":{}} x`, "{\"t\":\"progress\",\"p\":\"\xff\"}", ``, `null`, `{}`,
+		`{"t":"progress","t":"result","p":{}}`, `{"T":"progress","p":{}}`, `{"t":"result","ok":false,"err":{"code":"docker","Code":"x","msg":""}}`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -190,6 +207,7 @@ func FuzzParseV1Request(f *testing.F) {
 	for _, s := range []string{
 		`{"v":1,"op":"hello","args":{"hub_max_v":1}}`, `{"v":1,"op":"hello"}`, `{"v":1,"op":"hello"} x`,
 		`{"v":2,"op":"hello"}`, `{"op":"logs","container":"a","tail":1}`, ``, `{"v":1,"op":"hello","args":null}`,
+		`{"v":1,"op":"hello","op":"hello"}`, `{"V":1,"op":"hello"}`, `{"v":1,"OP":"hello"}`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -198,7 +216,7 @@ func FuzzParseV1Request(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if r.V != ProtocolVersion || len(b) > MaxRequestLine {
+		if r.V < 1 || r.V > ProtocolVersion || len(b) > MaxRequestLine {
 			t.Fatalf("accepted %+v from %d bytes", r, len(b))
 		}
 		if _, ok := SpecFor(r.Op); !ok || r.Op == OpLogs {
@@ -325,11 +343,7 @@ func TestRemoteAgentProcessServesOnlyRemoteOKOps(t *testing.T) {
 	if _, ok := cfg.handlerTable()["test_write"]; !ok {
 		t.Fatal("local table lacks the local-only op")
 	}
-	// End to end: a spec lookup that knows the op (ParseV1Request uses the
-	// package table, so register the names there for the duration).
-	saved := opSpecs
-	opSpecs = cfg.specs
-	t.Cleanup(func() { opSpecs = saved })
+
 	for _, mode := range []Mode{ModeRemote, ModeLocal} {
 		cfg.Mode = mode
 		ys := pipeAgent(t, cfg)
@@ -391,3 +405,57 @@ func (f *followSource) LogsFollow(ctx context.Context, c string, tail int, follo
 	_, _ = io.WriteString(w, "tail of "+c+"\n")
 	return nil // the stream ends at the tail
 }
+
+// The hello bytes are frozen so a future v2 hub and a v1 agent can negotiate:
+// the envelope is always v:1 whatever version the session negotiated.
+func TestHelloBytesAreFrozen(t *testing.T) {
+	for _, v := range []int{0, 1, 2, 7} {
+		got, err := MarshalRequest(OpHello, HelloArgs{HubMaxV: 2}, v)
+		if err != nil || string(got) != `{"v":1,"op":"hello","args":{"hub_max_v":2}}`+"\n" {
+			t.Errorf("session v%d: %q %v", v, got, err)
+		}
+	}
+	ys := pipeAgent(t, Config{Logs: blockingLogs{calls: &atomic.Int32{}}, Version: "1.2.3"})
+	want := `{"t":"result","ok":true,"r":{"v":1,"agent":"1.2.3"}}` + "\n"
+	for _, n := range []string{"1", "2"} { // a v2 hub says hub_max_v 2; the agent answers with what it speaks
+		got := roundTrip(t, ys, []byte(`{"v":1,"op":"hello","args":{"hub_max_v":`+n+`}}`+"\n"))
+		if got != want {
+			t.Errorf("hub_max_v %s: %q", n, got)
+		}
+	}
+	if _, err := ParseV1Request([]byte(`{"v":2,"op":"hello","args":{"hub_max_v":1}}`)); err == nil {
+		t.Error("hello with v:2 accepted")
+	}
+}
+
+// JSON escaping can grow an error message past MaxErrorLine; the agent shortens
+// it so the hub never sees an over-long line. Same for the hello version.
+func TestAgentErrorAndHelloLinesStayUnderTheirCaps(t *testing.T) {
+	msg := strings.Repeat(`<>"&`, 128) // 512 bytes, about 3 KiB once escaped
+	h := func(context.Context, json.RawMessage, *Out) (any, error) {
+		return nil, &OpError{Code: CodeDocker, Msg: msg}
+	}
+	cfg := Config{
+		Logs:  blockingLogs{calls: &atomic.Int32{}},
+		Mode:  ModeLocal,
+		specs: []OpSpec{{Name: OpLogs, RemoteOK: true}, {Name: "test_fail", Timeout: time.Second}},
+		impls: map[string]Handler{"test_fail": h},
+	}
+	ys := pipeAgent(t, cfg)
+	got := roundTrip(t, ys, []byte(`{"v":1,"op":"test_fail"}`+"\n"))
+	line := strings.TrimSuffix(got, "\n")
+	if len(line) > MaxErrorLine || strings.Count(got, "\n") != 1 {
+		t.Fatalf("error line is %d bytes", len(line))
+	}
+	l, err := ParseAgentLine([]byte(line), OpSpec{Name: "test_fail"})
+	if err != nil || l.Err == nil || l.Err.Code != CodeDocker || l.Err.Msg == "" {
+		t.Fatalf("hub parse: %+v %v", l, err)
+	}
+	ys = pipeAgent(t, Config{Logs: blockingLogs{calls: &atomic.Int32{}}, Version: strings.Repeat("<", 64)})
+	got = roundTrip(t, ys, []byte(`{"v":1,"op":"hello","args":{"hub_max_v":1}}`+"\n"))
+	if l, err := ParseAgentLine([]byte(strings.TrimSuffix(got, "\n")), mustSpec(OpHello)); err != nil || l.OK == nil || !*l.OK {
+		t.Errorf("escape-heavy version: %q %v", got, err)
+	}
+}
+
+func mustSpec(name string) OpSpec { s, _ := SpecFor(name); return s }

@@ -44,7 +44,8 @@ const (
 	// in-process session.
 	MaxServerStreams = 32
 	// MaxRemoteStreams bounds the streams the hub has open to one remote agent
-	// session: 16 sessions x 8 x 256 KiB (yamux's minimum window) = 32 MiB steady-state worst case;
+	// session, plus the one transient `hello` stream per session that takes no slot:
+	// 16 sessions x 9 x 256 KiB (yamux's minimum window) = 36 MiB worst case;
 	// it holds because an agent-opened stream ends the session (see docs/security.md row 8).
 	MaxRemoteStreams = 8
 	// AuthFailuresPerMinute and AuthFailureBurst shape the per-IP limiter on
@@ -63,7 +64,10 @@ type Hub struct {
 	hasToken  bool
 	log       *slog.Logger
 
-	maxSessions int
+	maxSessions  int
+	localVersion string
+	specFor      func(string) (agent.OpSpec, bool)
+
 	// compare checks a presented token; replaced by tests to count calls.
 	compare  func(tok string) bool
 	fails    *limits.Keyed // failed token checks per client IP
@@ -87,6 +91,17 @@ func streamCap(id string) int {
 // Option configures New.
 type Option func(*Hub)
 
+// WithLocalVersion sets the build version reported for the in-process local
+// agent, which is never sent a `hello` (it is this binary).
+func WithLocalVersion(v string) Option { return func(h *Hub) { h.localVersion = v } }
+
+// withSpecFor replaces the op table every session built by this hub looks ops
+// up in; tests only, so a test can add ops or shorten the hello timeout without
+// touching a live session.
+func withSpecFor(f func(string) (agent.OpSpec, bool)) Option {
+	return func(h *Hub) { h.specFor = f }
+}
+
 // WithMaxSessions sets the remote session cap (default DefaultMaxSessions).
 func WithMaxSessions(n int) Option { return func(h *Hub) { h.maxSessions = n } }
 
@@ -96,10 +111,11 @@ func WithMaxSessions(n int) Option { return func(h *Hub) { h.maxSessions = n } }
 func New(ctx context.Context, token string, log *slog.Logger, opts ...Option) *Hub {
 	h := &Hub{
 		ctx: ctx, log: log, sessions: map[string]*Session{}, slots: map[string]int{},
-		maxSessions: DefaultMaxSessions,
-		fails:       limits.NewKeyed(AuthFailuresPerMinute, AuthFailureBurst, limits.MaxKeys, nil),
-		failLogs:    limits.NewKeyed(1, 1, limits.MaxKeys, nil),
-		protoLogs:   limits.NewKeyed(1, 1, limits.MaxKeys, nil),
+		maxSessions: DefaultMaxSessions, specFor: agent.SpecFor,
+
+		fails:     limits.NewKeyed(AuthFailuresPerMinute, AuthFailureBurst, limits.MaxKeys, nil),
+		failLogs:  limits.NewKeyed(1, 1, limits.MaxKeys, nil),
+		protoLogs: limits.NewKeyed(1, 1, limits.MaxKeys, nil),
 	}
 	if token != "" {
 		h.tokenHash, h.hasToken = sha256.Sum256([]byte(token)), true
@@ -125,7 +141,6 @@ type Session struct {
 	remote string
 	// specFor looks up an op's spec; agent.SpecFor, replaced only by tests.
 	specFor func(string) (agent.OpSpec, bool)
-	specMu  sync.RWMutex // guards specFor (tests replace it while the handshake runs)
 
 	log       *slog.Logger
 	protoLogs *limits.Keyed // one protocol-violation log line per op name per minute
@@ -247,8 +262,14 @@ func (h *Hub) attach(ctx context.Context, id, remote string, conn net.Conn, keep
 	}
 	h.mu.Lock()
 	h.seq++
-	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, streamCap(id)), remote: remote, specFor: agent.SpecFor,
+	s := &Session{ID: id, Seq: h.seq, Since: time.Now(), ys: ys, sem: make(chan struct{}, streamCap(id)), remote: remote, specFor: h.specFor,
 		log: h.log, protoLogs: h.protoLogs, helloDone: make(chan struct{})}
+	if id == LocalID {
+		// The local agent is this binary: it is never at v0 and is not asked.
+		s.version.Store(agent.ProtocolVersion)
+		s.agentVer = agent.CleanText(h.localVersion, agent.MaxAgentVersion)
+		s.helloOnce.Do(func() { close(s.helloDone) })
+	}
 	old := h.sessions[id]
 	h.sessions[id] = s
 	h.mu.Unlock()
@@ -262,7 +283,10 @@ func (h *Hub) attach(ctx context.Context, id, remote string, conn net.Conn, keep
 	// not enough: yamux keeps an accepted-then-closed stream and its buffered
 	// data until the close timeout, which an agent could use to pin memory.
 	var drain sync.WaitGroup
-	drain.Go(func() { s.hello(ctx) })
+	if id != LocalID {
+		drain.Go(func() { s.hello(ctx) })
+	}
+
 	drain.Go(func() {
 		if _, err := ys.AcceptStream(); err == nil {
 			h.log.Warn("agent opened a stream; ending its session (protocol violation)", "agent", id, "remote", remote)
@@ -327,6 +351,9 @@ var ErrNeedsV1 = errors.New("hub: this agent does not support this operation (pr
 func (s *Session) logs(ctx context.Context, container string, tail int, follow bool) (io.ReadCloser, error) {
 	op := agent.Op{Op: agent.OpLogs, Container: container, Tail: tail}
 	if !follow {
+		if err := s.waitHello(ctx); err != nil {
+			return nil, err
+		}
 		if s.Version() < 1 {
 			return nil, ErrNeedsV1
 		}
@@ -348,6 +375,17 @@ func (s *Session) logs(ctx context.Context, container string, tail int, follow b
 	}
 	st.setStop(context.AfterFunc(ctx, st.shut))
 	return st, nil
+}
+
+// waitHello blocks until the handshake has finished or ctx ends, so a call
+// made right after attach does not see a not-yet-negotiated v0.
+func (s *Session) waitHello(ctx context.Context) error {
+	select {
+	case <-s.helloDone:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
 }
 
 // Version is the negotiated protocol version (0 until `hello` succeeds; 0 for
@@ -406,26 +444,11 @@ func (s *Session) open(name string) (*stream, error) {
 	return s.openStream(name, true)
 }
 
-// spec looks an op up in the session's op table.
-func (s *Session) spec(name string) (agent.OpSpec, bool) {
-	s.specMu.RLock()
-	f := s.specFor
-	s.specMu.RUnlock()
-	return f(name)
-}
-
-// setSpecFor replaces the op lookup; tests only.
-func (s *Session) setSpecFor(f func(string) (agent.OpSpec, bool)) {
-	s.specMu.Lock()
-	s.specFor = f
-	s.specMu.Unlock()
-}
-
 // openStream is open; useSlot false is for `hello` only: one stream per
 // session, bounded by its 5 s timeout, that must not take one of the
 // operator-facing slots (a silent agent would otherwise hold one for 5 s).
 func (s *Session) openStream(name string, useSlot bool) (*stream, error) {
-	spec, ok := s.spec(name)
+	spec, ok := s.specFor(name)
 	if !ok {
 		return nil, ErrUnknownOp
 	}
