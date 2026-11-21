@@ -10,11 +10,22 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strings"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 )
 
 // ErrForeignNetwork is a same-name network that is not ours (it lacks one of
 // the expected labels).
 var ErrForeignNetwork = errors.New("dockerapi: a network with this name exists and is not ServerDock's")
+
+// ErrNetworkSettings is our network with settings that differ from what
+// NetworkEnsure creates (driver, gateway, IPRange, inter-container traffic).
+var ErrNetworkSettings = errors.New("dockerapi: the network exists with other settings")
+
+// ErrSubnetOverlap is Docker refusing to create the network because its subnet
+// overlaps another network or a host route.
+var ErrSubnetOverlap = errors.New("dockerapi: the subnet overlaps another network")
 
 // ErrSubnetMismatch is our network with another subnet than the one asked for.
 var ErrSubnetMismatch = errors.New("dockerapi: the network exists with another subnet")
@@ -31,9 +42,11 @@ type NetworkSpec struct {
 // NetworkInfo is a network as ServerDock sees it.
 type NetworkInfo struct {
 	ID      string
+	Driver  string
 	Subnet  string
 	Gateway string
 	IPRange string
+	ICC     string // the enable_icc option ("" when unset)
 	Labels  map[string]string
 	// Used maps the address of every connected endpoint to the container id.
 	// Docker lists only connected endpoints, so a stopped container is absent.
@@ -41,7 +54,8 @@ type NetworkInfo struct {
 }
 
 // networkAddrs derives the gateway (the subnet's .1) and the dynamic IPRange
-// (the top quarter: a /26 of a /24) of a subnet.
+// (the top quarter: a /26 of a /24) of a subnet. This client accepts /16 to /26;
+// the policy narrows --app-subnet to /24 to /20 (step 4a).
 func networkAddrs(subnet string) (gateway netip.Addr, ipRange netip.Prefix, err error) {
 	p, err := netip.ParsePrefix(subnet)
 	if err != nil || !p.Addr().Is4() || p.Masked() != p || p.Bits() < 16 || p.Bits() > 26 {
@@ -95,6 +109,16 @@ func (c *Client) NetworkEnsure(ctx context.Context, spec NetworkSpec) (NetworkIn
 		if info.Subnet != spec.Subnet {
 			return NetworkInfo{}, fmt.Errorf("%w (%s, asked for %s)", ErrSubnetMismatch, info.Subnet, spec.Subnet)
 		}
+		switch {
+		case info.Driver != "bridge":
+			return NetworkInfo{}, fmt.Errorf("%w: driver is %q, not bridge", ErrNetworkSettings, agent.CleanText(info.Driver, 32))
+		case info.Gateway != gw.String():
+			return NetworkInfo{}, fmt.Errorf("%w: gateway is %q, not %s", ErrNetworkSettings, agent.CleanText(info.Gateway, 64), gw)
+		case info.IPRange != rng.String():
+			return NetworkInfo{}, fmt.Errorf("%w: IPRange is %q, not %s", ErrNetworkSettings, agent.CleanText(info.IPRange, 64), rng)
+		case info.ICC != "false":
+			return NetworkInfo{}, fmt.Errorf("%w: inter-container traffic is not disabled", ErrNetworkSettings)
+		}
 		return info, nil
 	}
 	info, err := check()
@@ -117,6 +141,10 @@ func (c *Client) NetworkEnsure(ctx context.Context, spec NetworkSpec) (NetworkIn
 	if err := statusErr("network create", st, resp, http.StatusCreated); err != nil {
 		if errors.Is(err, ErrConflict) { // created by someone else in between
 			return check()
+		}
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusForbidden && strings.Contains(strings.ToLower(ae.Msg), "overlap") {
+			return NetworkInfo{}, fmt.Errorf("%w: %s", ErrSubnetOverlap, ae.Msg)
 		}
 		return NetworkInfo{}, err
 	}
@@ -156,10 +184,12 @@ func (c *Client) NetworkInspect(ctx context.Context, name string) (NetworkInfo, 
 		return NetworkInfo{}, err
 	}
 	var r struct {
-		Id     string
-		Name   string
-		Labels map[string]string
-		IPAM   struct {
+		Id      string
+		Name    string
+		Driver  string
+		Options map[string]string
+		Labels  map[string]string
+		IPAM    struct {
 			Config []struct{ Subnet, IPRange, Gateway string }
 		}
 		Containers map[string]struct{ IPv4Address string }
@@ -170,7 +200,7 @@ func (c *Client) NetworkInspect(ctx context.Context, name string) (NetworkInfo, 
 	if r.Name != name { // Docker also matches id prefixes
 		return NetworkInfo{}, &APIError{Op: "network inspect", Status: http.StatusNotFound}
 	}
-	info := NetworkInfo{ID: r.Id, Labels: r.Labels, Used: map[string]string{}}
+	info := NetworkInfo{ID: r.Id, Driver: r.Driver, ICC: r.Options["com.docker.network.bridge.enable_icc"], Labels: r.Labels, Used: map[string]string{}}
 	for _, cfg := range r.IPAM.Config {
 		if p, err := netip.ParsePrefix(cfg.Subnet); err == nil && p.Addr().Is4() {
 			info.Subnet, info.Gateway, info.IPRange = cfg.Subnet, cfg.Gateway, cfg.IPRange

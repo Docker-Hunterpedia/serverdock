@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -37,6 +38,26 @@ func validRef(ref string) bool {
 	return ref[0] != '/' && ref[0] != '-'
 }
 
+var digestRefRe = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+
+// validPullRef is validRef plus the rule that a pull names exactly one image: a
+// ref with no tag and no digest makes the daemon pull every tag of the
+// repository. The last path segment must carry ":tag" (a registry port such as
+// 127.0.0.1:5000/app is not a tag) or the ref must end in "@sha256:<64 hex>".
+// Policy normalises bare names to ":latest" in step 5; the client does not
+// depend on that.
+func validPullRef(ref string) bool {
+	if !validRef(ref) {
+		return false
+	}
+	if strings.Contains(ref, "@") {
+		return digestRefRe.MatchString(ref) && strings.Count(ref, "@") == 1
+	}
+	last := ref[strings.LastIndex(ref, "/")+1:]
+	_, tag, ok := strings.Cut(last, ":")
+	return ok && tag != "" && !strings.Contains(tag, ":")
+}
+
 // PullProgress is the running total of one pull, built from Docker's per-layer
 // lines. Layer ids are tracked up to maxLayers.
 type PullProgress struct {
@@ -59,10 +80,14 @@ type layerState struct {
 // returns when Docker ends the stream. A stream that reports an error (an
 // `error` or `errorDetail` line) fails the pull; "no space left on device"
 // matches ErrDiskFull. The call is bounded by ctx only (pulls are long); the
-// caller adds its own stall watch by cancelling ctx.
+// caller adds its own stall watch by cancelling ctx. ref must carry a tag or a
+// sha256 digest (see validPullRef). A stream that ends without a terminal
+// status line ("Image is up to date", "Downloaded newer image", or the "Digest:"
+// and "Status:" pair) is an error, not a success; the caller still runs
+// ImageInspect after a pull to learn the image id.
 func (c *Client) ImagePull(ctx context.Context, ref string, onProgress func(PullProgress)) error {
-	if !validRef(ref) {
-		return errors.New("dockerapi: invalid image reference")
+	if !validPullRef(ref) {
+		return errors.New("dockerapi: image reference needs a tag or a sha256 digest")
 	}
 	resp, err := c.stream(ctx, http.MethodPost, "/images/create?fromImage="+url.QueryEscape(ref), nil)
 	if err != nil {
@@ -71,11 +96,15 @@ func (c *Client) ImagePull(ctx context.Context, ref string, onProgress func(Pull
 	defer resp.Body.Close()
 	layers := map[string]*layerState{}
 	var p PullProgress
+	var sawStatus bool
 	lines := newJSONLines(resp.Body)
 	for {
 		line, err := lines.next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			if sawStatus {
+				return nil
+			}
+			return errors.New("dockerapi: pull: the stream ended without a completion status")
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -107,22 +136,30 @@ func (c *Client) ImagePull(ctx context.Context, ref string, onProgress func(Pull
 			return fmt.Errorf("dockerapi: pull: %s", agent.CleanText(msg, maxErrMsg))
 		}
 		p.Status = agent.CleanText(m.Status, maxErrMsg)
+		switch {
+		case strings.HasPrefix(m.Status, "Status: Downloaded newer image for "),
+			strings.HasPrefix(m.Status, "Status: Image is up to date for "):
+			sawStatus = true
+		}
 		// Only lines for a layer id (not the "Pulling from" or "Digest" lines).
-		if m.ID != "" && len(m.ID) <= 80 && (m.ProgressDetail != nil || isLayerStatus(m.Status)) {
+		if m.ID != "" && len(m.ID) <= 80 && isLayerStatus(m.Status) {
 			l := layers[m.ID]
 			if l == nil && len(layers) < maxLayers {
 				l = &layerState{}
 				layers[m.ID] = l
 			}
 			if l != nil {
-				if m.ProgressDetail != nil && m.ProgressDetail.Total > 0 {
-					l.current, l.total = max(m.ProgressDetail.Current, 0), m.ProgressDetail.Total
-				}
 				switch m.Status {
-				case "Pull complete", "Already exists", "Download complete":
-					l.done = true
-					if l.total > 0 {
-						l.current = l.total
+				case "Downloading":
+					// Bytes come from Downloading lines only; a total never shrinks.
+					if m.ProgressDetail != nil && m.ProgressDetail.Total > 0 {
+						l.total = max(l.total, m.ProgressDetail.Total)
+						l.current = min(max(m.ProgressDetail.Current, l.current, 0), l.total)
+					}
+				case "Download complete", "Pull complete", "Already exists":
+					l.current = l.total
+					if m.Status != "Download complete" {
+						l.done = true
 					}
 				}
 			}
@@ -156,11 +193,22 @@ func isLayerStatus(s string) bool {
 // with "serverdock." so the policy can refuse a spoofing image.
 type ImageInfo struct {
 	ID                string
-	RepoDigests       []string
-	ExposedPorts      []string // "8080/tcp", sorted
-	Volumes           []string // sorted
-	ReservedLabelKeys []string // sorted
+	RepoDigests       []string // at most maxImageList, each cleaned and capped
+	ExposedPorts      []string // "8080/tcp", sorted, same bounds
+	Volumes           []string // sorted, same bounds
+	ReservedLabelKeys []string // sorted, same bounds
+	// HasReservedLabel is true if the image has any serverdock.* label,
+	// computed before ReservedLabelKeys is capped: a policy decision must not
+	// depend on the cap.
+	HasReservedLabel bool
 }
+
+const (
+	maxImageList = 32  // entries kept per list
+	maxImageText = 256 // bytes kept per entry
+)
+
+var imageIDRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // ImageInspect inspects an image by reference or id.
 func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInfo, error) {
@@ -186,18 +234,40 @@ func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInfo, error
 	if err := json.Unmarshal(body, &r); err != nil {
 		return ImageInfo{}, fmt.Errorf("dockerapi: image inspect: %w", err)
 	}
-	info := ImageInfo{ID: r.ID, RepoDigests: r.RepoDigests}
+	if !imageIDRe.MatchString(r.ID) {
+		return ImageInfo{}, errors.New("dockerapi: image inspect: bad image id")
+	}
+	info := ImageInfo{ID: r.ID, RepoDigests: capList(r.RepoDigests)}
 	if r.Config != nil {
-		info.ExposedPorts = sortedKeys(r.Config.ExposedPorts)
-		info.Volumes = sortedKeys(r.Config.Volumes)
+		info.ExposedPorts = capList(sortedKeys(r.Config.ExposedPorts))
+		info.Volumes = capList(sortedKeys(r.Config.Volumes))
+		var reserved []string
 		for k := range r.Config.Labels {
 			if strings.HasPrefix(strings.ToLower(k), "serverdock.") {
-				info.ReservedLabelKeys = append(info.ReservedLabelKeys, k)
+				reserved = append(reserved, k)
 			}
 		}
-		sort.Strings(info.ReservedLabelKeys)
+		sort.Strings(reserved)
+		info.HasReservedLabel = len(reserved) > 0
+		info.ReservedLabelKeys = capList(reserved)
 	}
 	return info, nil
+}
+
+// capList cleans each entry (it came from an image or a registry), caps its
+// length and keeps at most maxImageList entries.
+func capList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(in), maxImageList))
+	for _, v := range in {
+		if len(out) == maxImageList {
+			break
+		}
+		out = append(out, agent.CleanText(v, maxImageText))
+	}
+	return out
 }
 
 func sortedKeys(m map[string]json.RawMessage) []string {

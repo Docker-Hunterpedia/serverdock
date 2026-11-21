@@ -433,9 +433,8 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	helpers := map[string]bool{"call": true, "stream": true, "negotiate": true}
-	// Exported methods that delegate to another checked method (or to the
-	// shared containerList, which uses call).
-	delegates := map[string]string{"Logs": "LogsFollow", "ContainerList": "containerList", "ContainerPorts": "containerList"}
+	// Exported methods that delegate to another checked method.
+	delegates := map[string]string{"Logs": "LogsFollow", "ContainerPorts": "ContainerList"}
 	var checked []string
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -490,10 +489,8 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 				if usesHC && name != "Close" {
 					t.Errorf("%s uses c.hc", name)
 				}
-			case fn.Name.IsExported() || name == "containerList":
-				if fn.Name.IsExported() {
-					checked = append(checked, name)
-				}
+			case fn.Name.IsExported():
+				checked = append(checked, name)
 				if !usesHelper || usesHC {
 					t.Errorf("method %s must use c.call/c.stream and not c.hc", name)
 				}

@@ -125,6 +125,25 @@ func (r *rig) spec1(ip string, id string) CreateSpec {
 	}
 }
 
+// awaitEventsOpen proves the events stream is open: it runs a throwaway
+// container with our instance label (service "probe") until an event for it
+// arrives, so nothing the test does next can be missed. Probe events are
+// ignored by the caller.
+func (r *rig) awaitEventsOpen(t *testing.T, events <-chan Event) {
+	t.Helper()
+	for i := 0; i < 15; i++ {
+		docker(t, "run", "-d", "--label", "serverdock.instance="+r.inst, "--label", "serverdock.service=probe", r.img, "true")
+		select {
+		case e := <-events:
+			if e.Service == "probe" {
+				return
+			}
+		case <-time.After(time.Second):
+		}
+	}
+	t.Fatal("the events stream never delivered a probe event")
+}
+
 func TestIntegrationDeployLifecycle(t *testing.T) {
 	r := newRig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -161,12 +180,12 @@ func TestIntegrationDeployLifecycle(t *testing.T) {
 	// Events: open the stream before anything starts.
 	ectx, ecancel := context.WithCancel(ctx)
 	defer ecancel()
-	events := make(chan Event, 16)
+	events := make(chan Event, 64)
 	edone := make(chan error, 1)
 	go func() {
 		edone <- c.Events(ectx, []string{"serverdock.instance=" + r.inst}, func(e Event) error { events <- e; return nil })
 	}()
-	time.Sleep(500 * time.Millisecond)
+	r.awaitEventsOpen(t, events)
 
 	name := "sd-it-" + r.inst[:6]
 	ip := r.hostIP(2)
@@ -183,7 +202,7 @@ func TestIntegrationDeployLifecycle(t *testing.T) {
 	}
 
 	// A created (not started) container already holds its address in the list.
-	list, err := c.ContainerList(ctx, ListOptions{All: true, Labels: []string{"serverdock.instance=" + r.inst}})
+	list, err := c.ContainerList(ctx, ListOptions{All: true, Labels: []string{"serverdock.instance=" + r.inst, "serverdock.service=7"}})
 	if err != nil || len(list) != 1 || list[0].ID != cid || list[0].State != "created" || list[0].Networks[r.net].ConfiguredIPv4 != ip {
 		t.Fatalf("%+v %v", list, err)
 	}
@@ -232,7 +251,7 @@ func TestIntegrationDeployLifecycle(t *testing.T) {
 	if _, ok := used.Used[ip]; ok {
 		t.Error("a stopped container is listed as connected")
 	}
-	list, _ = c.ContainerList(ctx, ListOptions{All: true, Labels: []string{"serverdock.instance=" + r.inst}})
+	list, _ = c.ContainerList(ctx, ListOptions{All: true, Labels: []string{"serverdock.instance=" + r.inst, "serverdock.service=7"}})
 	if len(list) != 1 || list[0].Networks[r.net].ConfiguredIPv4 != ip {
 		t.Errorf("a stopped container lost its address: %+v", list)
 	}
@@ -252,6 +271,9 @@ func TestIntegrationDeployLifecycle(t *testing.T) {
 	for seen["start"].ID == "" || seen["die"].ID == "" || seen["destroy"].ID == "" {
 		select {
 		case e := <-events:
+			if e.Service == "probe" {
+				continue
+			}
 			seen[e.Action] = e
 		case <-deadline:
 			t.Fatalf("events seen: %+v", seen)

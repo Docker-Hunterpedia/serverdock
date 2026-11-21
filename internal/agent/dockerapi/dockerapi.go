@@ -245,7 +245,11 @@ func (c *Client) stream(ctx context.Context, method, path string, reqBody []byte
 		if resp.StatusCode == http.StatusBadRequest {
 			c.forget()
 		}
+		// The error body is read under the short deadline too: a daemon that
+		// sends headers and then stalls must not hold the caller (Events).
+		bt := time.AfterFunc(c.short, cancel)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		bt.Stop()
 		resp.Body.Close()
 		cancel()
 		return nil, newAPIError(path, resp.StatusCode, body)

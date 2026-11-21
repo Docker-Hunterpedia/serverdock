@@ -31,7 +31,12 @@ type Event struct {
 // stream has no read deadline: it is idle between events by design, and the
 // caller owns the reconnect.
 func (c *Client) Events(ctx context.Context, labels []string, fn func(Event) error) error {
-	f := map[string][]string{"type": {"container"}}
+	// Only the actions the reconciler reads: this leaves out the exec_* traffic
+	// of container health checks.
+	f := map[string][]string{
+		"type":  {"container"},
+		"event": {"start", "stop", "die", "oom", "destroy", "restart", "kill"},
+	}
 	for _, l := range labels {
 		if l == "" || len(l) > 256 || strings.ContainsAny(l, "\x00\r\n") {
 			return errors.New("dockerapi: invalid label filter")

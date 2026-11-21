@@ -137,8 +137,9 @@ func (c *Client) ContainerRestart(ctx context.Context, id string, graceSeconds i
 }
 
 // ContainerRemove removes a stopped container and its anonymous volumes
-// (v=1); it never forces. A running container is ErrConflict. Named volumes are
-// never removed this way.
+// (v=1); it never forces. A running container is ErrConflict, and so is "removal
+// already in progress": on ErrConflict callers re-inspect to tell which.
+// Named volumes are never removed this way.
 func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 	if !ValidFullID(id) {
 		return errors.New("dockerapi: invalid container id")
@@ -148,6 +149,19 @@ func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 		return err
 	}
 	return statusErr("container remove", st, body, http.StatusNoContent)
+}
+
+// ourLabels keeps only the serverdock.* labels (at most 16, values cleaned and
+// capped at 256 bytes): the rest came from an image or a user and the deploy
+// path never needs them.
+func ourLabels(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range in {
+		if strings.HasPrefix(k, "serverdock.") && len(out) < 16 && len(k) <= 64 {
+			out[k] = agent.CleanText(v, 256)
+		}
+	}
+	return out
 }
 
 // ContainerState is the part of State the deploy path reads.
@@ -220,9 +234,9 @@ func (c *Client) ContainerInspect(ctx context.Context, idOrName string) (Contain
 		return ContainerInfo{}, errors.New("dockerapi: container inspect: bad id")
 	}
 	info := ContainerInfo{
-		ID: r.ID, Name: strings.TrimPrefix(r.Name, "/"), ImageID: r.Image, Labels: r.Config.Labels,
+		ID: r.ID, Name: strings.TrimPrefix(r.Name, "/"), ImageID: r.Image, Labels: ourLabels(r.Config.Labels),
 		RestartCount: r.RestartCount, NetworkMode: r.HostConfig.NetworkMode,
-		State: ContainerState{Status: r.State.Status, Running: r.State.Running, Restarting: r.State.Restarting,
+		State: ContainerState{Status: agent.CleanText(r.State.Status, 32), Running: r.State.Running, Restarting: r.State.Restarting,
 			ExitCode: r.State.ExitCode, OOMKilled: r.State.OOMKilled},
 		Networks: map[string]ContainerNet{},
 	}
@@ -264,7 +278,12 @@ type ListOptions struct {
 	Labels []string
 }
 
-func (c *Client) containerList(ctx context.Context, opt ListOptions) ([]ContainerSummary, error) {
+// ContainerList lists containers (all states when opt.All) that match the label
+// filters. It reads the configured IPAMConfig address as well as the current
+// one, so a stopped container still shows the address it holds. Entries whose
+// id is not a full 64-hex id are skipped, and only serverdock.* label keys are
+// returned.
+func (c *Client) ContainerList(ctx context.Context, opt ListOptions) ([]ContainerSummary, error) {
 	q := url.Values{}
 	if opt.All {
 		q.Set("all", "1")
@@ -309,7 +328,10 @@ func (c *Client) containerList(ctx context.Context, opt ListOptions) ([]Containe
 	}
 	out := make([]ContainerSummary, 0, len(raw))
 	for _, r := range raw {
-		s := ContainerSummary{ID: r.ID, ImageID: r.ImageID, State: r.State, Labels: r.Labels, Networks: map[string]ContainerNet{}}
+		if !ValidFullID(r.ID) {
+			continue
+		}
+		s := ContainerSummary{ID: r.ID, ImageID: r.ImageID, State: agent.CleanText(r.State, 32), Labels: ourLabels(r.Labels), Networks: map[string]ContainerNet{}}
 		for _, n := range r.Names {
 			s.Names = append(s.Names, strings.TrimPrefix(n, "/"))
 		}
@@ -330,13 +352,6 @@ func (c *Client) containerList(ctx context.Context, opt ListOptions) ([]Containe
 	return out, nil
 }
 
-// ContainerList lists containers (all states when opt.All) that match the label
-// filters. It reads the configured IPAMConfig address as well as the current
-// one, so a stopped container still shows the address it holds.
-func (c *Client) ContainerList(ctx context.Context, opt ListOptions) ([]ContainerSummary, error) {
-	return c.containerList(ctx, opt)
-}
-
 // PublishingContainer is a running container that publishes host ports.
 type PublishingContainer struct {
 	Name  string
@@ -346,7 +361,7 @@ type PublishingContainer struct {
 // ContainerPorts lists every running container that publishes a host port
 // (the SEC6 exposure check), in name order.
 func (c *Client) ContainerPorts(ctx context.Context) ([]PublishingContainer, error) {
-	list, err := c.containerList(ctx, ListOptions{})
+	list, err := c.ContainerList(ctx, ListOptions{})
 	if err != nil {
 		return nil, err
 	}

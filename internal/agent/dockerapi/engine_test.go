@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +132,7 @@ func allOps() []op {
 		{"ContainerPorts", 200, `[]`, func(c *Client) error { _, err := c.ContainerPorts(ctx); return err }},
 		{"NetworkInspect", 200, `{"Id":"n1","Name":"` + otherN + `"}`, func(c *Client) error { _, err := c.NetworkInspect(ctx, otherN); return err }},
 		{"DataRoot", 200, `{"DockerRootDir":"/var/lib/docker"}`, func(c *Client) error { _, err := c.DataRoot(ctx); return err }},
-		{"ImagePull", 200, `{"status":"Status: Image is up to date"}` + "\r\n", func(c *Client) error { return c.ImagePull(ctx, "nginx:1", nil) }},
+		{"ImagePull", 200, `{"status":"Status: Image is up to date for nginx:1"}` + "\r\n", func(c *Client) error { return c.ImagePull(ctx, "nginx:1", nil) }},
 		{"Events", 200, ``, func(c *Client) error { return c.Events(ctx, nil, func(Event) error { return nil }) }},
 	}
 }
@@ -504,8 +505,9 @@ func TestPullErrorLines(t *testing.T) {
 		}
 	})
 	t.Run("a line of exactly the cap is fine", func(t *testing.T) {
-		pad := MaxJSONLine - len(`{"status":""}`)
-		c, _ := startEngine(t, reply(200, `{"status":"`+strings.Repeat("a", pad)+`"}`+"\r\n"))
+		term := "Status: Downloaded newer image for "
+		pad := MaxJSONLine - len(`{"status":""}`) - len(term)
+		c, _ := startEngine(t, reply(200, `{"status":"`+term+strings.Repeat("a", pad)+`"}`+"\r\n"))
 		if err := c.ImagePull(ctx, "x:1", nil); err != nil {
 			t.Fatalf("%v", err)
 		}
@@ -517,7 +519,7 @@ func TestPullStatusAndLayerCountAreBounded(t *testing.T) {
 	for i := 0; i < maxLayers+100; i++ {
 		b.WriteString(`{"status":"Pulling fs layer","id":"l` + string(rune('a'+i%26)) + strings.Repeat("x", i%7) + string(rune('0'+i%10)) + `-` + itoa(i) + `"}` + "\n")
 	}
-	b.WriteString(`{"status":"` + strings.Repeat("s", 5000) + `"}` + "\n")
+	b.WriteString(`{"status":"` + strings.Repeat("s", 5000) + `"}` + "\n" + `{"status":"Status: Downloaded newer image for x:1"}` + "\n")
 	c, _ := startEngine(t, reply(200, b.String()))
 	var last PullProgress
 	if err := c.ImagePull(context.Background(), "x:1", func(p PullProgress) { last = p }); err != nil {
@@ -632,7 +634,7 @@ func TestNetworkAddrs(t *testing.T) {
 
 func netInspectJSON(name, subnet string, labels map[string]string) string {
 	l, _ := json.Marshal(labels)
-	return `{"Id":"nid","Name":"` + name + `","Labels":` + string(l) + `,"IPAM":{"Config":[{"Subnet":"` + subnet + `","Gateway":"10.250.0.1"}]},
+	return `{"Id":"nid","Name":"` + name + `","Driver":"bridge","Options":{"com.docker.network.bridge.enable_icc":"false"},"Labels":` + string(l) + `,"IPAM":{"Config":[{"Subnet":"` + subnet + `","Gateway":"10.250.0.1","IPRange":"10.250.0.192/26"}]},
 	 "Containers":{"` + id64 + `":{"IPv4Address":"10.250.0.5/24"}}}`
 }
 
@@ -795,4 +797,228 @@ func FuzzEventLines(f *testing.F) {
 			return nil
 		})
 	})
+}
+
+func TestPullRefusesAReferenceThatPullsEveryTag(t *testing.T) {
+	ctx := context.Background()
+	c, e := startEngine(t, reply(200, `{"status":"Status: Image is up to date for x"}`+"\n"))
+	for _, bad := range []string{"nginx", "a/b", "127.0.0.1:5000/app", "localhost:5000/a/b", "nginx:", "a/b:", "a@sha256:abc", "a@sha256:" + id64[:63], "a:1@sha256:" + id64 + "@sha256:" + id64, "a:b:c"} {
+		if err := c.ImagePull(ctx, bad, nil); err == nil {
+			t.Errorf("ImagePull accepted %q", bad)
+		}
+	}
+	if e.count() != 0 {
+		t.Fatalf("%d requests reached the engine", e.count())
+	}
+	for _, good := range []string{"nginx:1", "a/b:latest", "127.0.0.1:5000/app:1", "a/b@sha256:" + id64, "a/b:1@sha256:" + id64, "localhost:5000/a/b:2"} {
+		if err := c.ImagePull(ctx, good, nil); err != nil {
+			t.Errorf("ImagePull refused %q: %v", good, err)
+		}
+	}
+	// Inspect still takes a bare name (it names one local image).
+	if err := validRefOnly("nginx"); err != nil {
+		t.Error(err)
+	}
+}
+
+func validRefOnly(ref string) error {
+	if !validRef(ref) {
+		return errors.New("validRef refused " + ref)
+	}
+	return nil
+}
+
+func TestPullNeedsACompletionStatus(t *testing.T) {
+	c, _ := startEngine(t, reply(200, `{"status":"Pulling from library/x","id":"1"}`+"\n"+`{"status":"Digest: sha256:`+id64+`"}`+"\n"))
+	if err := c.ImagePull(context.Background(), "x:1", nil); err == nil {
+		t.Fatal("a stream cut before its status was a success")
+	}
+	c2, _ := startEngine(t, reply(200, ``))
+	if err := c2.ImagePull(context.Background(), "x:1", nil); err == nil {
+		t.Fatal("an empty stream was a success")
+	}
+}
+
+func TestPullBytesComeFromDownloadingLinesOnly(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"status":"Pulling fs layer","id":"a","progressDetail":{"current":999,"total":999}}`,
+		`{"status":"Downloading","id":"a","progressDetail":{"current":40,"total":100}}`,
+		`{"status":"Extracting","id":"a","progressDetail":{"current":1,"total":5}}`,     // must not move the totals
+		`{"status":"Downloading","id":"a","progressDetail":{"current":30,"total":100}}`, // never backwards
+		`{"status":"Download complete","id":"a"}`,
+		`{"status":"Extracting","id":"a","progressDetail":{"current":2,"total":50}}`,
+		`{"status":"Pull complete","id":"a"}`,
+		`{"status":"Status: Downloaded newer image for x:1"}`,
+	}, "\n") + "\n"
+	c, _ := startEngine(t, reply(200, lines))
+	var seq []PullProgress
+	if err := c.ImagePull(context.Background(), "x:1", func(p PullProgress) { seq = append(seq, p) }); err != nil {
+		t.Fatal(err)
+	}
+	var prev int64
+	for i, p := range seq {
+		if p.Bytes < prev {
+			t.Errorf("step %d: bytes went backwards: %d -> %d", i, prev, p.Bytes)
+		}
+		if p.Bytes > p.BytesTotal {
+			t.Errorf("step %d: %d of %d", i, p.Bytes, p.BytesTotal)
+		}
+		prev = p.Bytes
+	}
+	if seq[0].BytesTotal != 0 {
+		t.Errorf("a non-Downloading line set a total: %+v", seq[0])
+	}
+	if seq[2].BytesTotal != 100 || seq[2].Bytes != 40 {
+		t.Errorf("Extracting moved the totals: %+v", seq[2])
+	}
+	last := seq[len(seq)-1]
+	if last.Bytes != 100 || last.BytesTotal != 100 || last.LayersDone != 1 {
+		t.Errorf("%+v", last)
+	}
+}
+
+func TestEventsFilterNamesTheActions(t *testing.T) {
+	c, e := startEngine(t, reply(200, ``))
+	if err := c.Events(context.Background(), nil, func(Event) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := url.ParseQuery(e.last().Query)
+	var f map[string][]string
+	if err := json.Unmarshal([]byte(q.Get("filters")), &f); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(f["event"], ",")
+	if got != "start,stop,die,oom,destroy,restart,kill" {
+		t.Fatalf("event filter %q", got)
+	}
+	for _, a := range f["event"] {
+		if strings.HasPrefix(a, "exec_") || strings.HasPrefix(a, "health") {
+			t.Errorf("filter includes %s", a)
+		}
+	}
+}
+
+// Headers followed by a stalled error body do not hold the caller.
+func TestStreamErrorBodyIsReadUnderTheShortDeadline(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c, _ := startEngine(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(500)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	t0 := time.Now()
+	err := c.Events(context.Background(), nil, func(Event) error { return nil })
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != 500 || time.Since(t0) > 3*time.Second {
+		t.Fatalf("%v after %v", err, time.Since(t0))
+	}
+}
+
+func TestNetworkEnsureRefusesChangedSettings(t *testing.T) {
+	ctx := context.Background()
+	ours := map[string]string{"serverdock.instance": "abc"}
+	spec := NetworkSpec{Name: otherN, Subnet: "10.250.0.0/24", Labels: ours}
+	base := netInspectJSON(otherN, "10.250.0.0/24", ours)
+	for name, mod := range map[string]func(string) string{
+		"driver": func(s string) string { return strings.Replace(s, `"Driver":"bridge"`, `"Driver":"macvlan"`, 1) },
+		"gateway": func(s string) string {
+			return strings.Replace(s, `"Gateway":"10.250.0.1"`, `"Gateway":"10.250.0.2"`, 1)
+		},
+		"range": func(s string) string {
+			return strings.Replace(s, `"IPRange":"10.250.0.192/26"`, `"IPRange":"10.250.0.128/25"`, 1)
+		},
+		"no range": func(s string) string { return strings.Replace(s, `,"IPRange":"10.250.0.192/26"`, ``, 1) },
+		"icc":      func(s string) string { return strings.Replace(s, `enable_icc":"false"`, `enable_icc":"true"`, 1) },
+		"no icc": func(s string) string {
+			return strings.Replace(s, `"com.docker.network.bridge.enable_icc":"false"`, ``, 1)
+		},
+	} {
+		body := mod(base)
+		if body == base {
+			t.Fatalf("%s: the mutation changed nothing", name)
+		}
+		c, e := startEngine(t, reply(200, body))
+		if _, err := c.NetworkEnsure(ctx, spec); !errors.Is(err, ErrNetworkSettings) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if e.last().Method != "GET" {
+			t.Errorf("%s: touched the network", name)
+		}
+	}
+}
+
+func TestNetworkCreateOverlapIsTyped(t *testing.T) {
+	c, _ := startEngine(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(403)
+		io.WriteString(w, `{"message":"Pool overlaps with other one on this address space"}`)
+	})
+	_, err := c.NetworkEnsure(context.Background(), NetworkSpec{Name: otherN, Subnet: "10.250.0.0/24", Labels: map[string]string{"serverdock.instance": "abc"}})
+	if !errors.Is(err, ErrSubnetOverlap) || !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestImageInspectBoundsAndCleansItsLists(t *testing.T) {
+	var ports, labels []string
+	for i := 0; i < 100; i++ {
+		ports = append(ports, `"`+itoa(1000+i)+`/tcp":{}`)
+		labels = append(labels, `"serverdock.k`+itoa(i)+`":"v"`)
+	}
+	long := strings.Repeat("v", 1000)
+	body := `{"Id":"sha256:` + id64 + `","RepoDigests":["a\u001b[2J@sha256:1","` + long + `"],
+	 "Config":{"ExposedPorts":{` + strings.Join(ports, ",") + `},"Volumes":{"/` + long + `":{}},"Labels":{` + strings.Join(labels, ",") + `}}}`
+	c, _ := startEngine(t, reply(200, body))
+	info, err := c.ImageInspect(context.Background(), "x:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.ExposedPorts) != maxImageList || len(info.ReservedLabelKeys) != maxImageList || !info.HasReservedLabel {
+		t.Fatalf("%d ports, %d reserved, flag %v", len(info.ExposedPorts), len(info.ReservedLabelKeys), info.HasReservedLabel)
+	}
+	if strings.ContainsRune(info.RepoDigests[0], 0x1b) || len(info.RepoDigests[1]) > maxImageText || len(info.Volumes[0]) > maxImageText {
+		t.Fatalf("not cleaned or capped: %q", info.RepoDigests)
+	}
+	for _, bad := range []string{"x", "sha256:abc", "sha256:" + strings.ToUpper(id64), id64} {
+		c2, _ := startEngine(t, reply(200, `{"Id":"`+bad+`"}`))
+		if _, err := c2.ImageInspect(context.Background(), "x:1"); err == nil {
+			t.Errorf("accepted image id %q", bad)
+		}
+	}
+	// No labels at all: the flag is false.
+	c3, _ := startEngine(t, reply(200, `{"Id":"sha256:`+id64+`","Config":{"Labels":{"a":"b"}}}`))
+	if i, _ := c3.ImageInspect(context.Background(), "x:1"); i.HasReservedLabel {
+		t.Error("flag set without a reserved label")
+	}
+}
+
+func TestContainerLabelsAreOnlyOurs(t *testing.T) {
+	ctx := context.Background()
+	c, _ := startEngine(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			io.WriteString(w, `[{"Id":"short","Names":["/x"],"Labels":{"serverdock.service":"1"}},
+			 {"Id":"`+id64+`","Names":["/y"],"State":"running","Labels":{"serverdock.service":"7\u001b[2J","com.example.secret":"s3cret","traefik.x":"y"}}]`)
+			return
+		}
+		io.WriteString(w, `{"Id":"`+id64+`","Name":"/y","Config":{"Labels":{"serverdock.deploy":"1","com.example.secret":"s3cret"}}}`)
+	})
+	list, err := c.ContainerList(ctx, ListOptions{All: true})
+	if err != nil || len(list) != 1 || list[0].ID != id64 {
+		t.Fatalf("%+v %v", list, err)
+	}
+	if v := list[0].Labels["serverdock.service"]; len(list[0].Labels) != 1 || !strings.HasPrefix(v, "7") || strings.ContainsRune(v, 0x1b) {
+		t.Fatalf("labels %q", list[0].Labels)
+	}
+	info, err := c.ContainerInspect(ctx, id64)
+	if err != nil || len(info.Labels) != 1 || info.Labels["serverdock.deploy"] != "1" {
+		t.Fatalf("%+v %v", info, err)
+	}
 }

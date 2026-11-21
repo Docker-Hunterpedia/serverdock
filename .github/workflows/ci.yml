@@ -198,7 +198,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
@@ -207,6 +207,8 @@ jobs:
       SD_TEST_APP_IMAGE: 127.0.0.1:5000/sd-testapp:1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
@@ -223,7 +225,8 @@ jobs:
           docker build -t "$SD_TEST_APP_IMAGE" internal/agent/dockerapi/testdata/app
           docker push "$SD_TEST_APP_IMAGE"
       - name: go test -race -tags integration
-        run: go test -race -tags integration -count=1 ./...
+        # Only packages that have integration-tagged tests; add new ones here.
+        run: go test -race -tags integration -count=1 ./internal/agent/dockerapi/...
       - name: registry log on failure
         if: failure()
         run: docker logs sd-registry || true
