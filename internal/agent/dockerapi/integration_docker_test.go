@@ -380,3 +380,28 @@ func TestIntegrationNetworkEnsureIsIdempotentAndRefusesForeign(t *testing.T) {
 		t.Errorf("the foreign network was touched: %q", got)
 	}
 }
+
+// The subnet list the first-start choice uses includes a network just created,
+// with its id (the bridge interface is br-<id[:12]>) and its IPv4 subnet.
+func TestIntegrationNetworkSubnetsListsOurNetwork(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := r.c.NetworkEnsure(ctx, r.spec); err != nil {
+		t.Fatal(err)
+	}
+	nets, err := r.c.NetworkSubnets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := docker(t, "network", "inspect", "-f", "{{.Id}}", r.net)
+	for _, n := range nets {
+		if n.Name == r.net {
+			if n.ID != id || len(n.Subnets) != 1 || n.Subnets[0].String() != r.subnet {
+				t.Fatalf("%+v, want id %s subnet %s", n, id, r.subnet)
+			}
+			return
+		}
+	}
+	t.Fatalf("network %s is not in %+v", r.net, nets)
+}

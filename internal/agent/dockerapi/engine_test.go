@@ -131,6 +131,7 @@ func allOps() []op {
 		{"ContainerList", 200, `[]`, func(c *Client) error { _, err := c.ContainerList(ctx, ListOptions{All: true}); return err }},
 		{"ContainerPorts", 200, `[]`, func(c *Client) error { _, err := c.ContainerPorts(ctx); return err }},
 		{"NetworkInspect", 200, `{"Id":"n1","Name":"` + otherN + `"}`, func(c *Client) error { _, err := c.NetworkInspect(ctx, otherN); return err }},
+		{"NetworkSubnets", 200, `[]`, func(c *Client) error { _, err := c.NetworkSubnets(ctx); return err }},
 		{"DataRoot", 200, `{"DockerRootDir":"/var/lib/docker"}`, func(c *Client) error { _, err := c.DataRoot(ctx); return err }},
 		{"ImagePull", 200, `{"status":"Status: Image is up to date for nginx:1"}` + "\r\n", func(c *Client) error { return c.ImagePull(ctx, "nginx:1", nil) }},
 		{"Events", 200, ``, func(c *Client) error { return c.Events(ctx, nil, func(Event) error { return nil }) }},
@@ -1096,5 +1097,25 @@ func TestEventsOpenCallsOnOpenWhenHeadersArrive(t *testing.T) {
 	opened = 0
 	if err := c.EventsOpen(context.Background(), nil, func() { opened++ }, func(Event) error { return nil }); err == nil || opened != 0 {
 		t.Fatalf("%d %v", opened, err)
+	}
+}
+
+func TestNetworkSubnetsListsIPv4SubnetsOnly(t *testing.T) {
+	c, e := startEngine(t, reply(200, `[
+		{"Name":"bridge","IPAM":{"Config":[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]}},
+		{"Name":"host","IPAM":{"Config":[]}},
+		{"Name":"dual","IPAM":{"Config":[{"Subnet":"10.250.0.9/24"},{"Subnet":"fd00::/64"},{"Subnet":"garbage"}]}}]`))
+	got, err := c.NetworkSubnets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := e.last(); r.Method != "GET" || r.Path != "/networks" {
+		t.Errorf("request %s %s", r.Method, r.Path)
+	}
+	if len(got) != 3 || got[0].Name != "bridge" || got[0].Subnets[0].String() != "172.17.0.0/16" || len(got[1].Subnets) != 0 {
+		t.Fatalf("%+v", got)
+	}
+	if len(got[2].Subnets) != 1 || got[2].Subnets[0].String() != "10.250.0.0/24" {
+		t.Errorf("dual: %+v (IPv6 and garbage must be dropped, the prefix masked)", got[2])
 	}
 }

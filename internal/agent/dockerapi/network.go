@@ -222,3 +222,51 @@ func (c *Client) NetworkInspect(ctx context.Context, name string) (NetworkInfo, 
 	}
 	return info, nil
 }
+
+// NetworkSubnet is the name and IPv4 subnets of one Docker network.
+type NetworkSubnet struct {
+	ID      string
+	Name    string
+	Subnets []netip.Prefix
+}
+
+// maxNetworks bounds what NetworkSubnets returns; more networks than this is
+// not a host ServerDock helps choose a subnet on.
+const maxNetworks = 4096
+
+// NetworkSubnets lists every Docker network with its IPv4 subnets (IPAM
+// entries that do not parse as IPv4 prefixes are ignored). Subnet selection at
+// first start uses it to avoid every network that already exists.
+func (c *Client) NetworkSubnets(ctx context.Context) ([]NetworkSubnet, error) {
+	st, body, err := c.call(ctx, c.short, http.MethodGet, "/networks", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := statusErr("network list", st, body, http.StatusOK); err != nil {
+		return nil, err
+	}
+	var r []struct {
+		ID   string `json:"Id"`
+		Name string
+		IPAM struct {
+			Config []struct{ Subnet string }
+		}
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("dockerapi: network list: %w", err)
+	}
+	if len(r) > maxNetworks {
+		return nil, fmt.Errorf("dockerapi: network list: more than %d networks", maxNetworks)
+	}
+	out := make([]NetworkSubnet, 0, len(r))
+	for _, n := range r {
+		ns := NetworkSubnet{ID: agent.CleanText(n.ID, 80), Name: agent.CleanText(n.Name, 64)}
+		for _, cfg := range n.IPAM.Config {
+			if p, err := netip.ParsePrefix(cfg.Subnet); err == nil && p.Addr().Is4() {
+				ns.Subnets = append(ns.Subnets, p.Masked())
+			}
+		}
+		out = append(out, ns)
+	}
+	return out, nil
+}

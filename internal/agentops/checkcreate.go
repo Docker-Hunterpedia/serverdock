@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // CreateExpect is what the agent knows when it checks a create body: the pieces
@@ -30,8 +31,8 @@ type CreateExpect struct {
 type CheckCreateFunc func(body []byte, exp CreateExpect) error
 
 var (
-	labelValueRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	portKeyRe    = regexp.MustCompile(`^([0-9]{1,5})/tcp$`)
+	labelValueRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`) })
+	portKeyRe    = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([0-9]{1,5})/tcp$`) })
 )
 
 // InterimCheckCreate is the strict default-deny check the agent runs until
@@ -73,7 +74,7 @@ func InterimCheckCreate(body []byte, exp CreateExpect) error {
 			return errors.New("labels: serverdock.managed must be 1")
 		case k == LabelInstance && v != exp.Instance:
 			return errors.New("labels: serverdock.instance is not this install's")
-		case k != LabelManaged && k != LabelInstance && !labelValueRe.MatchString(v):
+		case k != LabelManaged && k != LabelInstance && !labelValueRe().MatchString(v):
 			return fmt.Errorf("labels: %s has a bad value", k)
 		}
 		wantLabels[k] = v
@@ -98,7 +99,7 @@ func InterimCheckCreate(body []byte, exp CreateExpect) error {
 			return errors.New("ExposedPorts: want exactly one port")
 		}
 		for k, v := range m {
-			sub := portKeyRe.FindStringSubmatch(k)
+			sub := portKeyRe().FindStringSubmatch(k)
 			if sub == nil {
 				return errors.New("ExposedPorts: bad port key")
 			}

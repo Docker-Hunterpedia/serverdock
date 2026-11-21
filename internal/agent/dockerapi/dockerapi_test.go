@@ -499,7 +499,7 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 	}
 	for _, want := range []string{"EventsOpen", "Info", "Stop", "Logs", "LogsFollow", "DataRoot", "ImagePull", "ImageInspect", "ContainerCreate",
 		"ContainerStart", "ContainerInspect", "ContainerRestart", "ContainerRemove", "ContainerList", "ContainerPorts",
-		"NetworkEnsure", "NetworkInspect", "Events"} {
+		"NetworkEnsure", "NetworkInspect", "NetworkSubnets", "Events"} {
 		found := false
 		for _, c := range checked {
 			found = found || c == want

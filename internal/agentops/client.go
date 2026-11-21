@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
@@ -53,12 +54,12 @@ func (c *Client) call(ctx context.Context, op string, args, dst any, onLine func
 }
 
 var (
-	fullIDRe  = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	stateWord = regexp.MustCompile(`^[a-z]{0,16}$`)
+	fullIDRe  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{64}$`) })
+	stateWord = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z]{0,16}$`) })
 )
 
-func okID(id string) bool      { return fullIDRe.MatchString(id) }
-func okImageID(id string) bool { return imageIDRe.MatchString(id) }
+func okID(id string) bool      { return fullIDRe().MatchString(id) }
+func okImageID(id string) bool { return imageIDRe().MatchString(id) }
 
 // okAddr accepts "" or a canonical IPv4 address.
 func okAddr(s string) bool {
@@ -180,7 +181,7 @@ func (c *Client) ContainerInspect(ctx context.Context, id string) (ContainerStat
 	if err := c.call(ctx, agent.OpContainerInspect, IDArgs{ID: id}, &r, nil); err != nil {
 		return ContainerState{}, err
 	}
-	if r.ID != id || !stateWord.MatchString(r.State) || !okAddr(r.IP) || !okAddr(r.ConfiguredIP) ||
+	if r.ID != id || !stateWord().MatchString(r.State) || !okAddr(r.IP) || !okAddr(r.ConfiguredIP) ||
 		(r.ImageID != "" && !okImageID(r.ImageID)) || len(r.Labels) > 16 {
 		return ContainerState{}, bad(agent.OpContainerInspect, "container state")
 	}

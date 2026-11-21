@@ -27,6 +27,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
 	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
+	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
@@ -70,8 +71,11 @@ type serverConfig struct {
 	// characters. If empty and AgentListen is set, one is generated into
 	// DATA/agent.token. It is never logged.
 	AgentToken string
-	// DockerSocket is used by the in-process local agent for log streams.
+	// DockerSocket is used by the in-process local agent for its Docker ops.
 	DockerSocket string
+	// AppSubnet is --app-subnet: the app network's subnet (/24 to /20), applied
+	// at first start only. Empty means choose one clear of every network.
+	AppSubnet string
 }
 
 // stringList is a repeatable string flag.
@@ -97,6 +101,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.Var(&sans, "agent-san", "DNS name or IP address agents dial the hub at; repeatable; required with --agent-listen")
 	fs.IntVar(&c.AgentMaxSessions, "agent-max-sessions", hub.DefaultMaxSessions, "maximum concurrent remote agent sessions")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
+	fs.StringVar(&c.AppSubnet, "app-subnet", "", "subnet of the app network, /24 to /20 (default: the first free /24 in 10.250.0.0/16). Used at first start only; it is never changed afterwards")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -110,6 +115,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	}
 	if c.AgentMaxSessions < 1 {
 		return c, errors.New("--agent-max-sessions must be at least 1")
+	}
+	if err := c.validateAppSubnet(); err != nil {
+		return c, err
 	}
 	return c, nil
 }
@@ -171,10 +179,26 @@ type serverAddrs struct {
 	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
 	// agent listener is off.
 	CAFingerprint string
+
+	// hub is the live hub, for tests that call ops on the local session.
+	hub *hub.Hub
+}
+
+func (c serverConfig) validateAppSubnet() error {
+	if c.AppSubnet == "" {
+		return nil
+	}
+	if _, err := deploy.ParseAppSubnet(c.AppSubnet); err != nil {
+		return fmt.Errorf("--app-subnet %q: %w", c.AppSubnet, err)
+	}
+	return nil
 }
 
 // validate checks the agent flags and the token before anything is started.
 func (c serverConfig) validate() error {
+	if err := c.validateAppSubnet(); err != nil {
+		return err
+	}
 	if c.HTTPSListen != "" {
 		if _, _, err := net.SplitHostPort(c.HTTPSListen); err != nil {
 			return fmt.Errorf("--https-listen %q: %w", c.HTTPSListen, err)
@@ -226,6 +250,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return err
 	}
 	defer st.Close()
+	installID, err := loadInstallID(ctx, st)
+	if err != nil {
+		return err
+	}
 	// The master key seals TOTP seeds; creating it (or refusing to start without
 	// it) belongs to this point of the startup order.
 	box, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
@@ -350,6 +378,13 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
 	logDockerVersion(ctx, docker, log)
+	ops, err := localOps(docker, installID, log)
+	if err != nil {
+		return err
+	}
+	if _, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log); err != nil {
+		return err
+	}
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -396,6 +431,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
+	addrs.hub = h
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
@@ -403,7 +439,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
-		_ = agent.Serve(agentCtx, pipeAgent, agent.Config{Logs: docker, Version: version, Mode: agent.ModeLocal}, 0, log)
+		_ = agent.Serve(agentCtx, pipeAgent, agent.Config{Logs: docker, Version: version, Mode: agent.ModeLocal, Ops: ops}, 0, log)
 	})
 	agentDone := make(chan error, 1)
 	go func() {

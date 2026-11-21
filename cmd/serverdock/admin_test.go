@@ -441,10 +441,10 @@ func TestAdminResetRunsMigrationsAndKeepsAPrivateUmask(t *testing.T) {
 	defer ro.Close()
 	var n int
 	ro.DB.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n)
-	if n != 3 {
+	if n != 4 {
 		t.Errorf("%d migrations applied", n)
 	}
-	bs, _ := filepath.Glob(filepath.Join(data, "backups", "pre-migrate-*-v0002-v0003.db"))
+	bs, _ := filepath.Glob(filepath.Join(data, "backups", "pre-migrate-*-v0002-v0004.db"))
 	if len(bs) != 1 {
 		t.Fatalf("backups %v", bs)
 	}

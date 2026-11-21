@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ type Deps struct {
 	dial          func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
-var instanceRe = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
+var instanceRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{16,64}$`) })
 
 // NetworkName is the app network's name for an install id.
 func NetworkName(instance string) string { return "serverdock-" + instance[:8] }
@@ -49,12 +50,14 @@ func NetworkName(instance string) string { return "serverdock-" + instance[:8] }
 // sd-<project>-<service>-d<deploy id>-a<attempt>.
 // Project and service segments start with a letter, never end in "-" and never
 // contain "--". The deploy and attempt must equal the labels (checked in create).
-var containerName = regexp.MustCompile(`^sd-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-d([0-9]{1,18})-a([0-9]{1,9})$`)
+var containerName = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`^sd-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-d([0-9]{1,18})-a([0-9]{1,9})$`)
+})
 
 // maxContainerName is 3 + 30 + 1 + 30 + 1 + 19 + 1 + 10 plus the "sd-" prefix slack.
 const maxContainerName = 96
 
-var imageIDRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var imageIDRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^sha256:[0-9a-f]{64}$`) })
 
 // defaultProgressEvery is the minimum gap between forwarded pull progress
 // lines: two a second.
@@ -73,7 +76,7 @@ func Handlers(d Deps) (map[string]agent.Handler, error) {
 	switch {
 	case d.Docker == nil:
 		return nil, errors.New("agentops: a Docker client is required")
-	case !instanceRe.MatchString(d.Instance):
+	case !instanceRe().MatchString(d.Instance):
 		return nil, errors.New("agentops: the install id must be 16 to 64 lowercase hex characters")
 	case d.CheckCreate == nil:
 		return nil, errors.New("agentops: a CheckCreate policy is required")
@@ -164,7 +167,7 @@ func ownedLabels(labels map[string]string, dropped bool, instance string) bool {
 		return false
 	}
 	for _, k := range callerLabels[1:] {
-		if !labelValueRe.MatchString(labels[k]) {
+		if !labelValueRe().MatchString(labels[k]) {
 			return false
 		}
 	}
@@ -303,7 +306,7 @@ func (h *handlers) imageInspect(ctx context.Context, raw json.RawMessage, _ *age
 	case (a.Ref == "") == (a.ImageID == ""):
 		return nil, opErr(agent.CodeInvalid, "give exactly one of ref and image_id")
 	case a.ImageID != "":
-		if !imageIDRe.MatchString(a.ImageID) {
+		if !imageIDRe().MatchString(a.ImageID) {
 			return nil, opErr(agent.CodeInvalid, "image_id must be sha256:<64 hex>")
 		}
 		which = a.ImageID
@@ -357,14 +360,14 @@ func (h *handlers) create(ctx context.Context, raw json.RawMessage, _ *agent.Out
 	if err := decode(raw, &a); err != nil {
 		return nil, err
 	}
-	nm := containerName.FindStringSubmatch(a.Name)
+	nm := containerName().FindStringSubmatch(a.Name)
 	if nm == nil || len(a.Name) > maxContainerName {
 		return nil, opErr(agent.CodeInvalid, "name must be sd-<project>-<service>-d<deploy>-a<attempt>")
 	}
 	if nm[3] != a.Spec.Labels[LabelDeploy] || nm[4] != a.Spec.Labels[LabelAttempt] {
 		return nil, opErr(agent.CodePolicy, "the name's deploy and attempt must equal the labels")
 	}
-	if !imageIDRe.MatchString(a.ImageID) {
+	if !imageIDRe().MatchString(a.ImageID) {
 		return nil, opErr(agent.CodeInvalid, "image_id must be sha256:<64 hex>")
 	}
 	ip, err := netip.ParseAddr(a.IP)

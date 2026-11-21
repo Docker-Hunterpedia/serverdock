@@ -103,7 +103,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 	_ = exec.Command("docker", "rmi", ref).Run()
 	var lines int
 	pulled, err := cl.ImagePull(ctx, ref, 0, func(PullProgress) { lines++ })
-	if err != nil || !imageIDRe.MatchString(pulled.ImageID) || lines == 0 {
+	if err != nil || !imageIDRe().MatchString(pulled.ImageID) || lines == 0 {
 		t.Fatalf("%+v %d lines %v", pulled, lines, err)
 	}
 	info, err := cl.ImageInspect(ctx, pulled.ImageID, true)
