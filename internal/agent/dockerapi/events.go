@@ -31,6 +31,13 @@ type Event struct {
 // stream has no read deadline: it is idle between events by design, and the
 // caller owns the reconnect.
 func (c *Client) Events(ctx context.Context, labels []string, fn func(Event) error) error {
+	return c.EventsOpen(ctx, labels, nil, fn)
+}
+
+// EventsOpen is Events with onOpen (may be nil), called once when Docker's
+// response headers have arrived: from then on no event can be missed, so a
+// caller can list state knowing everything after the list is in the stream.
+func (c *Client) EventsOpen(ctx context.Context, labels []string, onOpen func(), fn func(Event) error) error {
 	// Only the actions the reconciler reads: this leaves out the exec_* traffic
 	// of container health checks.
 	f := map[string][]string{
@@ -49,6 +56,9 @@ func (c *Client) Events(ctx context.Context, labels []string, fn func(Event) err
 		return err
 	}
 	defer resp.Body.Close()
+	if onOpen != nil {
+		onOpen()
+	}
 	lines := newJSONLines(resp.Body)
 	for {
 		line, err := lines.next()

@@ -84,3 +84,11 @@ func statusErr(op string, st int, body []byte, ok ...int) error {
 	}
 	return newAPIError(op, st, body)
 }
+
+// PullError is a pull that Docker reported as failed in its progress stream
+// (an `error` or `errorDetail` line, for example "manifest unknown" or "pull
+// access denied"). Msg is the registry's text, cleaned and capped: it is what
+// the user needs to see.
+type PullError struct{ Msg string }
+
+func (e *PullError) Error() string { return "dockerapi: pull: " + e.Msg }

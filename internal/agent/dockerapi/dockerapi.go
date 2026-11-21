@@ -296,14 +296,11 @@ func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
 		return errors.New("dockerapi: stop grace out of range")
 	}
 	timeout := time.Duration(graceSeconds)*time.Second + c.slack
-	st, _, err := c.call(ctx, timeout, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop?t="+strconv.Itoa(graceSeconds), nil)
+	st, body, err := c.call(ctx, timeout, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop?t="+strconv.Itoa(graceSeconds), nil)
 	if err != nil {
 		return err
 	}
-	if st != http.StatusNoContent && st != http.StatusNotModified {
-		return fmt.Errorf("dockerapi: stop: status %d", st)
-	}
-	return nil
+	return statusErr("container stop", st, body, http.StatusNoContent, http.StatusNotModified)
 }
 
 var _ agent.FollowLogSource = (*Client)(nil)

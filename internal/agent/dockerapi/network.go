@@ -30,6 +30,9 @@ var ErrSubnetOverlap = errors.New("dockerapi: the subnet overlaps another networ
 // ErrSubnetMismatch is our network with another subnet than the one asked for.
 var ErrSubnetMismatch = errors.New("dockerapi: the network exists with another subnet")
 
+// ErrInvalidSubnet is a subnet NetworkEnsure refuses before asking Docker.
+var ErrInvalidSubnet = errors.New("dockerapi: subnet must be a canonical IPv4 CIDR from /16 to /26")
+
 var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 
 // NetworkSpec describes the app network.
@@ -59,7 +62,7 @@ type NetworkInfo struct {
 func networkAddrs(subnet string) (gateway netip.Addr, ipRange netip.Prefix, err error) {
 	p, err := netip.ParsePrefix(subnet)
 	if err != nil || !p.Addr().Is4() || p.Masked() != p || p.Bits() < 16 || p.Bits() > 26 {
-		return netip.Addr{}, netip.Prefix{}, errors.New("dockerapi: subnet must be a canonical IPv4 CIDR from /16 to /26")
+		return netip.Addr{}, netip.Prefix{}, ErrInvalidSubnet
 	}
 	gateway = p.Addr().Next()
 	// Top quarter: two more prefix bits, the last of the four blocks.

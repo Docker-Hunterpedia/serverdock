@@ -16,10 +16,14 @@ type stub struct {
 	lines  []agent.Line
 	err    error
 	calls  int
+	onArgs func(args any)
 }
 
-func (s *stub) Call(_ context.Context, _ string, _ any, onLine func(agent.Line)) (json.RawMessage, error) {
+func (s *stub) Call(_ context.Context, _ string, args any, onLine func(agent.Line)) (json.RawMessage, error) {
 	s.calls++
+	if s.onArgs != nil {
+		s.onArgs(args)
+	}
 	for _, l := range s.lines {
 		if onLine != nil {
 			onLine(l)
@@ -55,7 +59,7 @@ func TestClientRefusesAMalformedReply(t *testing.T) {
 			_, err := c.HealthCheck(ctx, HealthArgs{Target: "x", Kind: KindTCP})
 			return err
 		}},
-		"events": {`{}`, func(c *Client) error { return c.Events(ctx, func(Event) error { return nil }) }},
+		"events": {`{}`, func(c *Client) error { return c.Events(ctx, nil, func(Event) error { return nil }) }},
 	}
 	for name, tc := range good {
 		s := &stub{result: json.RawMessage(tc.reply)}
@@ -173,7 +177,7 @@ func TestClientEventsSkipsBadLinesAndCleansTheRest(t *testing.T) {
 		{T: agent.LineProgress, P: json.RawMessage(`{"x":1}`)},
 	}}
 	var got []Event
-	if err := NewClient(s).Events(context.Background(), func(e Event) error { got = append(got, e); return nil }); err != nil {
+	if err := NewClient(s).Events(context.Background(), nil, func(e Event) error { got = append(got, e); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Action != "die" || got[0].Time != 5 {
@@ -204,5 +208,23 @@ func TestClientPassesAgentErrorsThrough(t *testing.T) {
 	err := NewClient(&stub{err: oe}).ContainerRemove(context.Background(), id64)
 	if !IsCode(err, agent.CodeRefusedUnowned) || IsCode(err, agent.CodeConflict) || IsCode(nil, agent.CodeConflict) {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestClientNetworkEnsureRefusesAnotherSubnet(t *testing.T) {
+	s := &stub{result: json.RawMessage(`{"id":"n","subnet":"10.250.9.0/24","gateway":"10.250.9.1"}`)}
+	if _, err := NewClient(s).NetworkEnsure(context.Background(), "n", "10.250.7.0/24"); !errors.Is(err, ErrBadReply) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestClientEventsReadyIsCalledOnceOnTheOpenLine(t *testing.T) {
+	s := &stub{result: json.RawMessage(`{}`), lines: []agent.Line{
+		{T: agent.LineProgress, P: json.RawMessage(`{}`)},
+		{T: agent.LineProgress, P: json.RawMessage(`{}`)},
+	}}
+	var n int
+	if err := NewClient(s).Events(context.Background(), func() { n++ }, func(Event) error { return nil }); err != nil || n != 1 {
+		t.Fatalf("%d %v", n, err)
 	}
 }

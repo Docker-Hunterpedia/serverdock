@@ -78,7 +78,7 @@ var opSpecs = []OpSpec{
 	{Name: OpContainerPorts, MaxResult: 512 << 10, Timeout: shortOpTimeout},
 	{Name: OpNetworkEnsure, Timeout: shortOpTimeout},
 	{Name: OpNetworkInspect, MaxResult: 64 << 10, Timeout: shortOpTimeout},
-	{Name: OpEvents, Timeout: 0},
+	{Name: OpEvents, MaxProgressLines: 1, Timeout: 0}, // one progress line: "the stream is open"
 	{Name: OpHealthCheck, Timeout: shortOpTimeout},
 }
 

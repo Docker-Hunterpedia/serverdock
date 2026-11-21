@@ -434,7 +434,7 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 	}
 	helpers := map[string]bool{"call": true, "stream": true, "negotiate": true}
 	// Exported methods that delegate to another checked method.
-	delegates := map[string]string{"Logs": "LogsFollow", "ContainerPorts": "ContainerList"}
+	delegates := map[string]string{"Logs": "LogsFollow", "ContainerPorts": "ContainerList", "Events": "EventsOpen"}
 	var checked []string
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -497,7 +497,7 @@ func TestExportedMethodsUseTheHelpers(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"Info", "Stop", "Logs", "LogsFollow", "DataRoot", "ImagePull", "ImageInspect", "ContainerCreate",
+	for _, want := range []string{"EventsOpen", "Info", "Stop", "Logs", "LogsFollow", "DataRoot", "ImagePull", "ImageInspect", "ContainerCreate",
 		"ContainerStart", "ContainerInspect", "ContainerRestart", "ContainerRemove", "ContainerList", "ContainerPorts",
 		"NetworkEnsure", "NetworkInspect", "Events"} {
 		found := false

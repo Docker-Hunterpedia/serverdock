@@ -138,7 +138,7 @@ func (c *Client) ImagePull(ctx context.Context, ref string, onProgress func(Pull
 			if isNoSpace(msg) {
 				return fmt.Errorf("%w: %s", ErrDiskFull, agent.CleanText(msg, maxErrMsg))
 			}
-			return fmt.Errorf("dockerapi: pull: %s", agent.CleanText(msg, maxErrMsg))
+			return &PullError{Msg: agent.CleanText(msg, maxErrMsg)}
 		}
 		p.Status = agent.CleanText(m.Status, maxErrMsg)
 		switch {

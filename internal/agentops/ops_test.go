@@ -335,7 +335,7 @@ func TestCreateConflictWithAnotherDeployAttemptFails(t *testing.T) {
 
 func TestCreateConflictWithOwnContainerReturnsExisted(t *testing.T) {
 	r := newRig(t)
-	c := r.fd.add(&fakeContainer{Name: "sd-p-web-d1-a1", Labels: ours(nil), State: "exited"})
+	c := r.fd.add(&fakeContainer{Name: "sd-p-web-d1-a1", Labels: ours(nil), State: "exited", Configured: "10.250.7.2"})
 	res, err := r.create(goodCreate())
 	if err != nil || !res.Existed || res.ID != c.ID {
 		t.Fatalf("%+v %v", res, err)
@@ -386,6 +386,7 @@ func TestCreateRefusesAnAddressOutsideTheStaticRange(t *testing.T) {
 	for _, ip := range []string{"10.250.7.2", "10.250.7.191"} {
 		a := goodCreate()
 		a.Name = "sd-p-web-d1-a" + fmt.Sprint(len(ip))
+		a.Spec.Labels[LabelAttempt] = fmt.Sprint(len(ip))
 		a.IP = ip
 		a.Spec.NetworkingConfig.EndpointsConfig[testNet] = dockerapi.EndpointConfig{IPAMConfig: dockerapi.EndpointIPAM{IPv4Address: ip}}
 		if _, err := r.create(a); err != nil {
@@ -395,6 +396,7 @@ func TestCreateRefusesAnAddressOutsideTheStaticRange(t *testing.T) {
 	// The address in the spec must be the one the agent checked.
 	a := goodCreate()
 	a.Name = "sd-p-web-d2-a1"
+	a.Spec.Labels[LabelDeploy] = "2"
 	a.Spec.NetworkingConfig.EndpointsConfig[testNet] = dockerapi.EndpointConfig{IPAMConfig: dockerapi.EndpointIPAM{IPv4Address: "10.250.7.9"}}
 	_, err := r.create(a)
 	wantCode(t, err, agent.CodePolicy)
@@ -412,6 +414,11 @@ func TestCreateRefusesABadNetworkNameImageOrContainerName(t *testing.T) {
 		"name with newline":    func(a *CreateArgs) { a.Name = "sd-p-web-d1-a1\n" },
 		"name with slash":      func(a *CreateArgs) { a.Name = "sd-p/web-d1-a1" },
 		"name without attempt": func(a *CreateArgs) { a.Name = "sd-p-web-d1" },
+		"segment ends in -":    func(a *CreateArgs) { a.Name = "sd-p--web-d1-a1" },
+		"double dash":          func(a *CreateArgs) { a.Name = "sd-p-we--b-d1-a1" },
+		"trailing dash":        func(a *CreateArgs) { a.Name = "sd-p-web--d1-a1" },
+		"deploy != label":      func(a *CreateArgs) { a.Name = "sd-p-web-d2-a1" },
+		"attempt != label":     func(a *CreateArgs) { a.Name = "sd-p-web-d1-a2" },
 	} {
 		a := goodCreate()
 		mod(&a)
@@ -477,15 +484,16 @@ func pullLine(status string, cur, total int) string {
 }
 
 func TestPullProgressCoalescedToTwoPerSecond(t *testing.T) {
-	r := newRig(t)
+	// The window is injected: an hour makes the test independent of the clock.
+	// (The production default is 500 ms, two a second; see defaultProgressEvery.)
+	if defaultProgressEvery != 500*time.Millisecond {
+		t.Fatal("the default is two lines a second")
+	}
+	r := newRig(t, func(d *Deps) { d.progressEvery = time.Hour })
 	r.fd.addImage("x:1", imgID, "x@sha256:"+strings.Repeat("c", 64))
 	r.fd.pull = func(w http.ResponseWriter, req *http.Request) {
-		fl := w.(http.Flusher)
-		end := time.Now().Add(1100 * time.Millisecond)
-		for n := 1; time.Now().Before(end); n++ {
+		for n := 1; n <= 200; n++ {
 			io.WriteString(w, pullLine("Downloading", n*10, 100000))
-			fl.Flush()
-			time.Sleep(5 * time.Millisecond)
 		}
 		io.WriteString(w, `{"status":"Status: Downloaded newer image for x:1"}`+"\n")
 	}
@@ -494,9 +502,9 @@ func TestPullProgressCoalescedToTwoPerSecond(t *testing.T) {
 	if err != nil || res.ImageID != imgID {
 		t.Fatalf("%+v %v", res, err)
 	}
-	// 1.1 s of ~200 Docker lines: one at the start, one every 500 ms, a final one.
-	if len(lines) < 3 || len(lines) > 5 {
-		t.Fatalf("%d progress lines for ~200 Docker lines in 1.1 s", len(lines))
+	// 200 Docker lines inside one throttle window: the first, then the final one.
+	if len(lines) != 2 {
+		t.Fatalf("%d progress lines for 201 Docker lines in one window", len(lines))
 	}
 	last := lines[len(lines)-1]
 	if last.Status != "Status: Downloaded newer image for x:1" || last.Bytes < 1000 {
@@ -590,6 +598,12 @@ func TestPullInspectsTheImageBeforeReportingSuccess(t *testing.T) {
 	if err != nil || res.RepoDigest != "" {
 		t.Fatalf("%+v %v", res, err)
 	}
+	// One digest, for another repository: none either.
+	r.fd.addImage("c/d:1", imgID, d1)
+	res, err = r.cl.ImagePull(ctx5(t), "c/d:1", 0, nil)
+	if err != nil || res.RepoDigest != "" {
+		t.Fatalf("%+v %v", res, err)
+	}
 }
 
 func TestPullErrorsMapToCodes(t *testing.T) {
@@ -604,8 +618,17 @@ func TestPullErrorsMapToCodes(t *testing.T) {
 	}
 	_, err = r.cl.ImagePull(ctx5(t), "x:1", 0, nil)
 	wantCode(t, err, agent.CodeDocker)
-	if strings.ContainsRune(err.Error(), 0x1b) {
-		t.Errorf("escape in %q", err)
+	if strings.ContainsRune(err.Error(), 0x1b) || !strings.Contains(err.Error(), "pull access denied[2J for x") {
+		t.Errorf("the registry's message does not reach the caller: %q", err)
+	}
+	for _, msg := range []string{"manifest unknown", "pull access denied for x, repository does not exist"} {
+		r.fd.pull = func(w http.ResponseWriter, _ *http.Request) {
+			io.WriteString(w, `{"errorDetail":{"message":"`+msg+`"},"error":"`+msg+`"}`+"\n")
+		}
+		_, err = r.cl.ImagePull(ctx5(t), "x:1", 0, nil)
+		if !IsCode(err, agent.CodeDocker) || !strings.Contains(err.Error(), msg) {
+			t.Errorf("%q: %v", msg, err)
+		}
 	}
 	// A reference that would pull every tag is refused by the agent.
 	for _, ref := range []string{"nginx", "", "x:1;rm", "a b:1", "x:1\n", "x@sha256:abc"} {
@@ -814,7 +837,7 @@ func TestContainerListReturnsStoppedContainersWithTheirConfiguredAddress(t *test
 	r.fd.add(&fakeContainer{Name: "foreign", Labels: map[string]string{"app": "x"}, Configured: "10.250.7.5"})
 	r.fd.add(&fakeContainer{Name: "other-install", Labels: ours(map[string]string{LabelInstance: strings.Repeat("f", 32)}), Configured: "10.250.7.6"})
 	res, err := r.cl.ContainerList(ctx5(t))
-	if err != nil || res.Truncated || len(res.Containers) != 3 {
+	if err != nil || len(res.Containers) != 3 {
 		t.Fatalf("%+v %v", res, err)
 	}
 	by := map[string]ListedContainer{}
@@ -840,45 +863,88 @@ func TestContainerListReturnsStoppedContainersWithTheirConfiguredAddress(t *test
 	}
 }
 
-func TestContainerListAndPortsResultCaps(t *testing.T) {
+func TestContainerListNeverReturnsAPartialList(t *testing.T) {
+	r := newRig(t)
+	for i := 0; i < MaxList+1; i++ {
+		r.fd.add(&fakeContainer{Name: fmt.Sprintf("sd-p-web-d%d-a1", i), Labels: ours(map[string]string{LabelDeploy: fmt.Sprint(i)})})
+	}
+	_, err := r.cl.ContainerList(ctx5(t))
+	wantCode(t, err, agent.CodeConflict)
+	// Exactly MaxList of ordinary entries still fits the result cap.
+	r2 := newRig(t)
+	for i := 0; i < MaxList; i++ {
+		r2.fd.add(&fakeContainer{Name: fmt.Sprintf("sd-p-web-d%d-a1", i), Labels: ours(map[string]string{LabelDeploy: fmt.Sprint(i)}),
+			IP: "10.250.7.2", Configured: "10.250.7.2"})
+	}
+	res, err := r2.cl.ContainerList(ctx5(t))
+	if err != nil || len(res.Containers) != MaxList {
+		t.Fatalf("%d %v", len(res.Containers), err)
+	}
+	// Entries too big to fit the result cap fail as well, never shrink.
+	r3 := newRig(t)
+	for i := 0; i < MaxList; i++ {
+		l := ours(map[string]string{LabelProject: strings.Repeat("p", 64), LabelService: strings.Repeat("s", 64), LabelDeploy: strings.Repeat("9", 64), LabelAttempt: strings.Repeat("9", 64)})
+		r3.fd.add(&fakeContainer{Name: strings.Repeat("n", 128) + fmt.Sprint(i), Labels: l, IP: "255.255.255.255", Configured: "255.255.255.255"})
+	}
+	_, err = r3.cl.ContainerList(ctx5(t))
+	wantCode(t, err, agent.CodeConflict)
+}
+
+func TestContainerPortsResultCap(t *testing.T) {
 	r := newRig(t)
 	for i := 0; i < MaxList+50; i++ {
-		l := ours(map[string]string{LabelProject: strings.Repeat("p", 60), LabelService: fmt.Sprint(1e17 + float64(i)), LabelDeploy: "999999999999999999", LabelAttempt: "999999999"})
-		r.fd.add(&fakeContainer{Name: fmt.Sprintf("sd-%s-%s-d%d-a1", strings.Repeat("p", 29), strings.Repeat("s", 29), i), Labels: l,
-			IP: "255.255.255.255", Configured: "255.255.255.255", Image: imgID,
+		r.fd.add(&fakeContainer{Name: fmt.Sprintf("%s%d", strings.Repeat("n", 60), i), Labels: map[string]string{},
 			Ports: []map[string]any{{"IP": "255.255.255.255", "PrivatePort": 65535, "PublicPort": 65535, "Type": "tcp"}}})
-	}
-	res, err := r.cl.ContainerList(ctx5(t))
-	if err != nil || !res.Truncated || len(res.Containers) == 0 || len(res.Containers) > MaxList {
-		t.Fatalf("list: %d %v truncated=%v", len(res.Containers), err, res.Truncated)
 	}
 	pr, err := r.cl.ContainerPorts(ctx5(t))
 	if err != nil || !pr.Truncated || len(pr.Containers) == 0 || len(pr.Containers) > MaxList {
 		t.Fatalf("ports: %d %v truncated=%v", len(pr.Containers), err, pr.Truncated)
 	}
-	// A result under the cap is not marked truncated.
-	r2 := newRig(t)
-	r2.fd.add(&fakeContainer{Name: "sd-p-web-d1-a1", Labels: ours(nil)})
-	if res, err := r2.cl.ContainerList(ctx5(t)); err != nil || res.Truncated || len(res.Containers) != 1 {
-		t.Fatalf("%+v %v", res, err)
-	}
 }
 
-func TestContainerPortsListsPublishersWithBoundedFields(t *testing.T) {
+func TestContainerPortsDedupesOrdersAndFlagsTruncation(t *testing.T) {
 	r := newRig(t)
-	var ports []map[string]any
-	for i := 0; i < 10; i++ {
-		ports = append(ports, map[string]any{"IP": "0.0.0.0", "PrivatePort": 80 + i, "PublicPort": 9000 + i, "Type": "tcp"})
+	p := func(ip string, host int) map[string]any {
+		return map[string]any{"IP": ip, "PrivatePort": 80, "PublicPort": host, "Type": "tcp"}
 	}
+	// Six distinct ports; the all-interfaces one is last in Docker's order, and
+	// every port has an IPv4 and an IPv6 entry.
+	var ports []map[string]any
+	for h := 9001; h <= 9005; h++ {
+		ports = append(ports, p("127.0.0.1", h), p("::1", h))
+	}
+	ports = append(ports, p("0.0.0.0", 9100), p("::", 9100))
 	r.fd.add(&fakeContainer{Name: strings.Repeat("n", 100) + "\x1b[31m", Labels: map[string]string{}, Ports: ports})
+	r.fd.add(&fakeContainer{Name: "two", Labels: map[string]string{}, Ports: []map[string]any{p("0.0.0.0", 8080), p("::", 8080)}})
 	r.fd.add(&fakeContainer{Name: "quiet", Labels: map[string]string{}})
 	res, err := r.cl.ContainerPorts(ctx5(t))
-	if err != nil || len(res.Containers) != 1 || len(res.Containers[0].Name) > MaxNameText ||
-		len(res.Containers[0].Ports) != MaxPortsEach || res.Containers[0].Ports[0].HostPort != 9000 {
+	if err != nil || len(res.Containers) != 2 {
 		t.Fatalf("%+v %v", res, err)
 	}
-	if strings.ContainsRune(res.Containers[0].Name, 0x1b) {
-		t.Error("escape in the name")
+	by := map[string]PublishingContainer{}
+	for _, c := range res.Containers {
+		by[c.Name] = c
+	}
+	two := by["two"]
+	if len(two.Ports) != 1 || two.PortsTruncated || two.Ports[0].HostIP != "0.0.0.0" {
+		t.Errorf("v4/v6 duplicates not merged: %+v", two)
+	}
+	var big PublishingContainer
+	for n, c := range by {
+		if n != "two" {
+			big = c
+			if len(n) > MaxNameText || strings.ContainsRune(n, 0x1b) {
+				t.Errorf("name %q", n)
+			}
+		}
+	}
+	if len(big.Ports) != MaxPortsEach || !big.PortsTruncated || big.Ports[0].HostPort != 9100 || big.Ports[0].HostIP != "0.0.0.0" {
+		t.Errorf("the exposing port must come first and the cut be flagged: %+v", big)
+	}
+	for _, q := range big.Ports[1:] {
+		if q.HostIP != "127.0.0.1" {
+			t.Errorf("loopback entry %+v", q)
+		}
 	}
 }
 
@@ -927,7 +993,7 @@ func TestNetworkInspectRefusesToDropAddresses(t *testing.T) {
 		r.fd.netUsed[fmt.Sprintf("10.250.%d.%d", 8+i/250, 1+i%250)] = fmt.Sprintf("%064x", i)
 	}
 	_, err := r.cl.NetworkInspect(ctx5(t))
-	wantCode(t, err, agent.CodeInvalid)
+	wantCode(t, err, agent.CodeConflict)
 }
 
 // ---- events ----
@@ -960,10 +1026,18 @@ func TestEventsOpHasNoTimeoutAndEndsWithDockerStream(t *testing.T) {
 		// then Docker ends the stream
 	}
 	var got []Event
+	ready := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- r.cl.Events(context.Background(), func(e Event) error { got = append(got, e); return nil })
+		done <- r.cl.Events(context.Background(), func() { ready <- struct{}{} }, func(e Event) error { got = append(got, e); return nil })
 	}()
+	select {
+	case <-ready: // the open signal arrives before any event is read
+	case err := <-done:
+		t.Fatalf("events ended early: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no open signal")
+	}
 	select {
 	case err := <-done:
 		t.Fatalf("events ended early: %v", err)
@@ -999,13 +1073,13 @@ func TestEventsCallbackErrorAndCancelStopTheStream(t *testing.T) {
 	}
 	stop := fmt.Errorf("enough")
 	var n int
-	err := r.cl.Events(context.Background(), func(Event) error { n++; return stop })
+	err := r.cl.Events(context.Background(), nil, func(Event) error { n++; return stop })
 	if err != stop || n != 1 {
 		t.Fatalf("%v after %d events", err, n)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- r.cl.Events(ctx, func(Event) error { return nil }) }()
+	go func() { done <- r.cl.Events(ctx, nil, func(Event) error { return nil }) }()
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 	select {
@@ -1023,6 +1097,68 @@ func TestEventsDockerLineOver64KiBEndsTheOpWithAnError(t *testing.T) {
 	r.fd.events = func(w http.ResponseWriter, req *http.Request) {
 		io.WriteString(w, `{"Type":"container","pad":"`+strings.Repeat("x", 70<<10)+`"}`+"\n")
 	}
-	err := r.cl.Events(ctx5(t), func(Event) error { return nil })
+	err := r.cl.Events(ctx5(t), nil, func(Event) error { return nil })
 	wantCode(t, err, agent.CodeDocker)
+}
+
+func TestCreateRefusesAnImageWithServerdockLabels(t *testing.T) {
+	r := newRig(t)
+	b, _ := json.Marshal(map[string]any{"Id": imgID, "Config": map[string]any{"Labels": map[string]any{"serverdock.extra": "1"}}})
+	r.fd.images[imgID] = string(b)
+	_, err := r.create(goodCreate())
+	wantCode(t, err, agent.CodePolicy)
+	if r.fd.called("POST /containers/create") != 0 {
+		t.Error("a spoofing image reached create")
+	}
+	// An image Docker does not know is not_found, also before create.
+	delete(r.fd.images, imgID)
+	_, err = r.create(goodCreate())
+	wantCode(t, err, agent.CodeNotFound)
+}
+
+func TestCreateConflictWithAnotherAddressFails(t *testing.T) {
+	r := newRig(t)
+	r.fd.add(&fakeContainer{Name: "sd-p-web-d1-a1", Labels: ours(nil), Configured: "10.250.7.9"})
+	_, err := r.create(goodCreate())
+	if !IsCode(err, agent.CodeConflict) || !strings.Contains(err.Error(), "another address") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestCreateModelsTheConfiguredAddressForTheList(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.create(goodCreate()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.cl.ContainerList(ctx5(t))
+	if err != nil || len(res.Containers) != 1 || res.Containers[0].ConfiguredIP != "10.250.7.2" || res.Containers[0].IP != "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestHealthCheckRefusesAnOversizedResponseHeader(t *testing.T) {
+	r, _ := healthRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-Big", strings.Repeat("a", 64<<10))
+	}))
+	res, err := r.cl.HealthCheck(ctx5(t), HealthArgs{Target: "10.250.7.2:80", Kind: KindHTTP, Path: "/"})
+	if err != nil || res.OK || res.Err != "request failed" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestStallIsCappedAndShortStallsRoundUp(t *testing.T) {
+	r := newRig(t)
+	if MaxStallS != 600 {
+		t.Fatalf("MaxStallS %d", MaxStallS)
+	}
+	if _, err := r.rawCall(agent.OpImagePull, PullArgs{Ref: "x:1", StallS: 601}); !IsCode(err, agent.CodeInvalid) {
+		t.Fatal(err)
+	}
+	var got PullArgs
+	s := &stub{result: json.RawMessage(`{"image_id":"` + imgID + `"}`), onArgs: func(a any) { got = a.(PullArgs) }}
+	for in, want := range map[time.Duration]int{0: 0, time.Millisecond: 1, 1500 * time.Millisecond: 2, 30 * time.Second: 30} {
+		if _, err := NewClient(s).ImagePull(context.Background(), "x:1", in, nil); err != nil || got.StallS != want {
+			t.Errorf("%v -> %d (want %d) %v", in, got.StallS, want, err)
+		}
+	}
 }

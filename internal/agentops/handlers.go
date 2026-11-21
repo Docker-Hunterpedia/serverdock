@@ -47,7 +47,12 @@ func NetworkName(instance string) string { return "serverdock-" + instance[:8] }
 
 // containerName is the name every container ServerDock creates carries:
 // sd-<project>-<service>-d<deploy id>-a<attempt>.
-var containerName = regexp.MustCompile(`^sd-[a-z][a-z0-9-]{0,29}-[a-z][a-z0-9-]{0,29}-d[0-9]{1,18}-a[0-9]{1,9}$`)
+// Project and service segments start with a letter, never end in "-" and never
+// contain "--". The deploy and attempt must equal the labels (checked in create).
+var containerName = regexp.MustCompile(`^sd-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-d([0-9]{1,18})-a([0-9]{1,9})$`)
+
+// maxContainerName is 3 + 30 + 1 + 30 + 1 + 19 + 1 + 10 plus the "sd-" prefix slack.
+const maxContainerName = 96
 
 var imageIDRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -132,6 +137,10 @@ func (h *handlers) fail(op string, err error) error {
 		return opErr(agent.CodeTimeout, "timed out")
 	case errors.Is(err, context.Canceled):
 		return opErr(agent.CodeCancelled, "cancelled")
+	}
+	var pe *dockerapi.PullError
+	if errors.As(err, &pe) {
+		return opErr(agent.CodeDocker, "%s", pe.Msg)
 	}
 	var ae *dockerapi.APIError
 	if errors.As(err, &ae) {
@@ -273,16 +282,13 @@ func repoName(ref string) string {
 
 // pickRepoDigest chooses the digest that belongs to ref's repository. An image
 // can carry digests for several repositories; a wrong one would pull another
-// image later, so with no match and several candidates it returns none.
+// image later, so with no match it returns none.
 func pickRepoDigest(ref string, digests []string) string {
 	want := repoName(ref)
 	for _, d := range digests {
 		if name, _, ok := strings.Cut(d, "@"); ok && repoName(name) == want {
 			return d
 		}
-	}
-	if len(digests) == 1 {
-		return digests[0]
 	}
 	return ""
 }
@@ -351,8 +357,12 @@ func (h *handlers) create(ctx context.Context, raw json.RawMessage, _ *agent.Out
 	if err := decode(raw, &a); err != nil {
 		return nil, err
 	}
-	if !containerName.MatchString(a.Name) {
+	nm := containerName.FindStringSubmatch(a.Name)
+	if nm == nil || len(a.Name) > maxContainerName {
 		return nil, opErr(agent.CodeInvalid, "name must be sd-<project>-<service>-d<deploy>-a<attempt>")
+	}
+	if nm[3] != a.Spec.Labels[LabelDeploy] || nm[4] != a.Spec.Labels[LabelAttempt] {
+		return nil, opErr(agent.CodePolicy, "the name's deploy and attempt must equal the labels")
 	}
 	if !imageIDRe.MatchString(a.ImageID) {
 		return nil, opErr(agent.CodeInvalid, "image_id must be sha256:<64 hex>")
@@ -382,6 +392,15 @@ func (h *handlers) create(ctx context.Context, raw json.RawMessage, _ *agent.Out
 	}
 	if err := StaticAddr(n, ip); err != nil {
 		return nil, opErr(agent.CodePolicy, "%v", err)
+	}
+	// An image with serverdock.* labels would merge them into the container
+	// (making it fail the ownership rule, so it could never be removed).
+	img, err := h.Docker.ImageInspect(ctx, a.ImageID)
+	if err != nil {
+		return nil, h.fail(agent.OpContainerCreate, err)
+	}
+	if img.HasReservedLabel {
+		return nil, opErr(agent.CodePolicy, "the image carries serverdock.* labels")
 	}
 
 	spec := a.Spec
@@ -421,6 +440,9 @@ func (h *handlers) create(ctx context.Context, raw json.RawMessage, _ *agent.Out
 	}
 	if info.ImageID != a.ImageID {
 		return nil, opErr(agent.CodeConflict, "the container with this name belongs to this deploy attempt but runs another image")
+	}
+	if info.Networks[h.network].ConfiguredIPv4 != a.IP {
+		return nil, opErr(agent.CodeConflict, "the container with this name has another address")
 	}
 	return CreateResult{ID: info.ID, Existed: true}, nil
 }
@@ -575,12 +597,11 @@ func (h *handlers) list(ctx context.Context, raw json.RawMessage, _ *agent.Out) 
 		res.Containers = append(res.Containers, e)
 	}
 	sort.Slice(res.Containers, func(i, j int) bool { return res.Containers[i].ID < res.Containers[j].ID })
-	if len(res.Containers) > MaxList {
-		res.Containers, res.Truncated = res.Containers[:MaxList], true
-	}
+	// Never a partial list: the allocator's "held" rule and the orphan sweep
+	// would act on a list missing containers.
 	spec, _ := agent.SpecFor(agent.OpContainerList)
-	for fits(res, spec) != nil && len(res.Containers) > 0 {
-		res.Containers, res.Truncated = res.Containers[:len(res.Containers)*3/4], true
+	if len(res.Containers) > MaxList || fits(res, spec) != nil {
+		return nil, opErr(agent.CodeConflict, "too many containers to list (more than %d, or the list is too large)", MaxList)
 	}
 	return res, nil
 }
@@ -596,13 +617,7 @@ func (h *handlers) ports(ctx context.Context, raw json.RawMessage, _ *agent.Out)
 	res := PortsResult{Containers: []PublishingContainer{}}
 	for _, c := range all {
 		e := PublishingContainer{Name: agent.CleanText(c.Name, MaxNameText), Ports: []PublishedPort{}}
-		for _, p := range c.Ports {
-			if len(e.Ports) == MaxPortsEach {
-				break
-			}
-			e.Ports = append(e.Ports, PublishedPort{HostIP: agent.CleanText(p.HostIP, 45), HostPort: p.HostPort,
-				ContainerPort: p.ContainerPt, Proto: agent.CleanText(p.Proto, 8)})
-		}
+		e.Ports, e.PortsTruncated = pickPorts(c.Ports)
 		res.Containers = append(res.Containers, e)
 	}
 	if len(res.Containers) > MaxList {
@@ -613,6 +628,59 @@ func (h *handlers) ports(ctx context.Context, raw json.RawMessage, _ *agent.Out)
 		res.Containers, res.Truncated = res.Containers[:len(res.Containers)*3/4], true
 	}
 	return res, nil
+}
+
+// hostRank orders host addresses: all interfaces first (the exposure that
+// matters), then other non-loopback addresses, then loopback.
+func hostRank(ip string) int {
+	a, err := netip.ParseAddr(ip)
+	switch {
+	case err != nil || a.IsUnspecified() || ip == "":
+		return 0
+	case a.IsLoopback():
+		return 2
+	}
+	return 1
+}
+
+// pickPorts dedupes a container's published ports (Docker lists an IPv4 and an
+// IPv6 entry for the same port) keeping the most exposed host address, orders
+// them most exposed first, and keeps at most MaxPortsEach. The flag says some
+// were left out.
+func pickPorts(in []dockerapi.PublishedPort) ([]PublishedPort, bool) {
+	type key struct {
+		host, cont int
+		proto      string
+	}
+	best := map[key]dockerapi.PublishedPort{}
+	for _, p := range in {
+		k := key{p.HostPort, p.ContainerPt, p.Proto}
+		if old, ok := best[k]; !ok || hostRank(p.HostIP) < hostRank(old.HostIP) {
+			best[k] = p
+		}
+	}
+	list := make([]dockerapi.PublishedPort, 0, len(best))
+	for _, p := range best {
+		list = append(list, p)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if ri, rj := hostRank(list[i].HostIP), hostRank(list[j].HostIP); ri != rj {
+			return ri < rj
+		}
+		if list[i].HostPort != list[j].HostPort {
+			return list[i].HostPort < list[j].HostPort
+		}
+		return list[i].Proto < list[j].Proto
+	})
+	out := []PublishedPort{}
+	for _, p := range list {
+		if len(out) == MaxPortsEach {
+			return out, true
+		}
+		out = append(out, PublishedPort{HostIP: agent.CleanText(p.HostIP, 45), HostPort: p.HostPort,
+			ContainerPort: p.ContainerPt, Proto: agent.CleanText(p.Proto, 8)})
+	}
+	return out, false
 }
 
 // fits reports an error when v would not fit the op's result cap.
@@ -641,7 +709,7 @@ func (h *handlers) networkEnsure(ctx context.Context, raw json.RawMessage, _ *ag
 		Name: a.Name, Subnet: a.Subnet, Labels: map[string]string{LabelInstance: h.Instance},
 	})
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "dockerapi: subnet must") {
+		if errors.Is(err, dockerapi.ErrInvalidSubnet) {
 			return nil, opErr(agent.CodeInvalid, "subnet must be a canonical IPv4 CIDR from /16 to /26")
 		}
 		return nil, h.fail(agent.OpNetworkEnsure, err)
@@ -664,7 +732,7 @@ func (h *handlers) networkInspect(ctx context.Context, raw json.RawMessage, _ *a
 	sort.Strings(used)
 	if len(used) > MaxUsedAddrs {
 		// Silently dropping an address could let the allocator reuse it.
-		return nil, opErr(agent.CodeInvalid, "more than %d addresses in use", MaxUsedAddrs)
+		return nil, opErr(agent.CodeConflict, "more than %d addresses in use", MaxUsedAddrs)
 	}
 	return UsedAddrs{Subnet: n.Subnet, Gateway: n.Gateway, IPRange: n.IPRange, Used: used}, nil
 }
@@ -675,7 +743,7 @@ func (h *handlers) events(ctx context.Context, raw json.RawMessage, out *agent.O
 	if err := decode(raw, &Empty{}); err != nil {
 		return nil, err
 	}
-	err := h.Docker.Events(ctx, h.labels, func(e dockerapi.Event) error {
+	err := h.Docker.EventsOpen(ctx, h.labels, func() { _ = out.Progress(EventsOpen{}) }, func(e dockerapi.Event) error {
 		return out.Event(Event{Action: e.Action, ID: e.ID, Service: e.Service, Deploy: e.Deploy, ExitCode: e.ExitCode, Time: e.Time})
 	})
 	if err != nil {
@@ -759,7 +827,8 @@ func (h *handlers) health(ctx context.Context, raw json.RawMessage, _ *agent.Out
 // never reads the environment), no keep-alive, Host set to the IP, at most 4 KiB
 // of the body read and discarded.
 func (h *handlers) httpGet(ctx context.Context, ap netip.AddrPort, path string) (int, string) {
-	tr := &http.Transport{Proxy: nil, DialContext: h.dial, DisableKeepAlives: true, DisableCompression: true}
+	tr := &http.Transport{Proxy: nil, DialContext: h.dial, DisableKeepAlives: true, DisableCompression: true,
+		MaxResponseHeaderBytes: 16 << 10, ResponseHeaderTimeout: 2 * time.Second}
 	defer tr.CloseIdleConnections()
 	cl := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ap.String()+path, nil)

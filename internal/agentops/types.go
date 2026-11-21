@@ -16,7 +16,7 @@ const (
 	MinFreeBytes = 1 << 30
 	// DefaultStallS is the image_pull stall limit when the request leaves it out.
 	DefaultStallS = 120
-	MaxStallS     = 3600
+	MaxStallS     = 600
 
 	MaxGraceS = 300 // longest stop grace (data model: stop_grace_s 0..300)
 
@@ -160,12 +160,11 @@ type ListedContainer struct {
 	Unowned      bool         `json:"unowned,omitempty"`
 }
 
-// ListResult is the container_list result. Truncated means more than MaxList
-// containers exist (or the result had to be cut to fit): a caller that needs
-// the full set must treat it as an error.
+// ListResult is the container_list result. It is always the complete set: the
+// op fails (conflict) rather than return a partial list, because the allocator
+// and the orphan sweep must never act on a list that is missing containers.
 type ListResult struct {
 	Containers []ListedContainer `json:"containers"`
-	Truncated  bool              `json:"truncated,omitempty"`
 }
 
 // PublishedPort is one host port a container publishes.
@@ -180,9 +179,13 @@ type PublishedPort struct {
 type PublishingContainer struct {
 	Name  string          `json:"name"`
 	Ports []PublishedPort `json:"ports"`
+	// PortsTruncated is true when the container publishes more distinct ports
+	// than MaxPortsEach (all-interfaces ports are listed first).
+	PortsTruncated bool `json:"ports_truncated,omitempty"`
 }
 
-// PortsResult is the container_ports result.
+// PortsResult is the container_ports result. Truncated means more containers
+// than fit: the banner says "and more".
 type PortsResult struct {
 	Containers []PublishingContainer `json:"containers"`
 	Truncated  bool                  `json:"truncated,omitempty"`
@@ -221,6 +224,10 @@ type Event struct {
 	ExitCode string `json:"exit_code"`
 	Time     int64  `json:"time"`
 }
+
+// EventsOpen is the one progress line the events op sends once Docker's stream
+// is open: from then on no event can be missed.
+type EventsOpen = Empty
 
 // Health check kinds.
 const (

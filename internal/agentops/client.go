@@ -73,7 +73,11 @@ func okAddr(s string) bool {
 // after the pull). stall 0 means the agent's default. onProgress (may be nil) is
 // called for each forwarded progress line, at most two a second.
 func (c *Client) ImagePull(ctx context.Context, ref string, stall time.Duration, onProgress func(PullProgress)) (PullResult, error) {
-	args := PullArgs{Ref: ref, StallS: int(stall / time.Second)}
+	stallS := 0
+	if stall > 0 {
+		stallS = int((stall + time.Second - 1) / time.Second) // round up: never 0 for a short stall
+	}
+	args := PullArgs{Ref: ref, StallS: stallS}
 	var r PullResult
 	err := c.call(ctx, agent.OpImagePull, args, &r, func(l agent.Line) {
 		if l.T != agent.LineProgress || onProgress == nil {
@@ -200,7 +204,7 @@ func (c *Client) ContainerList(ctx context.Context) (ListResult, error) {
 		return ListResult{}, err
 	}
 	if len(r.Containers) > MaxList {
-		return ListResult{}, bad(agent.OpContainerList, "too many entries")
+		return ListResult{}, bad(agent.OpContainerList, "too many entries") // never a partial list
 	}
 	for i := range r.Containers {
 		e := &r.Containers[i]
@@ -228,7 +232,7 @@ func (c *Client) ContainerPorts(ctx context.Context) (PortsResult, error) {
 	}
 	for i := range r.Containers {
 		e := &r.Containers[i]
-		if len(e.Ports) > MaxPortsEach {
+		if len(e.Ports) > MaxPortsEach || (e.PortsTruncated && len(e.Ports) == 0) {
 			return PortsResult{}, bad(agent.OpContainerPorts, "too many ports")
 		}
 		e.Name = agent.CleanText(e.Name, MaxNameText)
@@ -251,6 +255,9 @@ func (c *Client) NetworkEnsure(ctx context.Context, name, subnet string) (Networ
 	}
 	if _, err := netip.ParsePrefix(r.Subnet); err != nil {
 		return NetworkResult{}, bad(agent.OpNetworkEnsure, "subnet")
+	}
+	if r.Subnet != subnet {
+		return NetworkResult{}, bad(agent.OpNetworkEnsure, "subnet is not the one asked for")
 	}
 	r.ID = agent.CleanText(r.ID, 80)
 	return r, nil
@@ -297,14 +304,24 @@ func (c *Client) HealthCheck(ctx context.Context, a HealthArgs) (HealthResult, e
 
 // Events streams this install's container events to fn until ctx ends, the
 // stream ends (nil: the caller resyncs and reconnects) or fn returns an error
-// (which stops the stream and is returned). A line that does not decode, or
+// (which stops the stream and is returned). onReady (may be nil) is called once
+// when Docker's stream is open, so a caller can list state without missing an
+// event. A line that does not decode, or
 // whose id is not a full id, is skipped.
-func (c *Client) Events(ctx context.Context, fn func(Event) error) error {
+func (c *Client) Events(ctx context.Context, onReady func(), fn func(Event) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var fnErr error
 	var r Empty
+	ready := false
 	err := c.call(ctx, agent.OpEvents, nil, &r, func(l agent.Line) {
+		if l.T == agent.LineProgress && !ready {
+			ready = true // Docker's stream is open: nothing after this is missed
+			if onReady != nil {
+				onReady()
+			}
+			return
+		}
 		if l.T != agent.LineEvent || fnErr != nil {
 			return
 		}

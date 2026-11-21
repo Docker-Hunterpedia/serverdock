@@ -187,11 +187,15 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.createBodies = append(f.createBodies, body)
 		var req struct {
-			Image  string
-			Labels map[string]string
+			Image            string
+			Labels           map[string]string
+			NetworkingConfig struct {
+				EndpointsConfig map[string]struct{ IPAMConfig struct{ IPv4Address string } }
+			}
 		}
 		_ = json.Unmarshal(body, &req)
-		c := &fakeContainer{Name: name, ID: containerID(name), Image: req.Image, Labels: req.Labels, State: "created"}
+		c := &fakeContainer{Name: name, ID: containerID(name), Image: req.Image, Labels: req.Labels, State: "created",
+			Configured: req.NetworkingConfig.EndpointsConfig[testNet].IPAMConfig.IPv4Address}
 		f.containers = append(f.containers, c)
 		w.WriteHeader(201)
 		json.NewEncoder(w).Encode(map[string]string{"Id": c.ID})
@@ -243,9 +247,11 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			c.State = "running"
+			c.IP = c.Configured
 			w.WriteHeader(204)
 		case action == "stop":
 			c.State = "exited"
+			c.IP = ""
 			w.WriteHeader(204)
 		case action == "restart":
 			c.State = "running"
@@ -295,6 +301,8 @@ func newFake() *fakeDocker {
 		io.WriteString(w, `{"status":"Status: Image is up to date for x"}`+"\n")
 	}
 	f.events = func(w http.ResponseWriter, r *http.Request) {}
+	f.addImage(imgID, imgID)
+	f.addImage(otherImgID, otherImgID)
 	return f
 }
 

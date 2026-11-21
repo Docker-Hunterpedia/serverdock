@@ -80,6 +80,18 @@ The four re-reviews (reviewer, systems, security, footprint) confirmed the revis
 - **Allocator source:** a fresh `container_list` (all states) at each allocation under the allocation lock, not the state map; Docker unreachable → the deploy fails `docker` (transient, retried) (Concepts, steps 4a and 8a).
 - **Footprint wording:** "about 1.7 MB (≈ 52 MB)" in the text matches the table; step 10's PR reports the "S2 live watcher" number.
 
+## Revision 5 (step 3 implementation notes)
+
+Recorded after step 3 and its reviews; later steps follow these.
+
+- **Wiring is deferred to step 4a.** `agentops.Handlers` needs `meta.install_id`, which migration 0004 creates. Step 4a wires `agent.Config{Ops: …}` with `Deps{Instance, CheckCreate: InterimCheckCreate}` in `runServer`, with a test that the local agent serves the ops and a remote agent refuses them as unknown.
+- **Result fields beyond the table:** `container_inspect` adds `running`, `restarting`, `configured_ip`, `owned`; `container_list` adds `unowned` per entry and is **never partial** (more than 1,000 containers or over the size cap fails `conflict`); `container_ports` adds `truncated` and a per-container `ports_truncated`; `network_inspect` adds subnet, gateway and range and fails `conflict` over 1,024 addresses (step 4a maps it to `ip_pool_exhausted`); `events` sends one progress line when Docker's stream is open (`Client.Events` `onReady`), so step 10 opens the stream before it lists.
+- **Chosen limits:** `container_ports` keeps 4 distinct ports per container (IPv4/IPv6 duplicates merged, all-interfaces first); `health_check` counts HTTP 200–399 as healthy, refuses the dynamic range as well as network, gateway and broadcast, and caps response headers at 16 KiB; stop and restart ops time out at 390 s; `image_pull` at 30 min with `stall_s` 1..600; `network_inspect` MaxResult 64 KiB; `container_create` refuses an image with any `serverdock.*` label, an image id it cannot inspect, and a name whose deploy and attempt differ from the labels.
+- **Step 8b:** the `stop_old` runner bound should be `stop_grace_s + 45 s` (or rely on the op timeout), with `timeout_s` updated.
+- **Step 8a:** failure clean-up after a timed-out create looks the container up by its deploy and attempt labels (via `container_list`), not by the id it never received.
+- **Steps 6 and 8a:** trust `container_inspect` addresses only when `owned` is true and the labels match the expected service and deploy.
+- **Step 5:** deletes `InterimCheckCreate` when `policy.CheckCreate` lands; the new check must refuse case-variant and duplicate keys (the interim one refuses duplicates) and keep the fuzz test.
+
 ## Entry gate
 
 1. **Phase 0 carry-over (plan 0002 Part D item 9, roadmap Phase 0): the maintainer confirms vision, features and architecture before M3a starts** (QM3a-1: confirmed by the maintainer, 2026-11-21).

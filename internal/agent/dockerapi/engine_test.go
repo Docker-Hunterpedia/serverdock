@@ -1067,3 +1067,34 @@ func TestOurLabelsDropAndReport(t *testing.T) {
 		t.Fatalf("%+v %v", list, err)
 	}
 }
+
+func TestStopMapsStatusesAndPullErrorIsTyped(t *testing.T) {
+	ctx := context.Background()
+	c, _ := startEngine(t, reply(404, `{"message":"No such container"}`))
+	if err := c.Stop(ctx, id64, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stop of a vanished container: %v", err)
+	}
+	c, _ = startEngine(t, reply(304, ``))
+	if err := c.Stop(ctx, id64, 1); err != nil {
+		t.Fatalf("already stopped: %v", err)
+	}
+	c, _ = startEngine(t, reply(200, `{"error":"manifest unknown\u001b[2J"}`+"\n"))
+	err := c.ImagePull(ctx, "x:1", nil)
+	var pe *PullError
+	if !errors.As(err, &pe) || pe.Msg != "manifest unknown[2J" {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestEventsOpenCallsOnOpenWhenHeadersArrive(t *testing.T) {
+	c, _ := startEngine(t, reply(200, ``))
+	opened := 0
+	if err := c.EventsOpen(context.Background(), nil, func() { opened++ }, func(Event) error { return nil }); err != nil || opened != 1 {
+		t.Fatalf("%d %v", opened, err)
+	}
+	c, _ = startEngine(t, reply(500, `x`))
+	opened = 0
+	if err := c.EventsOpen(context.Background(), nil, func() { opened++ }, func(Event) error { return nil }); err == nil || opened != 0 {
+		t.Fatalf("%d %v", opened, err)
+	}
+}

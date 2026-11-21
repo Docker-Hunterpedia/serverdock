@@ -120,7 +120,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 	events := make(chan Event, 64)
 	edone := make(chan error, 1)
 	go func() {
-		edone <- cl.Events(ectx, func(e Event) error { events <- e; return nil })
+		edone <- cl.Events(ectx, nil, func(e Event) error { events <- e; return nil })
 	}()
 	probed := false
 	for i := 0; i < 15 && !probed; i++ {
@@ -220,6 +220,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 	itDocker(t, "create", "--name", "sd-p-web-d9-a1", ref)
 	b := a
 	b.Name = "sd-p-web-d9-a1"
+	b.Spec.Labels = map[string]string{LabelManaged: "1", LabelProject: "p", LabelService: "7", LabelDeploy: "9", LabelAttempt: "1"}
 	if _, err := cl.ContainerCreate(ctx, b.Name, b.Spec, b.IP, b.ImageID); !IsCode(err, agent.CodeConflict) {
 		t.Fatalf("name taken by a foreign container: %v", err)
 	}
