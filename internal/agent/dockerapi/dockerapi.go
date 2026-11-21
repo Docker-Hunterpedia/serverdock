@@ -1,9 +1,11 @@
 // Package dockerapi is a minimal Docker Engine API client over the unix
-// socket. Phase 0 needs logs only. Paths are fixed, container IDs are
-// validated, and there is no shell.
+// socket: logs, images, containers, one network and events (ADR 0012). Paths
+// are fixed, identifiers are validated, request bodies are Go types that hold
+// only the fields ServerDock may set, and there is no shell.
 package dockerapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -50,6 +52,7 @@ type Client struct {
 	hc *http.Client
 
 	short time.Duration // deadline for short calls; DefaultCallTimeout, shortened in tests
+	slack time.Duration // added to a stop or restart grace period; stopMargin, shortened in tests
 
 	mu     sync.Mutex
 	prefix string // "/v1.xx" once negotiated; success is cached, failure is not
@@ -67,7 +70,7 @@ func New(socket string) *Client {
 		MaxIdleConns:    1,
 		IdleConnTimeout: 0,
 	}
-	return &Client{hc: &http.Client{Transport: tr}, short: DefaultCallTimeout}
+	return &Client{hc: &http.Client{Transport: tr}, short: DefaultCallTimeout, slack: stopMargin}
 }
 
 // Close releases the client's idle connections. In-flight calls are not
@@ -158,17 +161,25 @@ func (c *Client) NegotiatedAPI() string {
 }
 
 // call performs one request bounded by timeout (covering headers and the whole
-// body, which is capped at 4 MiB) and returns the status and body.
-func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string) (int, []byte, error) {
+// body, which is capped at 4 MiB) and returns the status and body. reqBody, if
+// non-nil, is sent as application/json.
+func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string, reqBody []byte) (int, []byte, error) {
 	prefix, err := c.negotiate(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+prefix+path, nil)
+	var rdr io.Reader
+	if reqBody != nil {
+		rdr = bytes.NewReader(reqBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+prefix+path, rdr)
 	if err != nil {
 		return 0, nil, err
+	}
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -188,20 +199,29 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 	return resp.StatusCode, body, nil
 }
 
-// stream starts a GET whose body lives as long as ctx (log follow; later
-// events, pull and build). Only a 200 response is returned. The body is
-// unbounded, but the response headers must arrive within the short deadline: a
-// daemon that accepts the request and never answers does not hold the caller.
-func (c *Client) stream(ctx context.Context, path string) (*http.Response, error) {
+// stream starts a request whose response body lives as long as ctx (log
+// follow, events, image pull). Only a 200 response is returned; any other
+// status becomes an *APIError. The body is unbounded, but the response headers
+// must arrive within the short deadline: a daemon that accepts the request and
+// never answers does not hold the caller. reqBody, if non-nil, is sent as
+// application/json.
+func (c *Client) stream(ctx context.Context, method, path string, reqBody []byte) (*http.Response, error) {
 	prefix, err := c.negotiate(ctx)
 	if err != nil {
 		return nil, err
 	}
 	sctx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(sctx, http.MethodGet, "http://docker"+prefix+path, nil)
+	var rdr io.Reader
+	if reqBody != nil {
+		rdr = bytes.NewReader(reqBody)
+	}
+	req, err := http.NewRequestWithContext(sctx, method, "http://docker"+prefix+path, rdr)
 	if err != nil {
 		cancel()
 		return nil, err
+	}
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	hdrTimer := time.AfterFunc(c.short, cancel)
 	resp, err := c.hc.Do(req)
@@ -225,9 +245,10 @@ func (c *Client) stream(ctx context.Context, path string) (*http.Response, error
 		if resp.StatusCode == http.StatusBadRequest {
 			c.forget()
 		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		resp.Body.Close()
 		cancel()
-		return nil, fmt.Errorf("dockerapi: %s: status %d", path[:min(len(path), 12)], resp.StatusCode)
+		return nil, newAPIError(path, resp.StatusCode, body)
 	}
 	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
@@ -247,7 +268,7 @@ func (b *cancelBody) Close() error {
 
 // Info reports the engine and the negotiated API version (for the startup log).
 func (c *Client) Info(ctx context.Context) (engine, api string, err error) {
-	st, body, err := c.call(ctx, c.short, http.MethodGet, "/version")
+	st, body, err := c.call(ctx, c.short, http.MethodGet, "/version", nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -270,8 +291,8 @@ func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
 	if graceSeconds < 0 || graceSeconds > 3600 {
 		return errors.New("dockerapi: stop grace out of range")
 	}
-	timeout := time.Duration(graceSeconds)*time.Second + stopMargin
-	st, _, err := c.call(ctx, timeout, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop?t="+strconv.Itoa(graceSeconds))
+	timeout := time.Duration(graceSeconds)*time.Second + c.slack
+	st, _, err := c.call(ctx, timeout, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop?t="+strconv.Itoa(graceSeconds), nil)
 	if err != nil {
 		return err
 	}
@@ -304,7 +325,7 @@ func (c *Client) LogsFollow(ctx context.Context, id string, tail int, follow boo
 	var info struct {
 		Config struct{ Tty bool }
 	}
-	st, body, err := c.call(ctx, c.short, http.MethodGet, "/containers/"+esc+"/json")
+	st, body, err := c.call(ctx, c.short, http.MethodGet, "/containers/"+esc+"/json", nil)
 	if err != nil {
 		return err
 	}
@@ -319,7 +340,7 @@ func (c *Client) LogsFollow(ctx context.Context, id string, tail int, follow boo
 		followV = "1"
 	}
 	q := url.Values{"follow": {followV}, "stdout": {"1"}, "stderr": {"1"}, "tail": {strconv.Itoa(tail)}}
-	resp, err := c.stream(ctx, "/containers/"+esc+"/logs?"+q.Encode())
+	resp, err := c.stream(ctx, http.MethodGet, "/containers/"+esc+"/logs?"+q.Encode(), nil)
 	if err != nil {
 		return err
 	}
@@ -361,4 +382,21 @@ func Demux(dst io.Writer, src io.Reader) error {
 			return err
 		}
 	}
+}
+
+// DataRoot returns the daemon's data root (Docker Root Dir) from /info. The
+// agent checks free space there before a pull.
+func (c *Client) DataRoot(ctx context.Context) (string, error) {
+	st, body, err := c.call(ctx, c.short, http.MethodGet, "/info", nil)
+	if err != nil {
+		return "", err
+	}
+	if err := statusErr("info", st, body, http.StatusOK); err != nil {
+		return "", err
+	}
+	var v struct{ DockerRootDir string }
+	if err := json.Unmarshal(body, &v); err != nil {
+		return "", fmt.Errorf("dockerapi: info: %w", err)
+	}
+	return v.DockerRootDir, nil
 }

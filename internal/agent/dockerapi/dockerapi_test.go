@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -427,57 +428,87 @@ func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(
 // Every exported Client method that talks to the daemon must go through call
 // or stream (no direct c.hc use), so no request escapes a deadline policy.
 func TestExportedMethodsUseTheHelpers(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "dockerapi.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	helpers := map[string]bool{"call": true, "stream": true, "negotiate": true}
-	var checked int
-	for _, d := range f.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if !ok || fn.Recv == nil || fn.Body == nil {
+	// Exported methods that delegate to another checked method (or to the
+	// shared containerList, which uses call).
+	delegates := map[string]string{"Logs": "LogsFollow", "ContainerList": "containerList", "ContainerPorts": "containerList"}
+	var checked []string
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		usesHelper, usesHC := false, false
-		name0 := fn.Name.Name
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if sel, ok := n.(*ast.SelectorExpr); ok {
-				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "c" {
-					// Logs delegates to LogsFollow, which is itself checked here.
-					if helpers[sel.Sel.Name] || (name0 == "Logs" && sel.Sel.Name == "LogsFollow") {
-						usesHelper = true
-					}
-					if sel.Sel.Name == "hc" {
-						usesHC = true
-					}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src, _ := os.ReadFile(file)
+		// A transport-wide ResponseHeaderTimeout would cut stop?t=N; the default
+		// client and the http package helpers would skip the socket and the policy.
+		for _, l := range strings.Split(string(src), "\n") {
+			code := strings.TrimSpace(l)
+			if strings.HasPrefix(code, "//") {
+				continue
+			}
+			for _, bad := range []string{"ResponseHeaderTimeout", "http.DefaultClient", "http.Get(", "http.Post(", "http.NewRequest("} {
+				if strings.Contains(code, bad) {
+					t.Errorf("%s: forbidden %s: %s", file, bad, l)
 				}
 			}
-			return true
-		})
-		name := fn.Name.Name
-		switch {
-		case helpers[name]:
-		case name == "Close" || name == "NegotiatedAPI":
-			// do not issue requests
-			if usesHC && name != "Close" {
-				t.Errorf("%s uses c.hc", name)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil {
+				continue
 			}
-		case fn.Name.IsExported():
-			checked++
-			if !usesHelper || usesHC {
-				t.Errorf("exported method %s must use c.call/c.stream and not c.hc", name)
+			if star, ok := fn.Recv.List[0].Type.(*ast.StarExpr); !ok || fmt.Sprint(star.X) != "Client" {
+				continue // methods of other types (errors, specs) issue no requests
+			}
+			usesHelper, usesHC := false, false
+			name := fn.Name.Name
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "c" {
+						if helpers[sel.Sel.Name] || (delegates[name] != "" && sel.Sel.Name == delegates[name]) {
+							usesHelper = true
+						}
+						if sel.Sel.Name == "hc" {
+							usesHC = true
+						}
+					}
+				}
+				return true
+			})
+			switch {
+			case helpers[name]:
+			case name == "Close" || name == "NegotiatedAPI":
+				// do not issue requests
+				if usesHC && name != "Close" {
+					t.Errorf("%s uses c.hc", name)
+				}
+			case fn.Name.IsExported() || name == "containerList":
+				if fn.Name.IsExported() {
+					checked = append(checked, name)
+				}
+				if !usesHelper || usesHC {
+					t.Errorf("method %s must use c.call/c.stream and not c.hc", name)
+				}
 			}
 		}
 	}
-	if checked < 3 { // Info, Stop, Logs
-		t.Errorf("only %d exported methods checked", checked)
-	}
-	// A transport-wide ResponseHeaderTimeout would cut stop?t=N.
-	src, _ := os.ReadFile("dockerapi.go")
-	for _, l := range strings.Split(string(src), "\n") {
-		if strings.Contains(l, "ResponseHeaderTimeout") && !strings.HasPrefix(strings.TrimSpace(l), "//") {
-			t.Errorf("code sets ResponseHeaderTimeout: %s", l)
+	for _, want := range []string{"Info", "Stop", "Logs", "LogsFollow", "DataRoot", "ImagePull", "ImageInspect", "ContainerCreate",
+		"ContainerStart", "ContainerInspect", "ContainerRestart", "ContainerRemove", "ContainerList", "ContainerPorts",
+		"NetworkEnsure", "NetworkInspect", "Events"} {
+		found := false
+		for _, c := range checked {
+			found = found || c == want
+		}
+		if !found {
+			t.Errorf("exported method %s was not checked", want)
 		}
 	}
 }
