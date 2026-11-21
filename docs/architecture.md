@@ -114,6 +114,8 @@ flowchart LR
 
 These are the budgets, measured by `bench/run.sh` in CI on a 1 vCPU / 1 GB VM ([ADR 0008](decisions/0008-footprint-gates.md), [ADR 0011](decisions/0011-footprint-ceiling.md)). The two **totals in bold have a hard ceiling** (CI fails above it) and a **tripwire** (a warning: going above it needs a written reason in the PR and `footprint` agent review). Component rows are targets the bench reports but does not enforce. The remote-agent row becomes a gate when the slim agent ships in Phase 2.
 
+Transparent huge pages: on hosts with THP set to `always` (some RHEL-family images, Docker Desktop's VM) khugepaged collapses the Go heap into 2 MB pages and idle RSS rises in steps (measured +4.2 MB, or +1.6 MB with `GODEBUG=disablethp=1`; see plan 0003's idle-memory section). On `madvise` hosts, most VPSes, nothing changes. `disablethp` is a runtime-only setting (Go rejects it as a `//go:debug` default), so it is set through the environment: plan 0009 (M7a) adds `Environment=GODEBUG=disablethp=1` to the systemd unit and the container image; operators can remove it.
+
 | Component | Idle RSS | Idle CPU |
 |---|---|---|
 | Control plane (API, hub, scheduler, SQLite, SPA) | ≤ 40 MB | < 0.5% |
@@ -141,7 +143,6 @@ Every goroutine that wakes on a timer, and the goroutines that exist per session
 | yamux keepalive, agent side | `internal/agent/session.go` `ServeSession` | 30 s | per remote session, in the agent process |
 | Reconnect backoff | `internal/agent/client.go` `sleepCtx` | 1 s to 30 s, jittered | only while a remote agent is disconnected |
 | certmagic cache maintenance, `(*certmagic.Cache).maintainAssets` (and its storage lock-file refresher while a lock is held) | embedded Caddy (`caddyhttp` provisions the `tls` app) | 10 min renew check, 1 h OCSP check (certmagic defaults) | **running since M1**, whenever the proxy runs: in `server` mode (S2) and in `agent` mode with `--proxy-listen` (S4). Seen in a goroutine dump (M2 step 3). The panel leaf adds no timer: it is renewed only at start (`internal/pki`, `EnsurePanelLeaf`). |
-
 | Caddy's reverse-proxy upstream-health metrics updater, `(*metricsUpstreamsHealthyUpdater).init` (`modules/caddyhttp/reverseproxy/metrics.go`, Caddy v2.11.9) | embedded Caddy, one goroutine per provisioned `reverse_proxy` handler (the panel's in `server` mode, the agent's routes in `agent --proxy-listen`) | 10 s ticker | **running since M1** whenever the proxy runs, in S2 and in S4. Found in the idle goroutine dump at M2 step 14 (`bench/results/2026-11-21-s2-idle-goroutines.txt`). Caddy starts it unconditionally (it is not tied to the metrics config); it only sets a Prometheus gauge from in-memory health state, no I/O. Not removable by configuration. |
 
 Per-session goroutines (they exist because a session exists; none wakes on a timer of ours):

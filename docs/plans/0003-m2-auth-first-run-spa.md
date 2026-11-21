@@ -45,7 +45,7 @@ Steps 1 to 14 are built on branch `phase-1-m2` (PR #3), each step reviewed as li
 2. The CI bench numbers above, and the PR #3 merge.
 3. Obligations M2 hands to later plans (each must be in that plan's steps and tests):
    - **Plan 0004 / M3a:** warn when an app publishes a host port on the panel's IP (SEC6: cookies are host-scoped, so another HTTPS service on the same host name could receive them).
-   - **Plan 0009 / M7a:** the unit sets `StateDirectoryMode=0700`, and `doctor --bundle` excludes exactly `datadir.SecretPaths()`.
+   - **Plan 0009 / M7a:** the unit sets `StateDirectoryMode=0700`, and `doctor --bundle` excludes exactly `datadir.SecretPaths()`. It also sets `Environment=GODEBUG=disablethp=1` (and the container image `ENV GODEBUG=disablethp=1`) so THP=`always` hosts don't add 2 MB RSS steps; Go rejects `disablethp` as a `//go:debug` default (docs/architecture.md, footprint budget).
    - **M7b:** the state backup includes `keys/` and `pki/` (the master key and the panel leaf; the key id in `meta` must match).
    - **M4 / passkeys (plan 0006):** `admin reset` clears passkeys too; a passkey-only sign-in needs its own back-off and its own "admin exists" rule (today: a password and a confirmed TOTP); the `<unknown>` bucket rule applies to unknown credential ids.
    - **M4:** once apps share `:443`, the panel's `fallback_sni` must not serve the panel leaf for app SNI names (test it); the IP-literal Host rule is re-checked together with the redirect and G15.
