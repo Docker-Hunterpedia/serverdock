@@ -152,9 +152,9 @@ func TestCancelSessionJobsCancelsQueuedAndRunningJobsOfThoseSessionsOnly(t *test
 	}
 }
 
-// A cancel that lands while a job is being recorded may add a pending entry, but
-// the worker removes it once the result is recorded: the maps stay empty and the
-// worker count returns to zero.
+// A cancel that lands while a job is being recorded may park a pending entry only
+// while a pick is in progress, and the end of that pick drops it: the maps end up
+// empty and the worker count returns to zero.
 func TestLateCancelLeavesNoPendingEntry(t *testing.T) {
 	e := newEnv(t)
 	s, _ := start(t, e, func(context.Context, Job) error { return nil }, nil)
@@ -173,11 +173,13 @@ func TestLateCancelLeavesNoPendingEntry(t *testing.T) {
 		}
 	}
 	waitFor(t, "the workers to finish", func() bool { return s.Running() == 0 })
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.pending) != 0 || len(s.running) != 0 {
-		t.Errorf("pending=%v running=%d", s.pending, len(s.running))
-	}
+	// A late cancel can still park an entry while a pick is in progress; the end
+	// of that pick drops it, so the maps empty without any further job.
+	waitFor(t, "the pending cancels to be dropped", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.pending) == 0 && len(s.running) == 0 && !s.picking
+	})
 }
 
 func newInvoker(t *testing.T) *actions.SystemInvoker {

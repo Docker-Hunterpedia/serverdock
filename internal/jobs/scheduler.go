@@ -61,7 +61,8 @@ type Scheduler struct {
 	stopping bool
 	running  map[int64]context.CancelCauseFunc
 	active   int              // workers started and not finished (running is removed earlier, before the result is recorded)
-	pending  map[int64]string // cancels that arrived between Pick and registration; bounded (at most the picked jobs, terminal-only) and ids are never reused
+	pending  map[int64]string // cancels that arrived during a pick (picking), before the picked job was registered; emptied when that pick ends
+	picking  bool             // dispatch is between Pick and registering its worker (one pick at a time)
 	wake     time.Time        // when the timer fires; zero when it is stopped
 	wg       sync.WaitGroup
 }
@@ -252,9 +253,11 @@ func (s *Scheduler) CancelSessionJobs(ctx context.Context, sessions []string, re
 func (s *Scheduler) cancelRunning(id int64, reason string) {
 	s.mu.Lock()
 	cancel := s.running[id]
-	if cancel == nil {
-		// Not registered yet: the job was picked an instant ago. dispatch checks
+	if cancel == nil && s.picking {
+		// Possibly picked an instant ago and not registered yet: dispatch checks
 		// this set when it registers the worker, so the cancel is never lost.
+		// Outside a pick, an unregistered running job has already finished (its
+		// worker left the map before recording), so there is nothing to cancel.
 		s.pending[id] = reason
 	}
 	s.mu.Unlock()
@@ -335,11 +338,15 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 	for ctx.Err() == nil {
 		s.mu.Lock()
 		blocked := s.paused || s.stopping || s.active >= s.cfg.Workers
+		s.picking = !blocked
 		s.mu.Unlock()
 		if blocked {
 			return false
 		}
 		j, ok, err := s.cfg.Store.Pick(ctx, s.bootID)
+		if err != nil || !ok {
+			s.endPick()
+		}
 		if err != nil {
 			if ctx.Err() == nil {
 				s.cfg.Log.Error("jobs: pick", "err", err)
@@ -358,6 +365,8 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 		if s.stopping {
 			// Picked in the instant of shutdown: no worker starts, and the row stays
 			// "running" for the next boot's pass (see ErrShutdown).
+			s.picking = false
+			clear(s.pending)
 			s.mu.Unlock()
 			cancel(ErrShutdown)
 			return false
@@ -369,12 +378,23 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 		} else if j.CancelRequested {
 			cancel(CancelCause{Reason: j.CancelReason})
 		}
-		delete(s.pending, j.ID)
+		// One pick at a time: any other entry is a cancel for a job that already
+		// finished, so the whole set is dropped with this pick.
+		s.picking = false
+		clear(s.pending)
 		s.wg.Add(1) // under mu: stop() cannot run between the check and the Add
 		s.mu.Unlock()
 		go s.work(jctx, cancel, j)
 	}
 	return false
+}
+
+// endPick ends a pick that registered no worker.
+func (s *Scheduler) endPick() {
+	s.mu.Lock()
+	s.picking = false
+	clear(s.pending)
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j Job) {
@@ -384,10 +404,8 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	cancel(nil)
 	// Leave the cancel map before the result is recorded: a cancel that arrives
 	// from here on only flags the row (the outcome is already decided by cause).
-	// It may still add a pending entry, which is removed below once the result is
-	// recorded. A cancel that lands after that cleanup (or a store failure) can
-	// leave one small entry for a finished job; job ids are never reused, so the
-	// map stays bounded and terminal-only.
+	// It adds a pending entry only while a pick is in progress, and that pick's
+	// end drops it.
 	s.mu.Lock()
 	delete(s.running, j.ID)
 	s.mu.Unlock()
@@ -396,7 +414,6 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	defer bcancel()
 	s.record(bctx, j, err, cause)
 	s.mu.Lock()
-	delete(s.pending, j.ID)
 	s.active--
 	s.mu.Unlock()
 	s.Notify()
