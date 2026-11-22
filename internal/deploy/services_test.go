@@ -1173,3 +1173,34 @@ func TestActionBeforeThePanelIsUpStartsNoBoot(t *testing.T) {
 		t.Errorf("%+v %v", out, s.seq)
 	}
 }
+
+// A failure that is only the caller's own context ending is not remembered: a
+// client that disconnects must not make the next caller get a 503.
+func TestExposureCallersCancellationIsNotCached(t *testing.T) {
+	src := &ctxPorts{}
+	g := newSvcRig(t, func(d *ServiceDeps) { d.Exposure = src })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond) // ends during the Docker call
+	defer cancel()
+	raw, _ := json.Marshal(m{})
+	if _, err := g.reg.Invoke(ctx, readTok, "system.exposure", raw, actions.Options{}); err == nil {
+		t.Fatal("a cancelled caller got an answer")
+	}
+	if _, err := callAs[ExposureOut](g, readTok, "system.exposure", m{}); err != nil {
+		t.Fatalf("the next caller got %v", err)
+	}
+	if src.n != 2 {
+		t.Errorf("Docker was asked %d times, want 2", src.n)
+	}
+}
+
+// ctxPorts blocks until the caller's context ends (when it has an end) and then
+// fails with its error; with no deadline it answers at once.
+type ctxPorts struct{ n int }
+
+func (c *ctxPorts) ContainerPorts(ctx context.Context) (agentops.PortsResult, error) {
+	c.n++
+	if _, ok := ctx.Deadline(); ok {
+		<-ctx.Done()
+	}
+	return agentops.PortsResult{}, ctx.Err()
+}

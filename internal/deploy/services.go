@@ -1056,7 +1056,11 @@ func (d *svcDeps) retryPort(ctx context.Context, in ServiceRefIn) (ServiceChange
 
 // exposure answers system.exposure from a 30-second cache. The age is checked
 // here, on read: there is no timer, and Docker is asked only when someone asks
-// and the answer is older than the TTL. A failure is remembered for 5 s.
+// and the answer is older than the TTL. A failure is remembered for 5 s
+// (unless it was the caller's own context ending): after a failed refresh the
+// next 5 s answer 503, not the last good answer. That is deliberate: a stale
+// exposure list would be reported as current, and a hung Docker must not make
+// every caller make its own long call.
 func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 	if d.Exposure == nil {
 		return ExposureOut{}, actions.Unavailable("the exposure check needs the local agent")
@@ -1087,9 +1091,13 @@ func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 		d.Log.Warn("exposure check failed", "err", err.Error())
 		// Remember the failure for a few seconds (age checked on read, no timer), so
 		// callers behind a hung Docker do not each make a long call of their own.
-		d.exp.mu.Lock()
-		d.exp.errAt, d.exp.errOK = d.Now(), true
-		d.exp.mu.Unlock()
+		// Not when the failure is the caller's own context ending: a client that
+		// disconnects must not make everyone else get a 503.
+		if ctx.Err() == nil {
+			d.exp.mu.Lock()
+			d.exp.errAt, d.exp.errOK = d.Now(), true
+			d.exp.mu.Unlock()
+		}
 		return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
 	}
 	var panel []netip.Addr

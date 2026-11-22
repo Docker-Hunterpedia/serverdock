@@ -244,36 +244,28 @@ func TestFollowIsNeverSentToAV0Session(t *testing.T) {
 	if v1.s.Version() != 1 {
 		t.Fatalf("version %d", v1.s.Version())
 	}
+	// The calls are made one after the other, each waited for, so the request each
+	// one wrote is the last one recorded: attribution does not depend on the order
+	// in which two streams' handlers happen to be scheduled.
 	rc, err = v1.s.LogsOnce(context.Background(), "c1", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rc.Close()
+	waitFor(t, func() bool { return len(v1.requests()) >= 2 }) // hello + the follow=false logs
+	reqs := v1.requests()
+	if last := reqs[len(reqs)-1]; !bytes.Contains(last, []byte(`"op":"logs"`)) || !bytes.Contains(last, []byte(`"follow":false`)) {
+		t.Errorf("v1 follow=false request: %q", last)
+	}
 	rc, err = v1.s.Logs(context.Background(), "c1", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rc.Close()
 	waitFor(t, func() bool { return len(v1.requests()) >= 3 })
-	// Each call opens its own stream and the fake agent records request lines as
-	// its per-stream handlers read them, so the order of the two logs requests is
-	// not defined: assert on the set (after hello), not on positions.
-	var withFalse, withoutFollow int
-	for _, r := range v1.requests()[1:] { // [0] is hello
-		if !bytes.Contains(r, []byte(`"op":"logs"`)) {
-			continue
-		}
-		switch {
-		case bytes.Contains(r, []byte(`"follow":false`)):
-			withFalse++
-		case !bytes.Contains(r, []byte("follow")):
-			withoutFollow++
-		default:
-			t.Errorf("unexpected follow value in %q", r)
-		}
-	}
-	if withFalse != 1 || withoutFollow != 1 {
-		t.Errorf("v1 logs requests: %d with follow=false (want 1), %d with no follow key (want 1): %q", withFalse, withoutFollow, v1.requests())
+	reqs = v1.requests()
+	if last := reqs[len(reqs)-1]; !bytes.Contains(last, []byte(`"op":"logs"`)) || bytes.Contains(last, []byte("follow")) {
+		t.Errorf("follow=true must be absent: %q", last)
 	}
 }
 
