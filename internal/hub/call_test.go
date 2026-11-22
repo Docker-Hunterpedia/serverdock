@@ -255,12 +255,25 @@ func TestFollowIsNeverSentToAV0Session(t *testing.T) {
 	}
 	rc.Close()
 	waitFor(t, func() bool { return len(v1.requests()) >= 3 })
-	reqs := v1.requests()
-	if !bytes.Contains(reqs[1], []byte(`"follow":false`)) {
-		t.Errorf("v1 follow=false request: %q", reqs[1])
+	// Each call opens its own stream and the fake agent records request lines as
+	// its per-stream handlers read them, so the order of the two logs requests is
+	// not defined: assert on the set (after hello), not on positions.
+	var withFalse, withoutFollow int
+	for _, r := range v1.requests()[1:] { // [0] is hello
+		if !bytes.Contains(r, []byte(`"op":"logs"`)) {
+			continue
+		}
+		switch {
+		case bytes.Contains(r, []byte(`"follow":false`)):
+			withFalse++
+		case !bytes.Contains(r, []byte("follow")):
+			withoutFollow++
+		default:
+			t.Errorf("unexpected follow value in %q", r)
+		}
 	}
-	if bytes.Contains(reqs[2], []byte("follow")) {
-		t.Errorf("follow=true must be absent: %q", reqs[2])
+	if withFalse != 1 || withoutFollow != 1 {
+		t.Errorf("v1 logs requests: %d with follow=false (want 1), %d with no follow key (want 1): %q", withFalse, withoutFollow, v1.requests())
 	}
 }
 
