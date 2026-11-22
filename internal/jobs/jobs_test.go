@@ -886,6 +886,14 @@ func TestRetryableErrorAfterCancelIsNotRequeued(t *testing.T) {
 	if runs.Load() != 1 {
 		t.Errorf("ran %d times: the retry undid the cancel", runs.Load())
 	}
+	// The job ends with the reason it was cancelled for, not a generic "cancelled".
+	var reason, errText string
+	if err := e.st.R.QueryRow(`SELECT COALESCE(cancel_reason, ''), COALESCE(error, '') FROM jobs WHERE id = ?`, id).Scan(&reason, &errText); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "superseded" || errText != "superseded" {
+		t.Errorf("cancel_reason %q, error %q: want superseded", reason, errText)
+	}
 	if ok, err := e.js.Requeue(ctx, id, 0, "x"); err != nil || ok {
 		t.Errorf("Requeue of a finished job: %v %v", ok, err)
 	}

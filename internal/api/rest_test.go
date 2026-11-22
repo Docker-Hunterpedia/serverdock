@@ -65,11 +65,11 @@ func (r *recordingRunner) assertClean(t *testing.T) {
 		default:
 			t.Errorf("an HTTP request produced a %q actor for %s", c.kind, c.info.Name)
 		}
-		if c.kind == actions.KindToken && c.err == nil && (c.info.Sensitive || c.info.Risk == actions.RiskDestructive || c.info.SessionOnly || c.info.ConsoleOnly) {
+		if c.kind == actions.KindToken && c.err == nil && (c.info.Sensitive || c.info.Risk == actions.RiskDestructive || c.info.SessionOnly || c.info.ConsoleOnly || c.info.JobOnly) {
 			t.Errorf("a token ran %s (sensitive=%v destructive=%v session-only=%v console-only=%v)", c.info.Name, c.info.Sensitive, c.info.Risk == actions.RiskDestructive, c.info.SessionOnly, c.info.ConsoleOnly)
 		}
-		if c.info.ConsoleOnly && c.err == nil {
-			t.Errorf("a console-only action ran over HTTP: %s", c.info.Name)
+		if (c.info.ConsoleOnly || c.info.JobOnly) && c.err == nil {
+			t.Errorf("a console-only or job-only action ran over HTTP: %s", c.info.Name)
 		}
 	}
 }
@@ -110,6 +110,7 @@ func registerTestCells(r *actions.Registry) {
 	add("t.destroy", actions.Def[cellIn, string]{Risk: actions.RiskDestructive, Scope: actions.ScopeAdmin, Target: tgt})
 	add("t.session_only", actions.Def[cellIn, string]{Risk: actions.RiskMutate, Scope: actions.ScopeWrite, SessionOnly: true, Target: tgt})
 	add("t.console", actions.Def[cellIn, string]{Risk: actions.RiskDestructive, Scope: actions.ScopeAdmin, ConsoleOnly: true, System: "test console action", Target: tgt})
+	add("t.jobonly", actions.Def[cellIn, string]{Risk: actions.RiskMutate, Scope: actions.ScopeWrite, JobOnly: true, Target: tgt})
 	add("t.removes", actions.Def[cellIn, string]{Risk: actions.RiskMutate, Scope: actions.ScopeWrite, RemovesAccess: true, Target: tgt})
 	add("t.leaky", actions.Def[cellIn, string]{Risk: actions.RiskMutate, Scope: actions.ScopeWrite, Target: tgt,
 		Execute: func(_ context.Context, _ actions.Call, i cellIn) (string, error) {
@@ -238,7 +239,7 @@ func expectedStatus(info actions.Info, cred string) int {
 	if cred == "none" {
 		return 401
 	}
-	if info.ConsoleOnly {
+	if info.ConsoleOnly || info.JobOnly {
 		return 404
 	}
 	switch cred {
@@ -381,7 +382,7 @@ func TestRESTEnvelopeAndOptions(t *testing.T) {
 		t.Errorf("a body over 64 KiB: %d", x.Code)
 	}
 	// Unknown and console-only actions are both 404, even with a valid session.
-	for _, n := range []string{"nope.nothing", "t.console", "auth.admin_reset"} {
+	for _, n := range []string{"nope.nothing", "t.console", "t.jobonly", "auth.admin_reset"} {
 		if x := f.rest("POST", actionPath(n), `{}`, s); x.Code != 404 || x.errCode() != "unknown_action" {
 			t.Errorf("%s: %d %s", n, x.Code, x.Raw)
 		}
@@ -511,6 +512,26 @@ func TestRESTClearsTheSessionCookieWhereItShould(t *testing.T) {
 
 // ---- OpenAPI -------------------------------------------------------------------------------------
 
+func TestJobOnlyActionsAre404AndNotInOpenAPI(t *testing.T) {
+	f := newFixture(t, true)
+	before := cellRuns.Load()
+	for name, c := range map[string]restCred{"session": {session: f.freshSession()}, "token write": {token: f.tokens["token write"]}, "token admin": {token: f.tokens["token admin"]}} {
+		if x := f.rest("POST", actionPath("t.jobonly"), `{}`, c); x.Code != 404 || x.errCode() != "unknown_action" {
+			t.Errorf("%s: %d %s", name, x.Code, x.Raw)
+		}
+	}
+	if cellRuns.Load() != before {
+		t.Error("a job-only action ran over HTTP")
+	}
+	doc, err := BuildOpenAPI(f.reg.List())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc["paths"].(map[string]any)["/api/v1/actions/t.jobonly"]; ok {
+		t.Error("a job-only action is in the OpenAPI document")
+	}
+}
+
 func TestOpenAPIServedAndOmitsConsoleOnly(t *testing.T) {
 	f := newFixture(t, true)
 	for name, c := range map[string]restCred{"session": {session: f.freshSession()}, "token read": {token: f.tokens["token read"]}} {
@@ -519,8 +540,10 @@ func TestOpenAPIServedAndOmitsConsoleOnly(t *testing.T) {
 			t.Fatalf("%s: %d %s", name, r.Code, r.Raw)
 		}
 		paths := r.Body["paths"].(map[string]any)
-		if _, ok := paths["/api/v1/actions/t.console"]; ok {
-			t.Errorf("%s: a console-only action is in the document", name)
+		for _, hidden := range []string{"t.console", "t.jobonly"} {
+			if _, ok := paths["/api/v1/actions/"+hidden]; ok {
+				t.Errorf("%s: %s is in the document", name, hidden)
+			}
 		}
 		if _, ok := paths["/api/v1/actions/system.info"]; !ok {
 			t.Errorf("%s: system.info is missing", name)
@@ -540,9 +563,9 @@ func TestOpenAPIServedAndOmitsConsoleOnly(t *testing.T) {
 	paths := doc["paths"].(map[string]any)
 	for _, info := range f.reg.List() {
 		p, ok := paths["/api/v1/actions/"+info.Name]
-		if info.ConsoleOnly {
+		if info.ConsoleOnly || info.JobOnly {
 			if ok {
-				t.Errorf("%s is console-only and documented", info.Name)
+				t.Errorf("%s is console-only or job-only and documented", info.Name)
 			}
 			continue
 		}

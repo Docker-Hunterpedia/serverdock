@@ -46,7 +46,11 @@ type aenv struct {
 	codes  []string
 }
 
-func newAEnv(t *testing.T) *aenv {
+func newAEnv(t *testing.T) *aenv { return newAEnvJobs(t, nil) }
+
+// newAEnvJobs is newAEnv with the jobs canceller the sessions_revoke action
+// reports to (built from the env, so it can use its store and clock).
+func newAEnvJobs(t *testing.T, mkJobs func(*env) JobCanceller) *aenv {
 	t.Helper()
 	e := newEnv(t)
 	token, er, seed := e.enrolled()
@@ -61,7 +65,11 @@ func newAEnv(t *testing.T) *aenv {
 	a := &aenv{env: e, sink: &downSink{Logger: al}, gate: limits.NewBackoff(10, time.Second, 15*time.Minute, e.clk.Now),
 		others: map[string]string{}, uid: res.UserID, seed: seed, secret: res.SessionSecret, public: res.Session.PublicID, codes: res.RecoveryCodes}
 	a.reg = actions.New(a.sink, slog.New(slog.NewTextHandler(e.logs, nil)), actions.WithClock(e.clk.Now))
-	RegisterAuthActions(a.reg, e.s, ActionDeps{Hasher: e.s.hasher, PasswordGate: a.gate})
+	deps := ActionDeps{Hasher: e.s.hasher, PasswordGate: a.gate}
+	if mkJobs != nil {
+		deps.Jobs = mkJobs(e)
+	}
+	RegisterAuthActions(a.reg, e.s, deps)
 	return a
 }
 

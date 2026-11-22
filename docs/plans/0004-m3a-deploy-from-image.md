@@ -844,3 +844,13 @@ Recorded after step 4a and its reviews; later steps follow these.
 - **Restored backups share `install_id`** (and the app subnet): the backup/restore docs (plan 0009) must say that restoring a copy onto a second host is a clone with the same identity, and two live clones on one Docker host would act on each other's containers.
 - **`recordAppSubnet` can block startup up to 10 s** when Docker is down; the server then starts without a recorded subnet.
 - **Local bench (Docker Desktop arm64, informational; compare like-for-like with the step 3 local QUICK run: S2 55.7 MB, S4 47.2 MB, not with CI):** QUICK S2 55.0 MB (−0.7), QUICK S4 49.7 MB (+2.5). Because the S4 QUICK delta was over 0.5 MB (rule 4), a **full S4** ran (3 runs, 120 s warm-up, 300 s idle): runs 46.0 / 47.5 / 45.1 MB, **median 46.0 MB** (−1.2 against the step 3 QUICK), idle CPU 0.01 %, binary gzip 17.51 MB (+0.05 MB, agentops and deploy now linked). The QUICK +2.5 MB was single-run noise; the remote agent links nothing new in this step. CI numbers on the PR remain the gate (CI baselines S2 50.3, S4 44.7).
+
+## Revision 7 (step 4b implementation notes)
+
+- **No new background work.** Step 4b adds no goroutine, timer, cache or dependency: the actor encoding, `RefreshJobActor` and `JobOnly` are synchronous code on existing paths, and `CancelSessionJobs` is one bounded transaction run inside `auth.sessions_revoke`. No bench was run for this step.
+- **`RefreshJobActor` is a method** on `auth.Store` (it reads the database). The credential comparison fails closed on a tie (a change in the same second as the enqueue stops the job).
+- **The `ActionDeps.Jobs` canceller is not wired in `runServer` yet**, because the scheduler is built and started by steps 8a and 10 (Revision 6). The wiring is a one-line addition there; tests build the real scheduler and canceller. Until then no job can exist.
+- **Cancel failure is reported.** If the sessions were revoked but cancelling their jobs failed, `auth.sessions_revoke` returns an error saying so (the revoke itself stands).
+- **`JobOnly` and `ConsoleOnly` exclude each other**; `JobOnly` also refuses the `SystemInvoker`'s own `Invoke` and `InvokeAs` with the system actor.
+- **Scheduler nits from the 4a systems review:** a job leaves the cancel map before its result is recorded (a separate `active` count keeps the worker limit and `Running()` honest), and when `Requeue` refuses because of a cancel, the job finishes with the row's `cancel_reason` (for example `superseded`).
+

@@ -59,6 +59,7 @@ type Scheduler struct {
 	paused   bool
 	stopping bool
 	running  map[int64]context.CancelCauseFunc
+	active   int              // workers started and not finished (running is removed earlier, before the result is recorded)
 	pending  map[int64]string // cancels that arrived between Pick and registration
 	wake     time.Time        // when the timer fires; zero when it is stopped
 	wg       sync.WaitGroup
@@ -146,7 +147,7 @@ func (s *Scheduler) Resume() {
 func (s *Scheduler) Running() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.running)
+	return s.active
 }
 
 // NextWake reports when the timer is set to fire; ok is false when it is stopped.
@@ -191,6 +192,32 @@ func (s *Scheduler) Cancel(ctx context.Context, id int64, reason string) error {
 	}
 	s.Notify()
 	return nil
+}
+
+// MaxSessionsPerCancel bounds one CancelSessionJobs call.
+const MaxSessionsPerCancel = 1000
+
+// CancelSessionJobs cancels the queued and running jobs queued by the given
+// sessions (public ids), for an explicit session revoke. A running job stops at
+// its next cancellable point. It returns how many jobs were cancelled.
+func (s *Scheduler) CancelSessionJobs(ctx context.Context, sessions []string, reason string) (int, error) {
+	if len(sessions) == 0 {
+		return 0, nil
+	}
+	if len(sessions) > MaxSessionsPerCancel {
+		return 0, invalid("too many sessions")
+	}
+	running, n, err := s.cfg.Store.cancelBySession(ctx, sessions, reason)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range running {
+		s.cancelRunning(id, reason)
+	}
+	if n > 0 {
+		s.Notify()
+	}
+	return n, nil
 }
 
 func (s *Scheduler) cancelRunning(id int64, reason string) {
@@ -278,7 +305,7 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed boo
 func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 	for ctx.Err() == nil {
 		s.mu.Lock()
-		blocked := s.paused || s.stopping || len(s.running) >= s.cfg.Workers
+		blocked := s.paused || s.stopping || s.active >= s.cfg.Workers
 		s.mu.Unlock()
 		if blocked {
 			return false
@@ -307,6 +334,7 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 			return false
 		}
 		s.running[j.ID] = cancel
+		s.active++
 		if reason, ok := s.pending[j.ID]; ok {
 			cancel(CancelCause{Reason: reason}) // a cancel that raced the pick: the worker starts already cancelled
 		} else if j.CancelRequested {
@@ -325,13 +353,19 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	err := s.safeRun(ctx, j)
 	cause := context.Cause(ctx)
 	cancel(nil)
+	// Leave the cancel map before the result is recorded: a cancel that arrives
+	// from here on only flags the row (the outcome is already decided by cause)
+	// and cannot leave a pending entry behind for a finished job.
+	s.mu.Lock()
+	delete(s.running, j.ID)
+	s.mu.Unlock()
 	// The bookkeeping must survive the job's own cancellation.
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer bcancel()
 	s.record(bctx, j, err, cause)
 	s.mu.Lock()
-	delete(s.running, j.ID)
 	delete(s.pending, j.ID)
+	s.active--
 	s.mu.Unlock()
 	s.Notify()
 }
@@ -372,8 +406,13 @@ func (s *Scheduler) record(ctx context.Context, j Job, runErr, cause error) {
 		err = try(func() error {
 			ok, err := st.Requeue(ctx, j.ID, s.cfg.RetryDelay(j.Attempt), runErr.Error())
 			if err == nil && !ok {
-				// A cancel was requested during the attempt: it wins over the retry.
-				return st.Finish(ctx, j.ID, StateCancelled, "cancelled")
+				// A cancel was requested during the attempt: it wins over the retry,
+				// and the job ends with the reason it was cancelled for.
+				reason := "cancelled"
+				if cur, gerr := st.Get(ctx, j.ID); gerr == nil && cur.CancelReason != "" {
+					reason = cur.CancelReason
+				}
+				return st.Finish(ctx, j.ID, StateCancelled, reason)
 			}
 			return err
 		})

@@ -12,8 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 )
 
 // Job kinds in M3a (M6 adds cron kinds).
@@ -74,8 +77,22 @@ var lockKeyRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile
 // LockKey is the lock key of a service's jobs.
 func LockKey(serviceID int64) string { return fmt.Sprintf("service:%d", serviceID) }
 
-// Actor is who queued a job. Blob is the opaque encoding of actions.Actor that
-// step 4b adds; this package stores it and never interprets it.
+// ErrSystemActor is returned at enqueue for a user-triggered job kind whose actor
+// is the system. Every M3a kind is user-triggered: a job keeps the identity of
+// whoever queued it and only the audit executor column says "system". (Jobs
+// nobody triggered, such as M6 cron, will have their own kinds.) The runner
+// refuses the same thing on the other side (actions.SystemInvoker.ActorFromJob).
+var ErrSystemActor error = systemActorError{}
+
+type systemActorError struct{}
+
+func (systemActorError) Error() string {
+	return "jobs: invalid request: a user-triggered job cannot be queued by the system actor"
+}
+func (systemActorError) Is(t error) bool { return t == ErrInvalid }
+
+// Actor is who queued a job. Blob is actions.Actor.JobBlob(); this package stores
+// it and never interprets it (the runner rebuilds it with ActorFromJob).
 type Actor struct {
 	Kind    string
 	ID      string
@@ -83,8 +100,17 @@ type Actor struct {
 	Blob    string
 }
 
+// ActorOf is the job actor for an acting caller: the kind, id and session public
+// id for the columns, and the JobBlob for the rebuild. The system actor yields an
+// empty blob, which enqueue refuses.
+func ActorOf(a actions.Actor) Actor {
+	return Actor{Kind: string(a.Kind()), ID: a.ID(), Session: a.SessionID(), Blob: a.JobBlob()}
+}
+
 func (a Actor) validate() error {
 	switch {
+	case strings.EqualFold(a.Kind, string(actions.KindSystem)):
+		return ErrSystemActor
 	case a.Kind == "" || len(a.Kind) > 32:
 		return invalid("actor kind")
 	case a.ID == "" || len(a.ID) > 128:
@@ -149,4 +175,22 @@ func RetryDelay(failedAttempt int) time.Duration {
 		return 15 * time.Second
 	}
 	return 60 * time.Second
+}
+
+// ErrActorMismatch is returned when a job's stored blob does not match its actor
+// columns (a corrupted or tampered row): the job is not run.
+var ErrActorMismatch = errors.New("jobs: the stored actor does not match the job's actor columns")
+
+// RebuildActor rebuilds the actor that queued the job from its blob and checks it
+// against the row's own columns (kind, id and session). The result is not yet
+// trusted: the runner passes it to auth.Store.RefreshJobActor next.
+func (j Job) RebuildActor(inv *actions.SystemInvoker) (actions.Actor, error) {
+	a, err := inv.ActorFromJob(j.Actor.Blob)
+	if err != nil {
+		return actions.Actor{}, err
+	}
+	if string(a.Kind()) != j.Actor.Kind || a.ID() != j.Actor.ID || a.SessionID() != j.Actor.Session {
+		return actions.Actor{}, ErrActorMismatch
+	}
+	return a, nil
 }

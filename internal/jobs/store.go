@@ -390,29 +390,77 @@ func (s *Store) cancel(ctx context.Context, id int64, reason string) (string, er
 	reason = clip(reason, 128)
 	var state string
 	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id = ?`, id).Scan(&state); err != nil {
-			return err
-		}
-		switch state {
-		case StateQueued:
-			ts := FormatTime(s.now())
-			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_requested = 1, cancel_reason = ?, finished_at = ?, error = ? WHERE id = ?`,
-				reason, ts, reason, id); err != nil {
-				return err
-			}
-			// The deploy of a queued job (never started, or waiting to retry) ends
-			// with it, in the same transaction.
-			_, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'cancelled', reason_code = 'cancelled', reason = ?, finished_at = ?
-				WHERE job_id = ? AND status IN ('queued', 'running')`, reason, ts, id)
-			state = StateCancelled
-			return err
-		case StateRunning:
-			_, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = ? WHERE id = ?`, reason, id)
-			return err
-		}
-		return ErrNotCancellable
+		var err error
+		state, err = s.cancelTx(ctx, tx, id, reason)
+		return err
 	})
 	return state, err
+}
+
+func (s *Store) cancelTx(ctx context.Context, tx *sql.Tx, id int64, reason string) (string, error) {
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id = ?`, id).Scan(&state); err != nil {
+		return "", err
+	}
+	switch state {
+	case StateQueued:
+		ts := FormatTime(s.now())
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_requested = 1, cancel_reason = ?, finished_at = ?, error = ? WHERE id = ?`,
+			reason, ts, reason, id); err != nil {
+			return "", err
+		}
+		// The deploy of a queued job (never started, or waiting to retry) ends
+		// with it, in the same transaction.
+		_, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'cancelled', reason_code = 'cancelled', reason = ?, finished_at = ?
+			WHERE job_id = ? AND status IN ('queued', 'running')`, reason, ts, id)
+		return StateCancelled, err
+	case StateRunning:
+		_, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = ? WHERE id = ?`, reason, id)
+		return StateRunning, err
+	}
+	return "", ErrNotCancellable
+}
+
+// cancelBySession cancels, in one transaction, every queued or running job that
+// the given sessions queued. It returns the ids of the running ones, whose
+// in-memory cancel the caller closes.
+func (s *Store) cancelBySession(ctx context.Context, sessions []string, reason string) (running []int64, n int, err error) {
+	reason = clip(reason, 128)
+	err = s.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		running, n = nil, 0 // the transaction may be retried
+		for _, sess := range sessions {
+			rows, err := tx.QueryContext(ctx, `SELECT id FROM jobs WHERE actor_session = ? AND state IN ('queued', 'running') ORDER BY id`, sess)
+			if err != nil {
+				return err
+			}
+			var ids []int64
+			for rows.Next() {
+				var id int64
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return err
+				}
+				ids = append(ids, id)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+			for _, id := range ids {
+				state, err := s.cancelTx(ctx, tx, id, reason)
+				if err != nil {
+					return err
+				}
+				n++
+				if state == StateRunning {
+					running = append(running, id)
+				}
+			}
+		}
+		return nil
+	})
+	return running, n, err
 }
 
 // clip cuts s to at most n bytes without splitting a rune.

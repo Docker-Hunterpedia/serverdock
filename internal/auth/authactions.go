@@ -24,6 +24,9 @@ type ActionDeps struct {
 		Fail(key string, bypassFull bool) (time.Duration, bool)
 		Reset(key string)
 	}
+	// Jobs, when set, cancels the jobs a revoked session queued (explicit
+	// auth.sessions_revoke only; signing out or expiry leaves them).
+	Jobs JobCanceller
 }
 
 // Errors of the auth actions.
@@ -195,6 +198,19 @@ func (i SessionsRevokeIn) Validate() error {
 	return nil
 }
 
+// cancelJobs stops the jobs the revoked sessions queued. The sessions are already
+// gone; if the jobs cannot be cancelled the caller is told so, rather than shown
+// a clean success.
+func cancelJobs(ctx context.Context, j JobCanceller, sessions []string) error {
+	if j == nil || len(sessions) == 0 {
+		return nil
+	}
+	if _, err := j.CancelSessionJobs(ctx, sessions, SessionRevokedJobReason); err != nil {
+		return errors.New("the sessions were revoked, but cancelling the jobs they queued failed; cancel them from the deploy page")
+	}
+	return nil
+}
+
 // RegisterAuthActions registers the token and account actions. Every one of them
 // is SessionOnly: no API token, at any scope, can create, list or revoke tokens,
 // change the password or the authenticator, or look at sessions. The ones that
@@ -352,13 +368,16 @@ func RegisterAuthActions(r *actions.Registry, s *Store, d ActionDeps) {
 				if c.Actor.SessionID() == "" {
 					return RevokedOut{}, errors.New("all_others needs to know which session is the caller's")
 				}
-				n, err := s.RevokeOtherSessions(ctx, uid, c.Actor.SessionID())
-				return RevokedOut{Revoked: n}, err
+				ids, err := s.RevokeOtherSessions(ctx, uid, c.Actor.SessionID())
+				if err != nil {
+					return RevokedOut{}, err
+				}
+				return RevokedOut{Revoked: int64(len(ids))}, cancelJobs(ctx, d.Jobs, ids)
 			}
 			if err := s.RevokeSessionByPublicID(ctx, uid, in.PublicID); err != nil {
 				return RevokedOut{}, err
 			}
-			return RevokedOut{Revoked: 1}, nil
+			return RevokedOut{Revoked: 1}, cancelJobs(ctx, d.Jobs, []string{in.PublicID})
 		},
 	})
 

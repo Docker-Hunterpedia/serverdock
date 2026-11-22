@@ -269,15 +269,30 @@ func (s *Store) RevokeSessionByPublicID(ctx context.Context, userID int64, publi
 }
 
 // RevokeOtherSessions deletes every session of the user except the one with
-// keepPublicID, and returns how many.
-func (s *Store) RevokeOtherSessions(ctx context.Context, userID int64, keepPublicID string) (int64, error) {
-	var n int64
+// keepPublicID, and returns the public ids of the sessions it deleted.
+func (s *Store) RevokeOtherSessions(ctx context.Context, userID int64, keepPublicID string) ([]string, error) {
+	var ids []string
 	err := s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID)
-		if err == nil {
-			n, _ = res.RowsAffected()
+		ids = nil // the transaction may be retried
+		rows, err := tx.QueryContext(ctx, `SELECT public_id FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID)
+		if err != nil {
+			return err
 		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		_, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID)
 		return err
 	})
-	return n, err
+	return ids, err
 }

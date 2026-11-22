@@ -17,7 +17,7 @@ func BuildOpenAPI(list []actions.Info) (map[string]any, error) {
 	sorted := append([]actions.Info(nil), list...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, a := range sorted {
-		if a.ConsoleOnly {
+		if a.ConsoleOnly || a.JobOnly {
 			continue
 		}
 		in, err := actions.SchemaOf(a.InputType)

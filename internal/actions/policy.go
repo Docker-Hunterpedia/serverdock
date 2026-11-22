@@ -63,6 +63,12 @@ func WebhookActor(hookID, boundTarget string) Actor {
 	return Actor{kind: KindWebhook, id: hookID, boundTarget: boundTarget}
 }
 
+// Scope is the actor's scope (0 for kinds that have none).
+func (a Actor) Scope() Scope { return a.scope }
+
+// MFAFreshUntil is when a user actor's fresh-2FA window ends (zero otherwise).
+func (a Actor) MFAFreshUntil() time.Time { return a.mfaFreshUntil }
+
 // Kind and ID identify the actor.
 func (a Actor) Kind() ActorKind { return a.kind }
 func (a Actor) ID() string      { return a.id }
@@ -80,13 +86,19 @@ func (a Actor) SessionID() string { return a.session }
 //	system   | allowed  | allowed (audited)  | only when System != ""            | only when System != ""
 //
 // SessionOnly actions refuse every actor except a user. ConsoleOnly actions
-// refuse every actor except the system (the console recovery command).
-func (r *Registry) authorize(a Actor, act *action, target string, opts Options) error {
+// refuse every actor except the system (the console recovery command). JobOnly
+// actions refuse every call except SystemInvoker.InvokeAs for a non-system actor
+// (then the table above applies to that actor).
+func (r *Registry) authorize(a Actor, executor string, act *action, target string, opts Options) error {
 	if a.kind == "" {
 		return denied("no actor")
 	}
 	if act.consoleOnly && a.kind != KindSystem {
 		return denied("%s can only be run from the console", act.name)
+	}
+	if act.jobOnly && (executor != "system" || a.kind == KindSystem) {
+		// Only the job runner (SystemInvoker.InvokeAs, for the queuing actor) may run it.
+		return denied("%s can only be run by the job runner", act.name)
 	}
 	if act.sessionOnly && a.kind != KindUser {
 		return denied("%s is only available to a signed-in user session", act.name)

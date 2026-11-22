@@ -90,8 +90,8 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	info, ok := s.cfg.Actions.Lookup(name)
-	if !ok || info.ConsoleOnly {
-		// A console-only action is not an HTTP action at all: 404, like an unknown one.
+	if !ok || info.ConsoleOnly || info.JobOnly {
+		// A console-only or job-only action is not an HTTP action at all: 404, like an unknown one.
 		fail(http.StatusNotFound, "unknown_action", "no such action")
 		return
 	}
