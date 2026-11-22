@@ -553,7 +553,11 @@ func TestCancelReachesARunningJob(t *testing.T) {
 		t.Errorf("cause %v", c)
 	}
 	// A queued job is cancelled at once; a finished one cannot be cancelled.
-	q, _ := e.js.Enqueue(ctx, job("service:2")) // enqueued without Notify: stays queued until the next pass
+	// Not due for an hour, so the scheduler (which runs another pass once the
+	// first job ends) cannot pick it before the cancel: it is still queued.
+	later := job("service:2")
+	later.RunAfter = time.Now().Add(time.Hour)
+	q, _ := e.js.Enqueue(ctx, later)
 	if err := e.js.cancelForTest(ctx, q); err != nil {
 		t.Fatal(err)
 	}
