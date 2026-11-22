@@ -450,6 +450,7 @@
         "additionalProperties": false,
         "properties": {
           "applied": {
+            "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
           "notice": {
@@ -896,6 +897,7 @@
         "additionalProperties": false,
         "properties": {
           "applied": {
+            "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
           "notice": {
@@ -1065,6 +1067,7 @@
         "additionalProperties": false,
         "properties": {
           "applied": {
+            "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
           "notice": {
@@ -1228,6 +1231,7 @@
         "additionalProperties": false,
         "properties": {
           "applied": {
+            "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
           "notice": {
@@ -1451,6 +1455,7 @@
         "additionalProperties": false,
         "properties": {
           "applied": {
+            "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
           "notice": {
@@ -4259,7 +4264,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Try again to open a service's public port (after another program let go of it). Same power as services.set_public_port.",
+        "summary": "Try again: send the route list to the proxy again (after another program let go of a port, or a change was not applied). Same power as services.set_public_port.",
         "tags": [
           "services"
         ],

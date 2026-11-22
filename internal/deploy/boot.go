@@ -43,9 +43,19 @@ type BootConfig struct {
 type Booter struct {
 	cfg BootConfig
 
-	mu     sync.Mutex
-	netOK  bool
-	netErr string
+	flight sync.Mutex // guards cur
+	cur    *bootRun   // the run in progress, if any
+
+	netOK bool // only the one running Run touches it
+
+	problemMu sync.Mutex // guards netErr alone: NetworkProblem never waits for a run
+	netErr    string
+}
+
+// bootRun is one run in flight; callers that arrive meanwhile wait for its result.
+type bootRun struct {
+	done chan struct{}
+	err  error
 }
 
 // NewBooter returns a Booter; it panics on a missing dependency (a wiring bug).
@@ -63,17 +73,48 @@ func NewBooter(cfg BootConfig) *Booter {
 // nothing has tried yet): new deploys refuse with it (step 8a); running apps are
 // unaffected. For an overlap it is the *OverlapError text.
 func (b *Booter) NetworkProblem() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.problemMu.Lock()
+	defer b.problemMu.Unlock()
 	return b.netErr
+}
+
+func (b *Booter) setProblem(s string) {
+	b.problemMu.Lock()
+	b.netErr = s
+	b.problemMu.Unlock()
 }
 
 // Run does the parts that have not succeeded yet and returns what failed. A
 // network problem does not stop Sync: containers that already run keep their
 // routes. A Sync failure leaves the boot gate closed.
+//
+// Run is single-flight: a caller that finds a run in progress does not start a
+// second one; it waits for that run's result, or for its own ctx to end,
+// whichever comes first. The run itself uses the context of the caller that
+// started it, so a caller's bound (and shutdown) always ends what it started.
 func (b *Booter) Run(ctx context.Context) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.flight.Lock()
+	if r := b.cur; r != nil {
+		b.flight.Unlock()
+		select {
+		case <-r.done:
+			return r.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	r := &bootRun{done: make(chan struct{})}
+	b.cur = r
+	b.flight.Unlock()
+	r.err = b.run(ctx)
+	b.flight.Lock()
+	b.cur = nil
+	b.flight.Unlock()
+	close(r.done)
+	return r.err
+}
+
+func (b *Booter) run(ctx context.Context) error {
 	var errs []error
 	if !b.netOK {
 		if err := b.ensureNetwork(ctx); err != nil {
@@ -101,7 +142,7 @@ func (b *Booter) ensureNetwork(ctx context.Context) error {
 	if err := b.cfg.AppNet.Check(ctx); err != nil {
 		var oe *OverlapError
 		if errors.As(err, &oe) {
-			b.netErr = oe.Error()
+			b.setProblem(oe.Error())
 			b.cfg.Log.Error("the app network is not created: " + oe.Error())
 		} else {
 			b.cfg.Log.Warn("the app subnet could not be checked", "err", err.Error())
@@ -109,10 +150,11 @@ func (b *Booter) ensureNetwork(ctx context.Context) error {
 		return err
 	}
 	if _, err := b.cfg.Net.NetworkEnsure(ctx, agentops.NetworkName(b.cfg.Instance), subnet.String()); err != nil {
-		b.netErr = "the app network could not be created or does not match what ServerDock needs"
+		b.setProblem("the app network could not be created or does not match what ServerDock needs")
 		b.cfg.Log.Error("network_ensure failed", "err", err.Error())
 		return fmt.Errorf("network_ensure: %w", err)
 	}
-	b.netOK, b.netErr = true, ""
+	b.netOK = true
+	b.setProblem("")
 	return nil
 }

@@ -30,10 +30,16 @@ type fakeProxy struct {
 	// afterApply, if set, is returned after the list was recorded (the agent
 	// applied it but the reply was lost).
 	afterApply error
+	// lastDeadline is the deadline of the last call's context (zero: none).
+	lastDeadline time.Time
 }
 
-func (f *fakeProxy) ProxyApply(_ context.Context, routes []agentops.Route) (agentops.ApplyResult, error) {
+func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route) (agentops.ApplyResult, error) {
+	if err := ctx.Err(); err != nil { // a real call on a cancelled context never starts
+		return agentops.ApplyResult{}, err
+	}
 	f.mu.Lock()
+	f.lastDeadline, _ = ctx.Deadline()
 	if f.busy {
 		f.overlap = true
 	}
@@ -92,7 +98,7 @@ func newRoutes(t *testing.T) (*Routes, *store.Store, *fakeProxy) {
 // open opens the boot gate with the given containers.
 func open(t *testing.T, r *Routes, cs ...Container) {
 	t.Helper()
-	if err := r.ApplyRoutes(context.Background(), func() { r.state.replace(cs) }); err != nil {
+	if err := r.ApplyRoutes(context.Background(), func() error { r.state.replace(cs); return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -329,9 +335,10 @@ func TestOverrideWinsDuringSwitch(t *testing.T) {
 	if px.last()[0].Page != agentops.PageMaintenance {
 		t.Fatalf("%+v", px.last())
 	}
-	err := r.ApplyRoutes(bg, func() {
+	err := r.ApplyRoutes(bg, func() error {
 		mustExec(t, st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, cand, svc)
 		delete(r.overrides, svc)
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -426,7 +433,7 @@ func TestFailedApplyIsRetriedAndBindResultsAreRecorded(t *testing.T) {
 	svc := addService(t, st, "web")
 	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
 	px.fail = errors.New("agent gone")
-	if err := r.ApplyRoutes(bg, func() { r.state.replace([]Container{up(svc, d, 1, StateRunning, "10.250.1.2")}) }); err == nil {
+	if err := r.ApplyRoutes(bg, func() error { r.state.replace([]Container{up(svc, d, 1, StateRunning, "10.250.1.2")}); return nil }); err == nil {
 		t.Fatal("a failed proxy_apply was reported as success")
 	}
 	px.fail = nil
@@ -477,9 +484,10 @@ func TestConcurrentRouteChangesForTwoServicesLoseNothing(t *testing.T) {
 		if err := r.SetOverride(bg, svc, Override{Kind: OverrideUpstream, Deploy: newDeploy, IP: ip}); err != nil {
 			t.Error(err)
 		}
-		err := r.ApplyRoutes(bg, func() {
+		err := r.ApplyRoutes(bg, func() error {
 			tryExec(t, st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, newDeploy, svc)
 			delete(r.overrides, svc)
+			return nil
 		})
 		if err != nil {
 			t.Error(err)
@@ -504,7 +512,7 @@ func TestConcurrentRouteChangesForTwoServicesLoseNothing(t *testing.T) {
 	}()
 	go func() { // services.set_public_port for c: the write is the mutation
 		defer wg.Done()
-		err := r.ApplyRoutes(bg, func() { tryExec(t, st, `UPDATE services SET public_port = 9100 WHERE id = ?`, c) })
+		err := r.ApplyRoutes(bg, func() error { tryExec(t, st, `UPDATE services SET public_port = 9100 WHERE id = ?`, c); return nil })
 		if err != nil {
 			t.Error(err)
 		}
@@ -576,24 +584,27 @@ func TestFailedPortIsRetriedByRefreshRetryAndExplicitMutations(t *testing.T) {
 	if err := r.Refresh(bg); err != nil || px.n() != 2 { // nothing failed now: deduped
 		t.Fatalf("%v %d", err, px.n())
 	}
-	// RetryFailedPorts does the same, and does nothing when nothing failed.
+	// Refresh does the same, and does nothing when nothing failed.
 	r, px, _, _ = failedPortRig(t)
 	px.failed = nil
-	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
+	if err := r.Refresh(bg); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
 		t.Fatalf("%v %d %q", err, px.n(), r.BindStatus(9000))
 	}
-	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 2 {
+	if err := r.Refresh(bg); err != nil || px.n() != 2 {
 		t.Fatalf("%v %d", err, px.n())
 	}
 	// An explicit DB mutation that changes nothing (the same port saved again).
 	r, px, svc, _ := failedPortRig(t)
 	px.failed = nil
-	if err := r.ApplyRoutes(bg, func() { r.db.W.Exec(`UPDATE services SET public_port = 9000 WHERE id = ?`, svc) }); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
+	if err := r.ApplyRoutes(bg, func() error {
+		_, err := r.db.W.Exec(`UPDATE services SET public_port = 9000 WHERE id = ?`, svc)
+		return err
+	}); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
 		t.Fatalf("%v %d %q", err, px.n(), r.BindStatus(9000))
 	}
 	// Still failing: it stays reported and is sent again each time it is asked.
 	r, px, _, _ = failedPortRig(t)
-	_ = r.RetryFailedPorts(bg)
+	_ = r.Refresh(bg)
 	if px.n() != 2 || r.BindStatus(9000) == "" {
 		t.Fatalf("%d %q", px.n(), r.BindStatus(9000))
 	}
@@ -602,22 +613,22 @@ func TestFailedPortIsRetriedByRefreshRetryAndExplicitMutations(t *testing.T) {
 // Retrying after an apply that failed with an unknown outcome sends again (the
 // recorded hash was cleared), and before the gate opens it says "not ready"
 // instead of returning nil.
-func TestRetryFailedPortsAfterAnApplyErrorAndBeforeTheGate(t *testing.T) {
+func TestRefreshAfterAnApplyErrorAndBeforeTheGate(t *testing.T) {
 	r, st, px := newRoutes(t)
 	svc := addService(t, st, "web")
-	if err := r.RetryFailedPorts(bg); !errors.Is(err, ErrRoutesNotReady) {
+	if err := r.Refresh(bg); !errors.Is(err, ErrRoutesNotReady) {
 		t.Fatalf("closed gate: %v", err)
 	}
 	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
 	px.fail = errors.New("agent gone")
-	if err := r.ApplyRoutes(bg, func() { r.state.replace([]Container{up(svc, d, 1, StateRunning, "10.250.1.2")}) }); err == nil {
+	if err := r.ApplyRoutes(bg, func() error { r.state.replace([]Container{up(svc, d, 1, StateRunning, "10.250.1.2")}); return nil }); err == nil {
 		t.Fatal("the failed apply returned nil")
 	}
 	px.fail = nil
-	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 1 {
+	if err := r.Refresh(bg); err != nil || px.n() != 1 {
 		t.Fatalf("%v %d", err, px.n())
 	}
-	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 1 { // nothing changed, nothing failed
+	if err := r.Refresh(bg); err != nil || px.n() != 1 { // nothing changed, nothing failed
 		t.Fatalf("%v %d", err, px.n())
 	}
 }
@@ -643,7 +654,7 @@ func TestCrashLoopWithAFailedPortStillCausesNoReload(t *testing.T) {
 func TestApplyBeforeTheGateOpensReturnsNotReady(t *testing.T) {
 	r, _, px := newRoutes(t)
 	ran := false
-	err := r.ApplyRoutes(bg, func() { ran = true })
+	err := r.ApplyRoutes(bg, func() error { ran = true; return nil })
 	if !errors.Is(err, ErrRoutesNotReady) || !ran || px.n() != 0 {
 		t.Fatalf("%v %v %d", err, ran, px.n())
 	}
@@ -669,5 +680,90 @@ func TestPausedOrAddresslessContainerIsNotRoutable(t *testing.T) {
 	live.ConfiguredIP = ""
 	if c, _ := ContainerFromInspect(live); c.IP != "" {
 		t.Fatalf("the live address was trusted alone: %q", c.IP)
+	}
+}
+
+// A mutate that fails (a refused request: duplicate name, UNIQUE race, disk
+// full) stops everything: nothing is built or sent, even with a failed port that
+// an explicit caller would otherwise retry, and the error comes back as a
+// *MutateError, apart from apply errors.
+func TestFailedMutateSendsNothing(t *testing.T) {
+	r, px, _, _ := failedPortRig(t)
+	n := px.n()
+	boom := errors.New("UNIQUE constraint failed")
+	err := r.ApplyRoutes(bg, func() error { return boom })
+	var me *MutateError
+	if !errors.As(err, &me) || !errors.Is(err, boom) || px.n() != n {
+		t.Fatalf("%v (calls %d, was %d)", err, px.n(), n)
+	}
+	if r.Stale() {
+		t.Error("a refused change marked the routes stale")
+	}
+	// Before the gate opens a failed mutate is a MutateError too, not "not ready".
+	r2, _, _ := newRoutes(t)
+	if err := r2.ApplyRoutes(bg, func() error { return boom }); !errors.As(err, &me) {
+		t.Errorf("%v", err)
+	}
+}
+
+// After a mutate committed, the build and send do not depend on the caller: a
+// request cancelled right after the commit still gets its routes applied, on a
+// bounded context. A plain Refresh is not detached.
+func TestApplyAfterACommittedMutateSurvivesCancellation(t *testing.T) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	open(t, r)
+	ctx, cancel := context.WithCancel(bg)
+	err := r.ApplyRoutes(ctx, func() error {
+		mustExec(t, st, `UPDATE services SET public_port = 9000, container_port = 8080 WHERE id = ?`, svc)
+		cancel() // the client goes away after the commit
+		return nil
+	})
+	if err != nil || px.n() != 1 || len(px.last()) != 1 || px.last()[0].Port != 9000 {
+		t.Fatalf("%v calls %d %+v", err, px.n(), px.last())
+	}
+	if d := px.lastDeadline; d.IsZero() || time.Until(d) > ApplyBound {
+		t.Errorf("the detached apply has no bound of its own: %v", d)
+	}
+	// Without a mutate the caller's context still rules.
+	mustExec(t, st, `UPDATE services SET public_port = 9001 WHERE id = ?`, svc)
+	ctx2, cancel2 := context.WithCancel(bg)
+	cancel2()
+	if err := r.Refresh(ctx2); err == nil {
+		t.Error("a Refresh on a cancelled context sent")
+	}
+}
+
+// Stale: an apply that fails after a committed mutate marks the routes stale
+// until an apply succeeds; "not ready" does not.
+func TestStaleAfterAFailedApplyClearsOnSuccess(t *testing.T) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	set := func(port int) func() error {
+		return func() error {
+			_, err := st.W.Exec(`UPDATE services SET public_port = ?, container_port = 8080 WHERE id = ?`, port, svc)
+			return err
+		}
+	}
+	if err := r.ApplyRoutes(bg, set(9000)); !errors.Is(err, ErrRoutesNotReady) || r.Stale() {
+		t.Fatalf("not ready is not stale: %v stale=%v", err, r.Stale())
+	}
+	open(t, r)
+	px.fail = errors.New("agent gone")
+	if err := r.ApplyRoutes(bg, set(9001)); err == nil || !r.Stale() {
+		t.Fatalf("%v stale=%v", err, r.Stale())
+	}
+	// A failing Refresh keeps it; a successful one clears it.
+	if err := r.Refresh(bg); err == nil || !r.Stale() {
+		t.Fatalf("%v stale=%v", err, r.Stale())
+	}
+	px.fail = nil
+	if err := r.Refresh(bg); err != nil || r.Stale() {
+		t.Fatalf("%v stale=%v", err, r.Stale())
+	}
+	// A timeout (the bound ended) counts as a failure too.
+	px.fail = context.DeadlineExceeded
+	if err := r.ApplyRoutes(bg, set(9002)); err == nil || !r.Stale() {
+		t.Fatalf("%v stale=%v", err, r.Stale())
 	}
 }

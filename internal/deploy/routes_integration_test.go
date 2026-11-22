@@ -296,7 +296,10 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 			port = sparePort
 		}
 		before := len(applier.Applied())
-		err := r.ApplyRoutes(ctx, func() { mustExec(t, st, `UPDATE services SET public_port = ? WHERE id = ?`, port, spare) })
+		err := r.ApplyRoutes(ctx, func() error {
+			mustExec(t, st, `UPDATE services SET public_port = ? WHERE id = ?`, port, spare)
+			return nil
+		})
 		if err != nil {
 			t.Fatalf("reload %d: %v", i, err)
 		}

@@ -46,6 +46,10 @@ type ServiceDeps struct {
 	// Sync): the actions call it before applying a route so that a Docker that was
 	// down at start does not leave every later change "not applied". Nil in tests.
 	Boot func(ctx context.Context) error
+	// NoProxy is true under --proxy=false: there is no embedded proxy to serve an
+	// app, so setting a public port is refused with a clear message instead of
+	// being saved and never applied.
+	NoProxy bool
 	// Policy carries --allow-loopback-registry (image references are checked with
 	// it here, and again at deploy time).
 	Policy policy.Options
@@ -67,10 +71,13 @@ type svcDeps struct {
 }
 
 type exposureCache struct {
-	mu  sync.Mutex
+	mu  sync.Mutex // guards at, val and ok; never held across a Docker call
 	at  time.Time
 	val ExposureOut
 	ok  bool
+	// sem lets one caller at a time ask Docker; the others wait on it in a select
+	// against their own context, so a hung Docker call cannot make them pile up.
+	sem chan struct{}
 }
 
 // ---- types ----
@@ -143,12 +150,16 @@ type ServicesOut struct {
 }
 
 // ServiceChangeOut is the output of the actions that change a service. Applied
-// is true when nothing is waiting to be applied: for a public port, the proxy
-// is serving it now. When it is false, Notice says why, in words for the user,
-// and the change itself was saved.
+// is true when the proxy's routes reflect this change: nothing route-related is
+// waiting. A change that involves no route (a service without a public port, a
+// new tag, a health check) is applied by definition; "Saved. Deploy to apply."
+// is the notice for update and set_source, whose effect comes with the next
+// deploy. A public port that was set, changed, cleared or retried is applied
+// only once the proxy has the list and could open the port. When Applied is
+// false, Notice says why, in words for the user, and the change itself was saved.
 type ServiceChangeOut struct {
 	Service ServiceOut `json:"service"`
-	Applied bool       `json:"applied"`
+	Applied bool       `json:"applied" doc:"the proxy's routes reflect this change (nothing route-related is waiting)"`
 	Notice  string     `json:"notice,omitempty"`
 }
 
@@ -456,7 +467,7 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 	if deps.Log == nil {
 		deps.Log = slog.New(slog.DiscardHandler)
 	}
-	d := &svcDeps{ServiceDeps: deps}
+	d := &svcDeps{ServiceDeps: deps, exp: exposureCache{sem: make(chan struct{}, 1)}}
 	refTarget := func(in ServiceRefIn) string { return in.Service }
 
 	actions.Register(r, actions.Def[actions.None, ProjectsOut]{
@@ -490,8 +501,8 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 	actions.Register(r, actions.Def[ServiceUpdateIn, ServiceChangeOut]{
 		Name: "services.update", Summary: "Change a service's health check, strategy, timings, container port or image tag (the same repository only). Takes effect at the next deploy.",
 		Risk: actions.RiskMutate, Scope: actions.ScopeWrite, Target: func(in ServiceUpdateIn) string { return in.Service },
-		Execute: func(ctx context.Context, _ actions.Call, in ServiceUpdateIn) (ServiceChangeOut, error) {
-			return d.update(ctx, in)
+		Execute: func(ctx context.Context, c actions.Call, in ServiceUpdateIn) (ServiceChangeOut, error) {
+			return d.update(ctx, c, in)
 		},
 	})
 	actions.Register(r, actions.Def[ServiceSourceIn, ServiceChangeOut]{
@@ -509,7 +520,7 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 		},
 	})
 	actions.Register(r, actions.Def[ServiceRefIn, ServiceChangeOut]{
-		Name: "services.retry_port", Summary: "Try again to open a service's public port (after another program let go of it). Same power as services.set_public_port.",
+		Name: "services.retry_port", Summary: "Try again: send the route list to the proxy again (after another program let go of a port, or a change was not applied). Same power as services.set_public_port.",
 		Risk: actions.RiskMutate, Scope: actions.ScopeAdmin, Target: refTarget,
 		Execute: func(ctx context.Context, _ actions.Call, in ServiceRefIn) (ServiceChangeOut, error) {
 			return d.retryPort(ctx, in)
@@ -593,6 +604,9 @@ func (d *svcDeps) out(r svcRow) ServiceOut {
 	if r.publicPort.Valid {
 		port := int(r.publicPort.Int64)
 		o.RouteError = d.Routes.BindStatus(port)
+		if o.RouteError == "" && d.Routes.Stale() {
+			o.RouteError = StaleMessage
+		}
 		o.Warnings = append(o.Warnings, Warning{Code: WarnSharesPanelAddress, Message: SharesPanelAddressMessage(port)})
 	}
 	return o
@@ -769,23 +783,36 @@ func (d *svcDeps) create(ctx context.Context, in ServiceCreateIn) (ServiceChange
 	}
 	var routeErr error
 	if in.PublicPort == nil {
+		// No route is involved: the service is saved and nothing waits to be applied,
+		// whether or not the routes are ready.
 		if err := insert(); err != nil {
 			return ServiceChangeOut{}, err
 		}
 	} else {
+		if err := d.needProxy(); err != nil {
+			return ServiceChangeOut{}, err
+		}
 		d.ensureRoutes(ctx)
-		var werr error
-		routeErr = d.Routes.ApplyRoutes(ctx, func() { werr = insert() })
-		if werr != nil {
-			return ServiceChangeOut{}, werr
+		routeErr = d.Routes.ApplyRoutes(ctx, insert)
+		var me *MutateError
+		if errors.As(routeErr, &me) {
+			return ServiceChangeOut{}, me.Err // refused: nothing was built or sent
 		}
 	}
 	row, err := d.loadID(ctx, id)
 	if err != nil {
 		return ServiceChangeOut{}, err
 	}
-	applied, notice := d.outcome(row.publicPort, routeErr)
+	applied, notice := d.outcome(in.PublicPort != nil, row.publicPort, routeErr)
 	return ServiceChangeOut{Service: d.out(row), Applied: applied, Notice: notice}, nil
+}
+
+// needProxy refuses a public port when the embedded proxy is off.
+func (d *svcDeps) needProxy() error {
+	if d.NoProxy {
+		return actions.Conflict("the embedded proxy is off on this server (--proxy=false): public ports are not available")
+	}
+	return nil
 }
 
 func (d *svcDeps) loadID(ctx context.Context, id int64) (svcRow, error) {
@@ -796,7 +823,7 @@ func (d *svcDeps) loadID(ctx context.Context, id int64) (svcRow, error) {
 	return r, err
 }
 
-func (d *svcDeps) update(ctx context.Context, in ServiceUpdateIn) (ServiceChangeOut, error) {
+func (d *svcDeps) update(ctx context.Context, c actions.Call, in ServiceUpdateIn) (ServiceChangeOut, error) {
 	var pull string
 	if in.ImageRef != nil {
 		p, err := d.checkImage(*in.ImageRef)
@@ -823,6 +850,12 @@ func (d *svcDeps) update(ctx context.Context, in ServiceUpdateIn) (ServiceChange
 		}
 		cport := cur.containerPort
 		if in.ContainerPort != nil {
+			// The container port decides where an exposed service's traffic goes:
+			// for a service that has a public port, changing it is a "where is it
+			// exposed" decision, so it needs admin scope (a write token may not).
+			if cur.publicPort.Valid && (!cur.containerPort.Valid || cur.containerPort.Int64 != int64(*in.ContainerPort)) && c.Actor.Scope() < actions.ScopeAdmin {
+				return &actions.DeniedError{Reason: "changing the container port of a service that has a public port needs an admin token or a signed-in session"}
+			}
 			cport = sql.NullInt64{Int64: int64(*in.ContainerPort), Valid: true}
 		}
 		base := HealthOut{Kind: cur.healthKind, Path: cur.healthPath.String, TimeoutS: cur.timeoutS, Passes: cur.passes}
@@ -884,18 +917,30 @@ func (d *svcDeps) setSource(ctx context.Context, in ServiceSourceIn) (ServiceCha
 	return ServiceChangeOut{Service: d.out(row), Applied: true, Notice: "Saved. Deploy to apply."}, nil
 }
 
-// ensureRoutes opens the boot gate if it is closed. A failure is logged by the
-// booter; the caller then finds the routes not ready and says so.
+// ensureBound bounds the lazy boot an action may run: a hung Docker must not
+// hold the request for long.
+const ensureBound = 10 * time.Second
+
+// ensureRoutes opens the boot gate if it is closed (one bounded, single-flight
+// Booter.Run). A failure is logged by the booter; the caller then finds the
+// routes not ready and says so.
 func (d *svcDeps) ensureRoutes(ctx context.Context) {
-	if d.Boot != nil && !d.Routes.Ready() {
-		_ = d.Boot(ctx)
+	if d.Boot == nil || d.Routes.Ready() {
+		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, ensureBound)
+	defer cancel()
+	_ = d.Boot(ctx)
 }
 
-// outcome says honestly whether the public port is live: never "applied" while
-// the routes are not ready, the proxy failed, or the port could not be opened.
-// The change itself is saved in every case.
-func (d *svcDeps) outcome(port sql.NullInt64, err error) (applied bool, notice string) {
+// outcome says honestly whether the change is applied, in the sense of
+// ServiceChangeOut.Applied. A change with no route involvement is applied; one
+// that involved a route is not while the routes are not ready, the proxy failed,
+// or the port could not be opened. The change itself is saved in every case.
+func (d *svcDeps) outcome(routeInvolved bool, port sql.NullInt64, err error) (applied bool, notice string) {
+	if !routeInvolved {
+		return true, ""
+	}
 	switch {
 	case errors.Is(err, ErrRoutesNotReady) || (err == nil && !d.Routes.Ready()):
 		return false, "Saved, but not applied yet: ServerDock has not finished listing the containers on this server (is Docker running?). Use Try again once it is."
@@ -917,6 +962,9 @@ func (d *svcDeps) setPublicPort(ctx context.Context, in PublicPortIn) (ServiceCh
 	}
 	var want sql.NullInt64
 	if !in.Clear {
+		if err := d.needProxy(); err != nil {
+			return ServiceChangeOut{}, err
+		}
 		if !cur.containerPort.Valid {
 			return ServiceChangeOut{}, actions.InvalidInput("the service has no container port: set one with services.update first")
 		}
@@ -925,24 +973,36 @@ func (d *svcDeps) setPublicPort(ctx context.Context, in PublicPortIn) (ServiceCh
 		}
 		want = sql.NullInt64{Int64: int64(*in.PublicPort), Valid: true}
 	}
+	if !want.Valid && !cur.publicPort.Valid {
+		// Clearing a port that is not set: nothing to write and no route involved.
+		return ServiceChangeOut{Service: d.out(cur), Applied: true}, nil
+	}
+	if d.NoProxy {
+		// Clearing a port with no proxy: only the setting changes, no route exists.
+		if err := d.writePort(ctx, cur.id, want); err != nil {
+			return ServiceChangeOut{}, err
+		}
+		row, err := d.loadID(ctx, cur.id)
+		return ServiceChangeOut{Service: d.out(row), Applied: true}, err
+	}
 	d.ensureRoutes(ctx)
 	var routeErr error
 	if want == cur.publicPort {
 		// The same port again: nothing to write, but a port that could not be opened
-		// gets another try (the other program may have let go).
-		routeErr = d.Routes.RetryFailedPorts(ctx)
+		// (or a change the proxy never got) is sent again.
+		routeErr = d.Routes.Refresh(ctx)
 	} else {
-		var werr error
-		routeErr = d.Routes.ApplyRoutes(ctx, func() { werr = d.writePort(ctx, cur.id, want) })
-		if werr != nil {
-			return ServiceChangeOut{}, werr
+		routeErr = d.Routes.ApplyRoutes(ctx, func() error { return d.writePort(ctx, cur.id, want) })
+		var me *MutateError
+		if errors.As(routeErr, &me) {
+			return ServiceChangeOut{}, me.Err // refused: nothing was built or sent
 		}
 	}
 	row, err := d.loadID(ctx, cur.id)
 	if err != nil {
 		return ServiceChangeOut{}, err
 	}
-	applied, notice := d.outcome(row.publicPort, routeErr)
+	applied, notice := d.outcome(true, row.publicPort, routeErr)
 	return ServiceChangeOut{Service: d.out(row), Applied: applied, Notice: notice}, nil
 }
 
@@ -960,17 +1020,20 @@ func (d *svcDeps) writePort(ctx context.Context, id int64, port sql.NullInt64) e
 	return err
 }
 
+// retryPort is "Try again": it sends the route list again (Routes.Refresh). The
+// resend is global (one list for every service), so the service need not have a
+// public port; it only has to exist.
 func (d *svcDeps) retryPort(ctx context.Context, in ServiceRefIn) (ServiceChangeOut, error) {
 	cur, err := d.load(ctx, d.DB.R, in.Service)
 	if err != nil {
 		return ServiceChangeOut{}, err
 	}
-	if !cur.publicPort.Valid {
-		return ServiceChangeOut{}, actions.InvalidInput("the service has no public port")
+	if err := d.needProxy(); err != nil {
+		return ServiceChangeOut{}, err
 	}
 	d.ensureRoutes(ctx)
-	routeErr := d.Routes.RetryFailedPorts(ctx)
-	applied, notice := d.outcome(cur.publicPort, routeErr)
+	routeErr := d.Routes.Refresh(ctx)
+	applied, notice := d.outcome(true, cur.publicPort, routeErr)
 	return ServiceChangeOut{Service: d.out(cur), Applied: applied, Notice: notice}, nil
 }
 
@@ -983,10 +1046,20 @@ func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 	if d.Exposure == nil {
 		return ExposureOut{}, actions.Unavailable("the exposure check needs the local agent")
 	}
-	d.exp.mu.Lock()
-	defer d.exp.mu.Unlock()
-	if d.exp.ok && d.Now().Sub(d.exp.at) < ExposureTTL && !d.exp.at.After(d.Now()) {
-		return d.exp.val, nil
+	if v, ok := d.cachedExposure(); ok {
+		return v, nil
+	}
+	// One caller asks Docker; the others wait here in a select against their own
+	// context (and then find the answer in the cache), so a hung Docker call does
+	// not make them pile up behind it.
+	select {
+	case d.exp.sem <- struct{}{}:
+	case <-ctx.Done():
+		return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
+	}
+	defer func() { <-d.exp.sem }()
+	if v, ok := d.cachedExposure(); ok {
+		return v, nil
 	}
 	res, err := d.Exposure.ContainerPorts(ctx)
 	if err != nil {
@@ -1010,8 +1083,20 @@ func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 		}
 	}
 	sort.Slice(out.Containers, func(i, j int) bool { return out.Containers[i].Name < out.Containers[j].Name })
+	d.exp.mu.Lock()
 	d.exp.at, d.exp.val, d.exp.ok = d.Now(), out, true
+	d.exp.mu.Unlock()
 	return out, nil
+}
+
+func (d *svcDeps) cachedExposure() (ExposureOut, bool) {
+	d.exp.mu.Lock()
+	defer d.exp.mu.Unlock()
+	now := d.Now()
+	if d.exp.ok && now.Sub(d.exp.at) < ExposureTTL && !d.exp.at.After(now) {
+		return d.exp.val, true
+	}
+	return ExposureOut{}, false
 }
 
 // sharesPanelAddress is true for a port published on every interface or on one

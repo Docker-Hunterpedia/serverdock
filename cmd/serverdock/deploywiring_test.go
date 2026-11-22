@@ -410,6 +410,17 @@ func TestReservedPortsAreOneListForTheAgentAndTheServiceActions(t *testing.T) {
 		t.Errorf("%v", got)
 	}
 
+	// A named port is resolved, not dropped; one that does not resolve is refused
+	// at validation, so none can be left out of the list silently.
+	if got := (serverConfig{Listen: ":http", HTTPSListen: "0.0.0.0:https"}).reservedPorts(); len(got) != 2 || got[0] != 80 || got[1] != 443 {
+		t.Errorf("named ports: %v", got)
+	}
+	for _, c := range []serverConfig{{Listen: ":nosuchservice"}, {HTTPSListen: "0.0.0.0:nosuchservice"}, {AgentListen: "127.0.0.1:nosuchservice", AgentSANs: []string{"x"}}, {Listen: "noport"}} {
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), "--") {
+			t.Errorf("%+v: %v", c, err)
+		}
+	}
+
 	sock, _ := startFakeEngine(t, `[]`)
 	agentAddr, listen, https := testbinFree(t), testbinFree(t), testbinFree(t)
 	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), DockerSocket: sock, Proxy: true,
@@ -448,6 +459,12 @@ func TestServerRegistryHasTheServiceActions(t *testing.T) {
 	}
 	if _, ok := addrs.reg.Lookup("services.delete"); ok {
 		t.Error("services.delete is step 9's")
+	}
+	// This server runs with --proxy=false: a public port is refused, clearly.
+	admin := actions.UserActor("1", actions.ScopeAdmin, time.Now().Add(time.Hour))
+	in := json.RawMessage(`{"project":"p","name":"web","image_ref":"nginx","container_port":80,"public_port":9000}`)
+	if _, err := addrs.reg.Invoke(context.Background(), admin, "services.create", in, actions.Options{}); !errors.Is(err, actions.ErrConflict) || !strings.Contains(err.Error(), "embedded proxy is off") {
+		t.Errorf("public port with the proxy off: %v", err)
 	}
 }
 

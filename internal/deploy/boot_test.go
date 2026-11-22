@@ -5,7 +5,10 @@ import (
 	"errors"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 )
@@ -17,9 +20,25 @@ type fakeEnsurer struct {
 	err  error
 	name string
 	sub  string
+	// block, if set, makes NetworkEnsure wait for it (or its context); entered
+	// is signalled when the call starts; calls counts the calls.
+	block   chan struct{}
+	entered chan struct{}
+	calls   atomic.Int32
 }
 
-func (f *fakeEnsurer) NetworkEnsure(_ context.Context, name, subnet string) (agentops.NetworkResult, error) {
+func (f *fakeEnsurer) NetworkEnsure(ctx context.Context, name, subnet string) (agentops.NetworkResult, error) {
+	f.calls.Add(1)
+	if f.entered != nil {
+		f.entered <- struct{}{}
+	}
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return agentops.NetworkResult{}, ctx.Err()
+		}
+	}
 	f.s.seq = append(f.s.seq, "network_ensure")
 	f.name, f.sub = name, subnet
 	return agentops.NetworkResult{Subnet: subnet}, f.err
@@ -179,4 +198,79 @@ func TestNewBooterNeedsItsDependencies(t *testing.T) {
 		}
 	}()
 	NewBooter(BootConfig{})
+}
+
+// Run is single-flight: concurrent callers (every action that finds the gate
+// closed) start one run between them; the others wait for its result, or leave
+// when their own context ends. NetworkProblem never waits behind a run.
+func TestBootRunIsSingleFlight(t *testing.T) {
+	b, _, en, _, _, r := newBooter(t, true)
+	en.block, en.entered = make(chan struct{}), make(chan struct{}, 8)
+	// The first caller starts the run, which hangs in network_ensure.
+	first := make(chan error, 1)
+	go func() { first <- b.Run(context.Background()) }()
+	<-en.entered
+	// A waiter whose context ends leaves at once, without starting a run.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := b.Run(ctx); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
+		t.Fatalf("a waiter: %v after %v", err, time.Since(start))
+	}
+	// NetworkProblem does not block while the run is in flight.
+	done := make(chan string, 1)
+	go func() { done <- b.NetworkProblem() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("NetworkProblem blocked behind a running boot")
+	}
+	// Waiters that stay get the one run's result.
+	var wg sync.WaitGroup
+	errs := make([]error, 5)
+	for i := range errs {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs[i] = b.Run(context.Background()) }()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(en.block)
+	wg.Wait()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("waiter %d: %v", i, err)
+		}
+	}
+	if en.calls.Load() != 1 || !r.Ready() {
+		t.Errorf("network_ensure ran %d times, ready=%v", en.calls.Load(), r.Ready())
+	}
+}
+
+// A run that hangs ends with its own caller's context: the lazy run of an action
+// is bounded by the action's, and the start-up run by shutdown, never by a waiter.
+func TestBootRunEndsWithItsCallersContext(t *testing.T) {
+	b, _, en, _, _, _ := newBooter(t, true)
+	en.block, en.entered = make(chan struct{}), make(chan struct{}, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	res := make(chan error, 1)
+	go func() { res <- b.Run(ctx) }()
+	<-en.entered
+	// A second caller waits on the first.
+	waiter := make(chan error, 1)
+	go func() { waiter <- b.Run(context.Background()) }()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	if err := <-res; err == nil {
+		t.Error("the cancelled run reported success")
+	}
+	if err := <-waiter; err == nil {
+		t.Error("the waiter got success from a cancelled run")
+	}
+	// The next call starts a fresh run.
+	en.block = nil
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

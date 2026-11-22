@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -103,7 +102,8 @@ func (c serverConfig) reservedPorts() []int {
 			continue
 		}
 		if _, port, err := net.SplitHostPort(addr); err == nil {
-			if p, err := strconv.Atoi(port); err == nil && p > 0 && p <= 65535 {
+			// A named port (":https") is resolved, so none is silently dropped.
+			if p, err := net.LookupPort("tcp", port); err == nil && p > 0 && p <= 65535 {
 				out = append(out, p)
 			}
 		}
@@ -243,6 +243,18 @@ func (c serverConfig) validate() error {
 		}
 		if c.Proxy && c.HTTPSListen == c.Listen {
 			return errors.New("--https-listen and --listen must be different addresses")
+		}
+	}
+	// A listen port must be a number or a service name that resolves: reservedPorts
+	// would otherwise leave an unresolvable one out of the list silently.
+	for _, l := range []struct{ flag, addr string }{{"--listen", c.Listen}, {"--https-listen", c.HTTPSListen}, {"--agent-listen", c.AgentListen}} {
+		if l.addr == "" {
+			continue
+		}
+		if _, port, err := net.SplitHostPort(l.addr); err != nil {
+			return fmt.Errorf("%s %q: %w", l.flag, l.addr, err)
+		} else if _, err := net.LookupPort("tcp", port); err != nil {
+			return fmt.Errorf("%s %q: the port %q is not a number or a known service name", l.flag, l.addr, port)
 		}
 	}
 	if c.ControlSocket != "" && c.DebugSocket != "" && filepath.Clean(c.ControlSocket) == filepath.Clean(c.DebugSocket) {
@@ -455,7 +467,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	}
 	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
 	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
-		DB: st, Routes: routes, Boot: booter.Run, Policy: cfg.policyOptions(), ReservedPorts: reserved,
+		DB: st, Routes: routes, Boot: booter.Run, NoProxy: !cfg.Proxy, Policy: cfg.policyOptions(), ReservedPorts: reserved,
 		Exposure: opsClient, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
 	})
 	srv := api.New(api.Config{

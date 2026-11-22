@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
@@ -22,8 +23,8 @@ import (
 // overrides, and Routes.ApplyRoutes, the only code that sends proxy_apply.
 //
 // Where the later steps hook in:
-//   - step 7 (services.set_public_port, services.delete): the DB write is the
-//     mutate function of ApplyRoutes (or a Refresh after it);
+//   - step 7 (services.set_public_port, services.create) and step 9
+//     (services.delete): the DB write is the mutate function of ApplyRoutes;
 //   - step 8b/9 (runner switch, commit, failure re-apply, stop-first
 //     maintenance): SetOverride and ClearOverride, then the commit's own DB
 //     transaction as a mutate function, always through ApplyRoutes;
@@ -192,6 +193,10 @@ func BindMessage(port int) string {
 	return fmt.Sprintf("port %d could not be opened, most likely because another program on this server uses it", port)
 }
 
+// StaleMessage is what services.get shows while a committed change has not been
+// applied by the proxy (Routes.Stale).
+const StaleMessage = "the proxy has not applied the latest change; Try again"
+
 // ErrRoutesNotReady is returned by ApplyRoutes (after running its mutation)
 // while the state map has not been filled by the first list and inspect: nothing
 // was sent, so a caller must not report the routes as applied.
@@ -210,8 +215,9 @@ type Routes struct {
 	overrides map[int64]Override
 	lastHash  string
 	failed    map[int]bool // ports of the last apply that could not be bound
+	stale     bool         // a committed change was not applied (guarded by statusMu)
 
-	statusMu sync.Mutex // guards failed for readers that do not hold the route lock
+	statusMu sync.Mutex // guards failed and stale for readers that do not hold the route lock
 }
 
 // NewRoutes returns a Routes. Nothing is applied until Sync (or Replace-style
@@ -241,9 +247,24 @@ func (r *Routes) BindStatus(port int) string {
 	return ""
 }
 
+// ApplyBound bounds the build and send that follow a committed mutation. They
+// run on a context that the caller's cancellation cannot reach (the change is
+// already saved: abandoning the apply would leave it saved but unapplied), so
+// they need a bound of their own.
+const ApplyBound = 30 * time.Second
+
+// MutateError is the error of an ApplyRoutes whose mutate function failed. The
+// routes were not built or sent: a refused request never reloads the proxy.
+type MutateError struct{ Err error }
+
+func (e *MutateError) Error() string { return e.Err.Error() }
+func (e *MutateError) Unwrap() error { return e.Err }
+
 // ApplyRoutes is the only way routes change. Under the one global route lock it
-//  1. runs mutate (set or clear an override, update the state map or write the
-//     database: nil for a plain refresh);
+//  1. runs mutate (write the database, or nil for a plain refresh). If mutate
+//     fails, nothing else happens and the error comes back as a *MutateError
+//     (the DB error stays apart from apply errors, and a refused request never
+//     reloads Caddy);
 //  2. when the boot gate is open: reads the services and active deploys from the
 //     database, the override map and the state map, and builds the sorted route
 //     list;
@@ -251,14 +272,20 @@ func (r *Routes) BindStatus(port int) string {
 //     it changed;
 //  4. records the hash and the per-port bind results.
 //
+// After a mutate that returned nil the change is committed, so steps 2 to 4 run
+// on a context detached from ctx's cancellation, bounded by ApplyBound; if they
+// fail, the routes are marked stale (Stale) until an apply succeeds. mutate must
+// commit anything it writes before returning, must not be called with a SQLite
+// write transaction open, and never takes a service or allocation lock.
+//
 // Because the whole sequence is under the lock, two concurrent changes cannot
 // each apply a list that lacks the other's. A failed proxy_apply leaves the
-// recorded hash alone, so the next call retries. Before the boot gate opens,
-// mutate still runs but nothing is sent.
-func (r *Routes) ApplyRoutes(ctx context.Context, mutate func()) error {
+// recorded hash cleared, so the next call retries. Before the boot gate opens,
+// mutate still runs but nothing is sent (ErrRoutesNotReady).
+func (r *Routes) ApplyRoutes(ctx context.Context, mutate func() error) error {
 	// An explicit caller (a DB mutation such as saving the same public port)
 	// must not be short-circuited by the hash while a port is failed.
-	return r.apply(ctx, mutate, mutate != nil)
+	return r.apply(ctx, mutate, mutate != nil, mutate != nil)
 }
 
 // hasFailed reports whether the last successful apply left ports unopened.
@@ -268,18 +295,56 @@ func (r *Routes) hasFailed() bool {
 	return len(r.failed) > 0
 }
 
+// Stale reports that a change was committed to the database but the proxy has
+// not applied it (the apply that followed failed or timed out). It clears when
+// an apply succeeds. Not set for ErrRoutesNotReady: that is "not yet", not
+// "failed".
+func (r *Routes) Stale() bool {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	return r.stale
+}
+
+func (r *Routes) setStale(v bool) {
+	r.statusMu.Lock()
+	r.stale = v
+	r.statusMu.Unlock()
+}
+
 // apply is ApplyRoutes. retry is true for an explicit caller: with failed
 // ports it sends even when the route list is unchanged. State-map and override
-// paths pass false, so a crash loop never reloads, failed port or not.
-func (r *Routes) apply(ctx context.Context, mutate func(), retry bool) error {
+// paths pass false, so a crash loop never reloads, failed port or not. detach
+// is true when mutate wrote the database: the send then outlives ctx.
+func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	committed := false
 	if mutate != nil {
-		mutate()
+		if err := mutate(); err != nil {
+			return &MutateError{Err: err}
+		}
+		committed = detach
 	}
 	if !r.state.Ready() {
 		return ErrRoutesNotReady
 	}
+	if committed {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), ApplyBound)
+		defer cancel()
+	}
+	err := r.send(ctx, retry)
+	switch {
+	case err == nil:
+		r.setStale(false)
+	case committed:
+		r.setStale(true)
+	}
+	return err
+}
+
+// send builds the list and sends it if it changed. The caller holds the route lock.
+func (r *Routes) send(ctx context.Context, retry bool) error {
 	routes, err := r.build(ctx)
 	if err != nil {
 		return err
@@ -310,42 +375,35 @@ func (r *Routes) apply(ctx context.Context, mutate func(), retry bool) error {
 	return nil
 }
 
-// RetryFailedPorts sends the route list again when the last apply left ports
-// unopened (the other program let go, or the user pressed "Try again"). With
-// none failed it sends only if the list changed since the last successful apply,
-// which includes the case where the last apply failed with an unknown outcome
-// (the recorded hash is then cleared); otherwise it does nothing. Before the
+// Refresh re-reads everything and applies if the routes changed. With failed
+// ports it sends again (the other program let go, or the user pressed "Try
+// again"); after an apply that failed with an unknown outcome it sends again
+// too (the recorded hash was cleared); otherwise it does nothing. Before the
 // boot gate opens it returns ErrRoutesNotReady, so a caller never reports
 // "applied" for routes that were not. Step 7's "Try again" action and a public
-// port saved again both call it; step 10's resync calls it after each
-// (re)connect.
-func (r *Routes) RetryFailedPorts(ctx context.Context) error {
-	return r.apply(ctx, nil, r.hasFailed())
-}
-
-// Refresh re-reads everything and applies if the routes changed.
-func (r *Routes) Refresh(ctx context.Context) error { return r.apply(ctx, nil, true) }
+// port saved again call it; step 10's resync calls it after each (re)connect.
+func (r *Routes) Refresh(ctx context.Context) error { return r.apply(ctx, nil, true, false) }
 
 // SetOverride sets the service's override and applies.
 func (r *Routes) SetOverride(ctx context.Context, service int64, o Override) error {
-	return r.apply(ctx, func() { r.overrides[service] = o }, false)
+	return r.apply(ctx, func() error { r.overrides[service] = o; return nil }, false, false)
 }
 
 // ClearOverride removes the service's override and applies.
 func (r *Routes) ClearOverride(ctx context.Context, service int64) error {
-	return r.apply(ctx, func() { delete(r.overrides, service) }, false)
+	return r.apply(ctx, func() error { delete(r.overrides, service); return nil }, false, false)
 }
 
 // SetContainer records a container (from an inspect) and applies. A change that
 // leaves the routes as they were (a crash-looping container flipping between
 // running and restarting) sends nothing.
 func (r *Routes) SetContainer(ctx context.Context, c Container) error {
-	return r.apply(ctx, func() { r.state.set(c) }, false)
+	return r.apply(ctx, func() error { r.state.set(c); return nil }, false, false)
 }
 
 // RemoveContainer forgets a container (a destroy event) and applies.
 func (r *Routes) RemoveContainer(ctx context.Context, id string) error {
-	return r.apply(ctx, func() { r.state.remove(id) }, false)
+	return r.apply(ctx, func() error { r.state.remove(id); return nil }, false, false)
 }
 
 // Sync is the boot hook: list the containers and inspect each of ours (outside
@@ -379,7 +437,7 @@ func (r *Routes) Sync(ctx context.Context, src BootSource) error {
 			all = append(all, c)
 		}
 	}
-	return r.apply(ctx, func() { r.state.replace(all) }, true)
+	return r.apply(ctx, func() error { r.state.replace(all); return nil }, true, false)
 }
 
 // routeRow is a service with a public port and its active deploy.

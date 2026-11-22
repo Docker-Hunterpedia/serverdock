@@ -597,10 +597,11 @@ func TestBindFailureIsReportedAndRetried(t *testing.T) {
 	if out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "public_port": 9001}); !out.Applied {
 		t.Errorf("%+v", out)
 	}
-	// retry_port needs a service with a public port.
-	_, err := callAs[ServiceChangeOut](g, adminActor(), "services.retry_port", m{"service": "p/other"})
-	wantKind(t, err, actions.ErrInvalidInput)
-	_, err = callAs[ServiceChangeOut](g, adminActor(), "services.retry_port", m{"service": "p/nosuch"})
+	// The resend is global, so retry_port needs only an existing service, not a port.
+	if rt := must[ServiceChangeOut](g, "services.retry_port", m{"service": "p/other"}); !rt.Applied {
+		t.Errorf("%+v", rt)
+	}
+	_, err := callAs[ServiceChangeOut](g, adminActor(), "services.retry_port", m{"service": "p/nosuch"})
 	wantKind(t, err, actions.ErrNotFound)
 }
 
@@ -840,6 +841,20 @@ func TestTokenScopesForServiceActions(t *testing.T) {
 		t.Errorf("%+v", got)
 	}
 
+	// A write token may not move the traffic of an exposed service: changing the
+	// container port of a service that has a public port needs admin. It may on a
+	// service that is not exposed, and may "change" it to the value it has.
+	must[ServiceChangeOut](g, "services.create", m{"project": "p", "name": "exposed", "image_ref": "nginx", "container_port": 80, "public_port": 9300})
+	if _, err := callAs[any](g, writeTok, "services.update", m{"service": "p/exposed", "container_port": 81}); !errors.Is(err, actions.ErrDenied) {
+		t.Errorf("a write token changed the container port of an exposed service: %v", err)
+	}
+	if got := g.get("p/exposed"); *got.ContainerPort != 80 {
+		t.Errorf("container port %d", *got.ContainerPort)
+	}
+	allowed("write", writeTok, "services.update", m{"service": "p/exposed", "container_port": 80})
+	allowed("write", writeTok, "services.update", m{"service": "p/web", "container_port": 81}) // not exposed yet
+	allowed("admin", adminTok, "services.update", m{"service": "p/exposed", "container_port": 81})
+
 	// admin token: all of them.
 	allowed("admin", adminTok, "services.create", createIn("a1"))
 	allowed("admin", adminTok, "services.set_source", web(m{"image_ref": "redis:7"}))
@@ -943,3 +958,172 @@ type noSink struct{}
 
 func (*noSink) Append(context.Context, audit.Entry) (int64, error) { return 0, nil }
 func (*noSink) Denied(context.Context, audit.Entry) (bool, error)  { return false, nil }
+
+// A change with no route involvement is applied by definition, whether or not
+// the routes are ready: no "not applied" and no "Try again" for a portless
+// service, a tag, a health check, or clearing a port that is not set.
+func TestChangesWithoutARouteAreAppliedEvenWithTheGateClosed(t *testing.T) {
+	g := newSvcRig(t) // gate closed
+	check := func(what string, out ServiceChangeOut) {
+		t.Helper()
+		if !out.Applied || strings.Contains(out.Notice, "Try again") || strings.Contains(out.Notice, "not applied") {
+			t.Errorf("%s: %+v", what, out)
+		}
+	}
+	check("create (worker)", g.create("p", "worker", nil))
+	check("create (portless)", g.create("p", "web", m{"container_port": 80}))
+	check("update", must[ServiceChangeOut](g, "services.update", m{"service": "p/web", "strategy": "stop_first"}))
+	check("set_source", must[ServiceChangeOut](g, "services.set_source", m{"service": "p/web", "image_ref": "redis:7"}))
+	n := g.px.n()
+	check("clear a port that is not set", must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "clear": true}))
+	if g.px.n() != n || g.boots != 0 {
+		t.Error("a change without a route touched the proxy or the boot")
+	}
+	// With a port the same gate is "not applied".
+	if out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "public_port": 9000}); out.Applied {
+		t.Errorf("%+v", out)
+	}
+}
+
+// A refused request (duplicate name, 101st service, a UNIQUE race) never builds
+// or sends the routes: no reload, even with a port that failed to open.
+func TestRefusedChangesNeverReloadTheProxy(t *testing.T) {
+	g := newSvcRig(t)
+	open(t, g.r)
+	g.create("p", "a", m{"container_port": 80, "public_port": 9000})
+	g.px.failed = []int{9000}
+	must[ServiceChangeOut](g, "services.retry_port", m{"service": "p/a"}) // a failed port is on record now
+	n := g.px.n()
+	// Duplicate name with a public port: refused by the insert inside the mutate.
+	_, err := callAs[ServiceChangeOut](g, adminActor(), "services.create", m{"project": "p", "name": "a", "image_ref": "nginx", "container_port": 80, "public_port": 9001})
+	wantKind(t, err, actions.ErrConflict)
+	// A UNIQUE race inside the write.
+	g.create("p", "b", m{"container_port": 80, "public_port": 9100})
+	d := &svcDeps{ServiceDeps: ServiceDeps{DB: g.st, Now: g.clk.Now}}
+	werr := g.r.ApplyRoutes(context.Background(), func() error { return d.writePort(context.Background(), 1, nullInt(9100)) })
+	var me *MutateError
+	if !errors.As(werr, &me) || !errors.Is(werr, actions.ErrConflict) {
+		t.Fatalf("%v", werr)
+	}
+	if g.px.n() != n+1 { // only the successful create of b applied
+		t.Errorf("proxy_apply calls %d, want %d", g.px.n(), n+1)
+	}
+}
+
+func TestStaleRouteErrorShowsOnServicesAndClears(t *testing.T) {
+	g := newSvcRig(t)
+	open(t, g.r)
+	g.create("p", "web", m{"container_port": 80})
+	g.create("p", "other", m{"container_port": 80})
+	g.px.fail = errors.New("agent gone")
+	out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "public_port": 9000})
+	if out.Applied || out.Service.RouteError != StaleMessage {
+		t.Fatalf("%+v", out)
+	}
+	if got := g.get("p/web").RouteError; got != StaleMessage {
+		t.Errorf("get: %q", got)
+	}
+	if got := g.get("p/other").RouteError; got != "" { // no public port: no route to be stale
+		t.Errorf("other: %q", got)
+	}
+	g.px.fail = nil
+	must[ServiceChangeOut](g, "services.retry_port", m{"service": "p/web"})
+	if got := g.get("p/web").RouteError; got != "" {
+		t.Errorf("after a successful apply: %q", got)
+	}
+}
+
+// A client that goes away right after the commit still gets the change applied.
+func TestSetPublicPortAppliesAfterTheClientCancels(t *testing.T) {
+	g := newSvcRig(t)
+	open(t, g.r)
+	g.create("p", "web", m{"container_port": 80})
+	ctx, cancel := context.WithCancel(context.Background())
+	// The rig's fake proxy runs on whatever context ApplyRoutes hands it; cancel
+	// once the write has committed by wrapping the write in the mutate.
+	d := &svcDeps{ServiceDeps: ServiceDeps{DB: g.st, Routes: g.r, Now: g.clk.Now}}
+	err := g.r.ApplyRoutes(ctx, func() error {
+		if err := d.writePort(ctx, 1, nullInt(9000)); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	})
+	if err != nil || g.px.n() != 1 || g.px.last()[0].Port != 9000 {
+		t.Fatalf("%v calls %d", err, g.px.n())
+	}
+}
+
+func TestPublicPortsAreRefusedWithTheProxyOff(t *testing.T) {
+	g := newSvcRig(t, func(d *ServiceDeps) { d.NoProxy = true })
+	g.create("p", "web", m{"container_port": 80}) // portless is fine
+	for _, c := range []struct {
+		name string
+		in   m
+	}{
+		{"services.create", m{"project": "p", "name": "x", "image_ref": "nginx", "container_port": 80, "public_port": 9000}},
+		{"services.set_public_port", m{"service": "p/web", "public_port": 9000}},
+		{"services.retry_port", m{"service": "p/web"}},
+	} {
+		_, err := callAs[ServiceChangeOut](g, adminActor(), c.name, c.in)
+		wantKind(t, err, actions.ErrConflict)
+		if !strings.Contains(err.Error(), "embedded proxy is off") {
+			t.Errorf("%s: %q", c.name, err)
+		}
+	}
+	if countRows(t, g.st, "services") != 1 || g.boots != 0 || g.px.n() != 0 {
+		t.Error("a refused request wrote or applied something")
+	}
+	// Clearing a port that is set (saved before the proxy was switched off) just clears it.
+	mustExec(t, g.st, `UPDATE services SET public_port = 9100 WHERE name = 'web'`)
+	if out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "clear": true}); !out.Applied || out.Service.PublicPort != nil {
+		t.Errorf("%+v", out)
+	}
+}
+
+// Waiters do not convoy behind a hung Docker call: they return when their own
+// context ends, and the first caller's answer then serves everyone.
+func TestExposureWaitersReturnOnTheirOwnContext(t *testing.T) {
+	hang := &hangingPorts{release: make(chan struct{}), entered: make(chan struct{}, 4)}
+	g2 := newSvcRig(t, func(d *ServiceDeps) { d.Exposure = hang })
+	first := make(chan error, 1)
+	go func() {
+		_, err := callAs[ExposureOut](g2, readTok, "system.exposure", m{})
+		first <- err
+	}()
+	<-hang.entered
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	raw, _ := json.Marshal(m{})
+	start := time.Now()
+	_, err := g2.reg.Invoke(ctx, readTok, "system.exposure", raw, actions.Options{})
+	wantKind(t, err, actions.ErrUnavailable)
+	if time.Since(start) > 2*time.Second {
+		t.Error("the waiter waited for the hung call")
+	}
+	close(hang.release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if hang.calls() != 1 {
+		t.Errorf("Docker was asked %d times", hang.calls())
+	}
+}
+
+type hangingPorts struct {
+	release chan struct{}
+	entered chan struct{}
+	mu      sync.Mutex
+	n       int
+}
+
+func (h *hangingPorts) ContainerPorts(context.Context) (agentops.PortsResult, error) {
+	h.mu.Lock()
+	h.n++
+	h.mu.Unlock()
+	h.entered <- struct{}{}
+	<-h.release
+	return agentops.PortsResult{}, nil
+}
+
+func (h *hangingPorts) calls() int { h.mu.Lock(); defer h.mu.Unlock(); return h.n }

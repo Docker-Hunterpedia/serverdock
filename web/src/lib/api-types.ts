@@ -217,7 +217,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Try again to open a service's public port (after another program let go of it). Same power as services.set_public_port. */
+        /** Try again: send the route list to the proxy again (after another program let go of a port, or a change was not applied). Same power as services.set_public_port. */
         post: operations["services.retry_port"];
         delete?: never;
         options?: never;
@@ -675,6 +675,7 @@ export interface components {
             strategy?: string;
         };
         ServicesCreateOutput: {
+            /** @description the proxy's routes reflect this change (nothing route-related is waiting) */
             applied: boolean;
             notice?: string;
             service: {
@@ -801,6 +802,7 @@ export interface components {
             service: string;
         };
         ServicesRetryPortOutput: {
+            /** @description the proxy's routes reflect this change (nothing route-related is waiting) */
             applied: boolean;
             notice?: string;
             service: {
@@ -850,6 +852,7 @@ export interface components {
             service: string;
         };
         ServicesSetPublicPortOutput: {
+            /** @description the proxy's routes reflect this change (nothing route-related is waiting) */
             applied: boolean;
             notice?: string;
             service: {
@@ -897,6 +900,7 @@ export interface components {
             service: string;
         };
         ServicesSetSourceOutput: {
+            /** @description the proxy's routes reflect this change (nothing route-related is waiting) */
             applied: boolean;
             notice?: string;
             service: {
@@ -958,6 +962,7 @@ export interface components {
             strategy?: string | null;
         };
         ServicesUpdateOutput: {
+            /** @description the proxy's routes reflect this change (nothing route-related is waiting) */
             applied: boolean;
             notice?: string;
             service: {
