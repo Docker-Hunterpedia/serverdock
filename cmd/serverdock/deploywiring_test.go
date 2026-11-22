@@ -122,12 +122,19 @@ func TestServerAppSubnetFlagAtFirstStart(t *testing.T) {
 	if v, _ := readMeta(t, data, "app_subnet"); v != "10.77.0.0/22" {
 		t.Errorf("meta.app_subnet = %q", v)
 	}
-	fe.mu.Lock()
-	defer fe.mu.Unlock()
-	for _, p := range fe.paths {
-		if p == "GET /networks" {
-			t.Error("Docker's networks were listed although the flag decided")
-		}
+	_ = fe
+}
+
+// An --app-subnet that overlaps a Docker network refuses to start and saves nothing.
+func TestServerRefusesAnOverlappingAppSubnetFlag(t *testing.T) {
+	sock, _ := startFakeEngine(t, `[{"Name":"vpn","IPAM":{"Config":[{"Subnet":"10.77.0.0/24"}]}}]`)
+	data := newData(t)
+	err := runServer(context.Background(), serverConfig{Data: data, ControlSocket: shortSock(t), DockerSocket: sock, AppSubnet: "10.77.0.0/22"}, quietLog(), nil)
+	if err == nil || !strings.Contains(err.Error(), "vpn") || !strings.Contains(err.Error(), "--app-subnet") {
+		t.Fatalf("runServer: %v", err)
+	}
+	if v, ok := readMeta(t, data, "app_subnet"); ok {
+		t.Errorf("a refused subnet %q was saved", v)
 	}
 }
 
@@ -145,7 +152,7 @@ func TestServerStartsWithoutDockerAndRecordsNoSubnet(t *testing.T) {
 
 func TestAppSubnetFlagIsValidatedBeforeAnythingStarts(t *testing.T) {
 	var buf bytes.Buffer
-	for _, bad := range []string{"10.0.0.0/25", "10.0.0.0/19", "10.0.0.5/24", "fd00::/64", "nonsense"} {
+	for _, bad := range []string{"10.0.0.0/25", "10.0.0.0/19", "10.0.0.5/24", "fd00::/64", "nonsense", "8.8.8.0/24"} {
 		if _, err := parseServerFlags([]string{"--app-subnet", bad}, &buf); err == nil || !strings.Contains(err.Error(), "--app-subnet") {
 			t.Errorf("%q: %v", bad, err)
 		}
@@ -176,6 +183,9 @@ func TestLocalAgentServesTheStep3OpsAndARemoteAgentRefusesThem(t *testing.T) {
 	if err != nil || len(res.Containers) != 0 {
 		t.Fatalf("local container_list: %+v %v", res, err)
 	}
+	// The agent-side half (a remote agent process serves no local-only op even if
+	// handed the handlers) is tested in internal/agent: TestOpsGivenToARemoteAgentAreNotServed
+	// and TestRemoteAgentProcessServesOnlyRemoteOKOps. Here the hub's refusal.
 	// A refused body proves the handler itself ran: create without a valid name
 	// is answered by the handler, not by "unknown op".
 	_, err = local.Call(context.Background(), agent.OpContainerStart, map[string]string{"id": "short"}, nil)

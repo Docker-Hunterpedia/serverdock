@@ -505,10 +505,11 @@ func TestSupersedeFlagsARunningJob(t *testing.T) {
 	if flag != 1 || reason != "superseded" {
 		t.Errorf("cancel flag %d reason %q", flag, reason)
 	}
-	var by int64
+	// The running deploy is not marked superseded here: it may still finish.
+	var by sql.NullInt64
 	e.st.R.QueryRow(`SELECT superseded_by FROM deploys WHERE id = ?`, first.DeployID).Scan(&by)
-	if by != second.DeployID {
-		t.Errorf("running deploy superseded_by %d", by)
+	if by.Valid {
+		t.Errorf("a running deploy got superseded_by %d before its runner decided", by.Int64)
 	}
 }
 
@@ -810,4 +811,165 @@ func TestFinishClipsTheErrorAtARuneBoundary(t *testing.T) {
 	if err := e.js.Finish(ctx, id, "unknown", ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("finish with the state unknown: %v", err)
 	}
+}
+
+func startHooked(t *testing.T, e *env, run RunFunc, hook func(Job)) (*Scheduler, func()) {
+	return start(t, e, run, func(c *Config) { c.afterPick = hook })
+}
+
+// A cancel or supersede that arrives after Pick but before the worker is
+// registered is not lost: the worker starts already cancelled, runs once, and the
+// job ends cancelled.
+func TestCancelBetweenPickAndRegistrationIsNotLost(t *testing.T) {
+	for _, how := range []string{"cancel", "supersede"} {
+		t.Run(how, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			svc := e.service(t, "web")
+			picked, release := make(chan struct{}), make(chan struct{})
+			var runs atomic.Int32
+			var sawCancelled atomic.Bool
+			var once sync.Once
+			s, _ := startHooked(t, e, func(ctx context.Context, j Job) error {
+				if j.ID != 1 { // the superseding deploy's own job is not the one under test
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				runs.Add(1)
+				sawCancelled.Store(ctx.Err() != nil)
+				<-ctx.Done()
+				return ctx.Err()
+			}, func(Job) { once.Do(func() { close(picked); <-release }) })
+			s.OpenGate()
+			first, err := s.EnqueueDeploy(ctx, deploy(svc))
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-picked
+			if how == "cancel" {
+				if err := s.Cancel(ctx, first.JobID, "user"); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := s.EnqueueDeploy(ctx, deploy(svc)); err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			waitFor(t, "the job to end cancelled", func() bool { return e.state(t, first.JobID) == StateCancelled })
+			if runs.Load() != 1 || !sawCancelled.Load() {
+				t.Errorf("runs %d, started already cancelled: %v", runs.Load(), sawCancelled.Load())
+			}
+		})
+	}
+}
+
+func TestRetryableErrorAfterCancelIsNotRequeued(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	var runs atomic.Int32
+	var id int64
+	s, _ := start(t, e, func(context.Context, Job) error {
+		runs.Add(1)
+		// The flag is set in the database only (as a supersede from another
+		// process would); the runner then fails with a transient error.
+		if _, err := e.js.cancel(ctx, id, "superseded"); err != nil {
+			t.Error(err)
+		}
+		return Retryable(errors.New("503"))
+	}, nil)
+	s.OpenGate()
+	n := job("service:1")
+	n.MaxAttempts = DeployAttempts
+	id, _ = e.js.Enqueue(ctx, n)
+	s.Notify()
+	waitFor(t, "the job to end", func() bool { return e.state(t, id) == StateCancelled })
+	time.Sleep(100 * time.Millisecond)
+	if runs.Load() != 1 {
+		t.Errorf("ran %d times: the retry undid the cancel", runs.Load())
+	}
+	if ok, err := e.js.Requeue(ctx, id, 0, "x"); err != nil || ok {
+		t.Errorf("Requeue of a finished job: %v %v", ok, err)
+	}
+}
+
+func (e *env) deployRow(t *testing.T, id int64) (status, code string, finished sql.NullString, by sql.NullInt64) {
+	t.Helper()
+	var c sql.NullString
+	if err := e.st.R.QueryRow(`SELECT status, reason_code, finished_at, superseded_by FROM deploys WHERE id = ?`, id).Scan(&status, &c, &finished, &by); err != nil {
+		t.Fatal(err)
+	}
+	return status, c.String, finished, by
+}
+
+func TestCancelOfAQueuedDeployJobCancelsItsDeploy(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	svc := e.service(t, "web")
+	d, err := e.js.EnqueueDeploy(ctx, deploy(svc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := e.js.cancel(ctx, d.JobID, "cancelled by the user"); err != nil || st != StateCancelled {
+		t.Fatal(st, err)
+	}
+	status, code, fin, _ := e.deployRow(t, d.DeployID)
+	if status != "cancelled" || code != "cancelled" || !fin.Valid {
+		t.Errorf("deploy %s %s finished=%v: left non-final", status, code, fin)
+	}
+}
+
+// A job waiting to retry is queued while its deploy is running. A newer deploy
+// ends both: the deploy must not be left 'running' forever.
+func TestSupersedeOfARetryPendingJobFinishesItsRunningDeploy(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	svc := e.service(t, "web")
+	first, _ := e.js.EnqueueDeploy(ctx, deploy(svc))
+	if _, ok, err := e.js.Pick(ctx, "b"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	e.exec(t, `UPDATE deploys SET status = 'running' WHERE id = ?`, first.DeployID)
+	if ok, err := e.js.Requeue(ctx, first.JobID, time.Hour, "503"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	second, err := e.js.EnqueueDeploy(ctx, deploy(svc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Superseded) != 1 || second.Superseded[0] != first.JobID {
+		t.Fatalf("superseded %v", second.Superseded)
+	}
+	status, _, fin, by := e.deployRow(t, first.DeployID)
+	if status != "superseded" || !fin.Valid || by.Int64 != second.DeployID {
+		t.Errorf("deploy %s finished=%v by=%v", status, fin, by)
+	}
+	if e.state(t, first.JobID) != StateCancelled {
+		t.Error("job not cancelled")
+	}
+	// Cancelling a retry-pending job finishes its running deploy too.
+	third, _ := e.js.EnqueueDeploy(ctx, deploy(e.service(t, "db")))
+	e.js.Pick(ctx, "b")
+	e.exec(t, `UPDATE deploys SET status = 'running' WHERE id = ?`, third.DeployID)
+	e.js.Requeue(ctx, third.JobID, time.Hour, "503")
+	if _, err := e.js.cancel(ctx, third.JobID, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _, _ := e.deployRow(t, third.DeployID); status != "cancelled" {
+		t.Errorf("deploy %s after cancelling its retry-pending job", status)
+	}
+}
+
+// A store error in Pick must not strand a due job: the scheduler looks again.
+func TestStoreErrorDoesNotStrandADueJob(t *testing.T) {
+	e := newEnv(t)
+	e.exec(t, `CREATE TRIGGER no_run BEFORE UPDATE OF state ON jobs WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'store is unhappy'); END`)
+	s, _ := start(t, e, func(context.Context, Job) error { return nil }, func(c *Config) { c.storeRetry = 50 * time.Millisecond })
+	s.OpenGate()
+	id, _ := s.Enqueue(context.Background(), job("service:1"))
+	waitFor(t, "the retry timer", func() bool { _, ok := s.NextWake(); return ok })
+	time.Sleep(120 * time.Millisecond)
+	if e.state(t, id) != StateQueued {
+		t.Fatal("ran despite the trigger")
+	}
+	e.exec(t, `DROP TRIGGER no_run`)
+	waitFor(t, "the job to run once the store recovers", func() bool { return e.state(t, id) == StateSucceeded })
 }

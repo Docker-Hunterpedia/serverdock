@@ -37,6 +37,10 @@ type Config struct {
 	Now func() time.Time
 	// RetryDelay replaces the package RetryDelay in tests.
 	RetryDelay func(failedAttempt int) time.Duration
+
+	// Test hooks (zero in production).
+	afterPick  func(Job)     // runs between Pick and the worker's registration
+	storeRetry time.Duration // wait before retrying after a store error (default 5 s)
 }
 
 // Scheduler is one goroutine and one timer. It sleeps on {timer, notify, ctx}.
@@ -55,7 +59,8 @@ type Scheduler struct {
 	paused   bool
 	stopping bool
 	running  map[int64]context.CancelCauseFunc
-	wake     time.Time // when the timer fires; zero when it is stopped
+	pending  map[int64]string // cancels that arrived between Pick and registration
+	wake     time.Time        // when the timer fires; zero when it is stopped
 	wg       sync.WaitGroup
 }
 
@@ -79,6 +84,9 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 	if cfg.RetryDelay == nil {
 		cfg.RetryDelay = RetryDelay
 	}
+	if cfg.storeRetry == 0 {
+		cfg.storeRetry = 5 * time.Second
+	}
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, err
@@ -86,7 +94,7 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 	return &Scheduler{
 		cfg: cfg, bootID: hex.EncodeToString(b[:]),
 		notify: make(chan struct{}, 1), gate: make(chan struct{}),
-		running: map[int64]context.CancelCauseFunc{},
+		running: map[int64]context.CancelCauseFunc{}, pending: map[int64]string{},
 	}, nil
 }
 
@@ -188,6 +196,11 @@ func (s *Scheduler) Cancel(ctx context.Context, id int64, reason string) error {
 func (s *Scheduler) cancelRunning(id int64, reason string) {
 	s.mu.Lock()
 	cancel := s.running[id]
+	if cancel == nil {
+		// Not registered yet: the job was picked an instant ago. dispatch checks
+		// this set when it registers the worker, so the cancel is never lost.
+		s.pending[id] = reason
+	}
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel(CancelCause{Reason: reason})
@@ -209,8 +222,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		timerC = nil
 		if s.gateOpen() {
-			s.dispatch(ctx)
-			timerC = s.arm(ctx, &timer)
+			failed := s.dispatch(ctx)
+			timerC = s.arm(ctx, &timer, failed)
 		}
 		select {
 		case <-ctx.Done():
@@ -222,7 +235,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 // arm sets the one timer to the earliest not-yet-due job, or stops it.
-func (s *Scheduler) arm(ctx context.Context, timer **time.Timer) <-chan time.Time {
+func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed bool) <-chan time.Time {
 	s.mu.Lock()
 	paused := s.paused || s.stopping
 	s.mu.Unlock()
@@ -232,7 +245,11 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer) <-chan time.Tim
 		var err error
 		if at, ok, err = s.cfg.Store.NextDue(ctx); err != nil {
 			s.cfg.Log.Error("jobs: next due", "err", err)
-			ok = false
+			storeFailed = true
+		}
+		if storeFailed {
+			// A store error must not strand a due job: look again shortly.
+			at, ok = s.cfg.Now().Add(s.cfg.storeRetry), true
 		}
 	}
 	s.mu.Lock()
@@ -258,23 +275,27 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer) <-chan time.Tim
 }
 
 // dispatch starts due jobs while a worker is free.
-func (s *Scheduler) dispatch(ctx context.Context) {
+func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 	for ctx.Err() == nil {
 		s.mu.Lock()
 		blocked := s.paused || s.stopping || len(s.running) >= s.cfg.Workers
 		s.mu.Unlock()
 		if blocked {
-			return
+			return false
 		}
 		j, ok, err := s.cfg.Store.Pick(ctx, s.bootID)
 		if err != nil {
 			if ctx.Err() == nil {
 				s.cfg.Log.Error("jobs: pick", "err", err)
+				return true
 			}
-			return
+			return false
 		}
 		if !ok {
-			return
+			return false
+		}
+		if s.cfg.afterPick != nil {
+			s.cfg.afterPick(j)
 		}
 		jctx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 		s.mu.Lock()
@@ -283,13 +304,20 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 			// "running" for the next boot's pass (see ErrShutdown).
 			s.mu.Unlock()
 			cancel(ErrShutdown)
-			return
+			return false
 		}
 		s.running[j.ID] = cancel
+		if reason, ok := s.pending[j.ID]; ok {
+			cancel(CancelCause{Reason: reason}) // a cancel that raced the pick: the worker starts already cancelled
+		} else if j.CancelRequested {
+			cancel(CancelCause{Reason: j.CancelReason})
+		}
+		delete(s.pending, j.ID)
 		s.wg.Add(1) // under mu: stop() cannot run between the check and the Add
 		s.mu.Unlock()
 		go s.work(jctx, cancel, j)
 	}
+	return false
 }
 
 func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j Job) {
@@ -303,6 +331,7 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	s.record(bctx, j, err, cause)
 	s.mu.Lock()
 	delete(s.running, j.ID)
+	delete(s.pending, j.ID)
 	s.mu.Unlock()
 	s.Notify()
 }
@@ -321,23 +350,38 @@ func (s *Scheduler) record(ctx context.Context, j Job, runErr, cause error) {
 	st := s.cfg.Store
 	var cc CancelCause
 	cancelled := errors.As(cause, &cc)
+	// A failed write is tried once more. If it fails again the row stays
+	// "running" and the next boot's pass resolves it (plan 0004, Reconciler).
+	try := func(f func() error) error {
+		if err := f(); err != nil {
+			return f()
+		}
+		return nil
+	}
 	var err error
 	switch {
 	case runErr == nil:
-		err = st.Finish(ctx, j.ID, StateSucceeded, "")
+		err = try(func() error { return st.Finish(ctx, j.ID, StateSucceeded, "") })
 	case errors.Is(cause, ErrShutdown):
 		// Left running for the boot pass (see ErrShutdown).
 		s.cfg.Log.Info("jobs: a job was interrupted by shutdown", "job", j.ID)
 		return
 	case cancelled:
-		err = st.Finish(ctx, j.ID, StateCancelled, cc.Reason)
+		err = try(func() error { return st.Finish(ctx, j.ID, StateCancelled, cc.Reason) })
 	case IsRetryable(runErr) && j.Attempt < j.MaxAttempts:
-		err = st.Requeue(ctx, j.ID, s.cfg.RetryDelay(j.Attempt), runErr.Error())
+		err = try(func() error {
+			ok, err := st.Requeue(ctx, j.ID, s.cfg.RetryDelay(j.Attempt), runErr.Error())
+			if err == nil && !ok {
+				// A cancel was requested during the attempt: it wins over the retry.
+				return st.Finish(ctx, j.ID, StateCancelled, "cancelled")
+			}
+			return err
+		})
 	default:
-		err = st.Finish(ctx, j.ID, StateFailed, runErr.Error())
+		err = try(func() error { return st.Finish(ctx, j.ID, StateFailed, runErr.Error()) })
 	}
 	if err != nil {
-		s.cfg.Log.Error("jobs: record result", "job", j.ID, "err", err)
+		s.cfg.Log.Error("jobs: record result (the boot pass will resolve it)", "job", j.ID, "err", err)
 	}
 }
 

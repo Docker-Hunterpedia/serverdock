@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -43,9 +44,11 @@ func localOps(docker *dockerapi.Client, instance string, log *slog.Logger) (map[
 }
 
 // recordAppSubnet picks (first start) or reads (later starts) the app subnet and
-// returns the AppNet that checks it later. A failure is logged and not fatal:
-// without Docker nothing can be deployed anyway, and the choice is retried the
-// next time something asks for it.
+// returns the AppNet that checks it later. It can block startup for up to 10 s
+// when Docker is down. A failure is logged and not fatal (without Docker nothing
+// can be deployed anyway, and the choice is retried the next time something asks
+// for it), except an explicit --app-subnet that overlaps the host or a Docker
+// network: that refuses to start and records nothing.
 func recordAppSubnet(ctx context.Context, st *store.Store, docker *dockerapi.Client, instance, flag string, log *slog.Logger) (*deploy.AppNet, error) {
 	an, err := deploy.NewAppNet(deploy.AppNetOptions{Store: st, Instance: instance, Flag: flag, Docker: docker, Log: log})
 	if err != nil {
@@ -54,6 +57,10 @@ func recordAppSubnet(ctx context.Context, st *store.Store, docker *dockerapi.Cli
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := an.Subnet(ctx); err != nil {
+		var oe *deploy.OverlapError
+		if errors.As(err, &oe) && oe.FirstStart {
+			return nil, err // an explicit --app-subnet that clashes: refuse to start, save nothing
+		}
 		log.Warn("app subnet not recorded yet", "err", err)
 	}
 	return an, nil

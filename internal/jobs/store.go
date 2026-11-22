@@ -275,26 +275,27 @@ func supersede(ctx context.Context, tx *sql.Tx, lock string, newDeploy, newJob i
 	if err != nil {
 		return err
 	}
+	// A queued job is either waiting to start or waiting to retry (its deploy is
+	// then 'running'); both end here, so no deploy row is left non-final.
 	for _, p := range queued {
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_reason = 'superseded', finished_at = ?, error = 'superseded by a newer deploy'
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_requested = 1, cancel_reason = 'superseded', finished_at = ?, error = 'superseded by a newer deploy'
 			WHERE id = ? AND state = 'queued'`, ts, p.job); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'superseded', superseded_by = ?, finished_at = ?, reason_code = 'superseded',
-			reason = 'superseded by a newer deploy' WHERE id = ? AND status = 'queued'`, newDeploy, ts, p.deploy); err != nil {
+			reason = 'superseded by a newer deploy' WHERE id = ? AND status IN ('queued', 'running')`, newDeploy, ts, p.deploy); err != nil {
 			return err
 		}
 		out.Superseded = append(out.Superseded, p.job)
 	}
+	// A running job is only flagged. Its deploy may still finish (even succeed),
+	// so superseded_by is not set here: the runner records the outcome.
 	running, err := collect(StateRunning)
 	if err != nil {
 		return err
 	}
 	for _, p := range running {
 		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = 'superseded' WHERE id = ? AND state = 'running'`, p.job); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE deploys SET superseded_by = ? WHERE id = ?`, newDeploy, p.deploy); err != nil {
 			return err
 		}
 		out.CancelRunning = append(out.CancelRunning, p.job)
@@ -362,14 +363,24 @@ func (s *Store) Finish(ctx context.Context, id int64, state, errText string) err
 	})
 }
 
-// Requeue puts a running job back to queued for another attempt after delay.
-func (s *Store) Requeue(ctx context.Context, id int64, delay time.Duration, errText string) error {
-	return s.st.WriteTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', attempt = attempt + 1, run_after = ?, boot_id = NULL, started_at = NULL,
-			request_id = NULL, error = ? WHERE id = ? AND state = 'running' AND attempt < max_attempts`,
+// Requeue puts a running job back to queued for another attempt after delay. It
+// refuses (false) a job whose cancel was requested: the caller then finishes it
+// as cancelled, so a cancel or supersede that arrived during the attempt is never
+// undone by a retry.
+func (s *Store) Requeue(ctx context.Context, id int64, delay time.Duration, errText string) (bool, error) {
+	var ok bool
+	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', attempt = attempt + 1, run_after = ?, boot_id = NULL, started_at = NULL,
+			request_id = NULL, error = ? WHERE id = ? AND state = 'running' AND attempt < max_attempts AND cancel_requested = 0`,
 			FormatTime(s.now().Add(delay)), clip(errText, MaxErrorText), id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		ok = n == 1
 		return err
 	})
+	return ok, err
 }
 
 // cancel flags a job. A queued job becomes cancelled at once (returns
@@ -384,8 +395,15 @@ func (s *Store) cancel(ctx context.Context, id int64, reason string) (string, er
 		}
 		switch state {
 		case StateQueued:
-			_, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_requested = 1, cancel_reason = ?, finished_at = ?, error = ? WHERE id = ?`,
-				reason, FormatTime(s.now()), reason, id)
+			ts := FormatTime(s.now())
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'cancelled', cancel_requested = 1, cancel_reason = ?, finished_at = ?, error = ? WHERE id = ?`,
+				reason, ts, reason, id); err != nil {
+				return err
+			}
+			// The deploy of a queued job (never started, or waiting to retry) ends
+			// with it, in the same transaction.
+			_, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'cancelled', reason_code = 'cancelled', reason = ?, finished_at = ?
+				WHERE job_id = ? AND status IN ('queued', 'running')`, reason, ts, id)
 			state = StateCancelled
 			return err
 		case StateRunning:

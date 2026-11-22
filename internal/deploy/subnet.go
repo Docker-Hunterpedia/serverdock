@@ -40,8 +40,9 @@ const (
 const DefaultPool = "10.250.0.0/16"
 
 // ParseAppSubnet validates a --app-subnet value: a canonical IPv4 CIDR (host bits
-// zero, no spaces) from /24 to /20 that is not loopback, link-local, multicast
-// or unspecified.
+// zero, no spaces) from /24 to /20 that lies wholly inside private space: RFC 1918
+// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) or 100.64.0.0/10. A public range
+// would shadow real hosts for every container.
 func ParseAppSubnet(s string) (netip.Prefix, error) {
 	p, err := netip.ParsePrefix(s)
 	switch {
@@ -52,9 +53,14 @@ func ParseAppSubnet(s string) (netip.Prefix, error) {
 	case p.Bits() < minSubnetBits || p.Bits() > maxSubnetBits:
 		return netip.Prefix{}, fmt.Errorf("the size must be /%d to /%d", minSubnetBits, maxSubnetBits)
 	}
-	a := p.Addr()
-	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() {
-		return netip.Prefix{}, errors.New("must not be a loopback, link-local, multicast or unspecified range")
+	private := false
+	for _, r := range [...]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"} {
+		if rp := netip.MustParsePrefix(r); rp.Bits() <= p.Bits() && rp.Contains(p.Addr()) {
+			private = true
+		}
+	}
+	if !private {
+		return netip.Prefix{}, errors.New("must be a private range: inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10")
 	}
 	return p, nil
 }
@@ -246,6 +252,14 @@ func (a *AppNet) Subnet(ctx context.Context) (netip.Prefix, error) {
 	var chosen netip.Prefix
 	if a.o.Flag != "" {
 		chosen, _ = ParseAppSubnet(a.o.Flag) // validated in NewAppNet
+		// An explicit range is still checked before it is saved: an overlap
+		// refuses the start and nothing is recorded. Docker's networks are
+		// included when Docker answers (if it does not, the per-deploy check
+		// catches an overlap later).
+		nets, _ := a.o.Docker.NetworkSubnets(ctx)
+		if err := a.overlap(chosen, nets, true); err != nil {
+			return netip.Prefix{}, err
+		}
 	} else {
 		nets, err := a.o.Docker.NetworkSubnets(ctx)
 		if err != nil {
@@ -283,15 +297,22 @@ func (a *AppNet) Subnet(ctx context.Context) (netip.Prefix, error) {
 	return a.subnet, nil
 }
 
-// OverlapError is the refusal when the recorded app subnet now overlaps something
-// on the host. New deploys refuse with it; running apps are unaffected.
+// OverlapError is the refusal when an app subnet overlaps something on the host.
+// FirstStart is true for a --app-subnet given at first start (the server refuses
+// to start and records nothing); otherwise the recorded subnet now overlaps
+// something (a VPN added later, say): new deploys refuse with it and running apps
+// are unaffected.
 type OverlapError struct {
-	Subnet netip.Prefix
-	What   string
+	Subnet     netip.Prefix
+	What       string
+	FirstStart bool
 }
 
 func (e *OverlapError) Error() string {
-	return fmt.Sprintf("the app subnet %s now overlaps %s; set --app-subnet", e.Subnet, e.What)
+	if e.FirstStart {
+		return fmt.Sprintf("--app-subnet %s overlaps %s; choose another range", e.Subnet, e.What)
+	}
+	return fmt.Sprintf("the app subnet %s now overlaps %s; changing the app subnet of an existing install is not supported yet (see the plan 0009 doctor check)", e.Subnet, e.What)
 }
 
 // Check verifies the recorded subnet against the host's interfaces and routes and
@@ -307,6 +328,12 @@ func (a *AppNet) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list Docker networks: %w", err)
 	}
+	return a.overlap(subnet, nets, false)
+}
+
+// overlap compares subnet with the host's interfaces and routes and with the
+// Docker networks in nets (our own network and its bridge are skipped).
+func (a *AppNet) overlap(subnet netip.Prefix, nets []dockerapi.NetworkSubnet, firstStart bool) error {
 	ours := agentops.NetworkName(a.o.Instance)
 	exclude := ""
 	for _, n := range nets {
@@ -320,7 +347,7 @@ func (a *AppNet) Check(ctx context.Context) error {
 	}
 	for _, u := range host {
 		if u.Prefix.Overlaps(subnet) {
-			return &OverlapError{Subnet: subnet, What: u.What + " (" + u.Prefix.String() + ")"}
+			return &OverlapError{Subnet: subnet, What: u.What + " (" + u.Prefix.String() + ")", FirstStart: firstStart}
 		}
 	}
 	for _, n := range nets {
@@ -329,7 +356,7 @@ func (a *AppNet) Check(ctx context.Context) error {
 		}
 		for _, p := range n.Subnets {
 			if p.Overlaps(subnet) {
-				return &OverlapError{Subnet: subnet, What: fmt.Sprintf("the Docker network %q (%s)", n.Name, p)}
+				return &OverlapError{Subnet: subnet, What: fmt.Sprintf("the Docker network %q (%s)", n.Name, p), FirstStart: firstStart}
 			}
 		}
 	}

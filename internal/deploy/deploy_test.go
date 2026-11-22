@@ -95,14 +95,15 @@ func newAppNet(t *testing.T, st *store.Store, d DockerNetworks, flag string, hos
 }
 
 func TestAppSubnetFlagIsValidatedFromSlash24ToSlash20(t *testing.T) {
-	ok := []string{"10.250.0.0/24", "10.250.0.0/23", "10.250.0.0/22", "10.250.16.0/20", "192.168.100.0/24", "172.30.0.0/20"}
+	ok := []string{"100.64.0.0/24", "100.127.255.0/24", "172.16.0.0/24", "172.31.240.0/20", "10.250.0.0/24", "10.250.0.0/23", "10.250.0.0/22", "10.250.16.0/20", "192.168.100.0/24", "172.30.0.0/20"}
 	for _, s := range ok {
 		if _, err := ParseAppSubnet(s); err != nil {
 			t.Errorf("%s refused: %v", s, err)
 		}
 	}
 	bad := []string{"", "10.250.0.0/25", "10.250.0.0/26", "10.250.0.0/19", "10.250.0.0/16", "10.250.0.0/8", "10.250.0.5/24", "10.250.0.0",
-		"fd00::/64", "::ffff:10.0.0.0/120", "127.0.0.0/24", "169.254.1.0/24", "224.0.0.0/20", "0.0.0.0/24", " 10.250.0.0/24", "10.250.0.0/24 ", "010.250.0.0/24", "10.250.0.0/024"}
+		"fd00::/64", "::ffff:10.0.0.0/120", "127.0.0.0/24", "169.254.1.0/24", "224.0.0.0/20", "0.0.0.0/24",
+		"8.8.8.0/24", "172.32.0.0/24", "172.15.255.0/24", "192.169.0.0/24", "100.128.0.0/24", "11.0.0.0/24", "193.168.0.0/24", " 10.250.0.0/24", "10.250.0.0/24 ", "010.250.0.0/24", "10.250.0.0/024"}
 	for _, s := range bad {
 		if _, err := ParseAppSubnet(s); err == nil {
 			t.Errorf("%q accepted", s)
@@ -161,8 +162,32 @@ func TestAppSubnetFlagWinsAtFirstStart(t *testing.T) {
 	if err != nil || got.String() != "192.168.77.0/24" {
 		t.Fatalf("%s %v", got, err)
 	}
-	if d.calls != 0 {
-		t.Error("Docker was asked although the flag decided")
+}
+
+// An explicit --app-subnet that overlaps the host or a Docker network refuses
+// the start and records nothing; a Docker that does not answer does not block it.
+func TestAppSubnetFlagOverlapRefusesAndSavesNothing(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	d := &fakeNets{nets: []dockerapi.NetworkSubnet{net1("vpn", "v1", "192.168.77.0/25")}}
+	_, err := newAppNet(t, st, d, "192.168.77.0/24", noHost).Subnet(ctx)
+	var oe *OverlapError
+	if !errors.As(err, &oe) || !oe.FirstStart || !strings.Contains(err.Error(), "vpn") || !strings.Contains(err.Error(), "choose another") {
+		t.Fatalf("overlap with a Docker network: %v", err)
+	}
+	host := func(string) ([]Used, error) {
+		return []Used{{What: "the host route via tun0", Prefix: netip.MustParsePrefix("192.168.0.0/16")}}, nil
+	}
+	if _, err := newAppNet(t, st, &fakeNets{}, "192.168.77.0/24", host).Subnet(ctx); !errors.As(err, &oe) || !strings.Contains(err.Error(), "tun0") {
+		t.Fatalf("overlap with a host route: %v", err)
+	}
+	var n int
+	st.R.QueryRow(`SELECT count(*) FROM meta WHERE key = 'app_subnet'`).Scan(&n)
+	if n != 0 {
+		t.Fatal("a refused subnet was saved")
+	}
+	if got, err := newAppNet(t, st, &fakeNets{err: errors.New("down")}, "192.168.77.0/24", noHost).Subnet(ctx); err != nil || got.String() != "192.168.77.0/24" {
+		t.Fatalf("Docker down must not block an explicit subnet: %v %v", got, err)
 	}
 }
 
@@ -215,7 +240,7 @@ func TestAppSubnetOverlapRefusesDeploysWithAHint(t *testing.T) {
 	d.mu.Unlock()
 	err := a.Check(ctx)
 	var oe *OverlapError
-	if !errors.As(err, &oe) || !strings.Contains(err.Error(), "--app-subnet") || !strings.Contains(err.Error(), "vpn-net") || !strings.Contains(err.Error(), "10.250.0.0/24") {
+	if !errors.As(err, &oe) || !strings.Contains(err.Error(), "not supported yet") || !strings.Contains(err.Error(), "vpn-net") || !strings.Contains(err.Error(), "10.250.0.0/24") {
 		t.Fatalf("overlap with a Docker network: %v", err)
 	}
 
@@ -227,7 +252,7 @@ func TestAppSubnetOverlapRefusesDeploysWithAHint(t *testing.T) {
 		return []Used{{What: "the host route via tun0", Prefix: netip.MustParsePrefix("10.250.0.0/16")}}, nil
 	}
 	err = newAppNet(t, st, d, "", host2).Check(ctx)
-	if !errors.As(err, &oe) || !strings.Contains(err.Error(), "tun0") || !strings.Contains(err.Error(), "set --app-subnet") {
+	if !errors.As(err, &oe) || !strings.Contains(err.Error(), "tun0") || !strings.Contains(err.Error(), "plan 0009") {
 		t.Fatalf("overlap with a host route: %v", err)
 	}
 
@@ -237,7 +262,7 @@ func TestAppSubnetOverlapRefusesDeploysWithAHint(t *testing.T) {
 	dep := addDeploy(t, st, svc, 1, "running", nil)
 	_, err = al.Allocate(ctx, dep)
 	var de *Error
-	if !errors.As(err, &de) || de.Code != CodeAppSubnet || de.Retryable || !strings.Contains(err.Error(), "--app-subnet") {
+	if !errors.As(err, &de) || de.Code != CodeAppSubnet || de.Retryable || !strings.Contains(err.Error(), "not supported yet") {
 		t.Fatalf("allocation under an overlap: %v", err)
 	}
 }
