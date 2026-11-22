@@ -745,7 +745,8 @@ func TestExposureListsForeignPublishedPorts(t *testing.T) {
 	if err != nil || len(fresh.Containers) != 0 || g.ports.n() != 2 {
 		t.Fatalf("after the TTL: %+v calls %d %v", fresh, g.ports.n(), err)
 	}
-	// A failure is reported as unavailable and is not cached: the next read asks again.
+	// A failure is reported as unavailable and remembered for 5 s (no call per
+	// waiter behind a hung Docker); after that the next read asks again.
 	g.clk.Add(31 * time.Second)
 	g.ports.err = errors.New("dockerd: /var/run/docker.sock: connection refused")
 	_, err = callAs[ExposureOut](g, readTok, "system.exposure", m{})
@@ -754,6 +755,11 @@ func TestExposureListsForeignPublishedPorts(t *testing.T) {
 		t.Errorf("the message leaks the cause: %v", err)
 	}
 	g.ports.err = nil
+	g.clk.Add(3 * time.Second)
+	if _, err = callAs[ExposureOut](g, readTok, "system.exposure", m{}); !errors.Is(err, actions.ErrUnavailable) || g.ports.n() != 3 {
+		t.Errorf("within 5 s the failure is remembered: %v calls %d", err, g.ports.n())
+	}
+	g.clk.Add(3 * time.Second)
 	if _, err = callAs[ExposureOut](g, readTok, "system.exposure", m{}); err != nil || g.ports.n() != 4 {
 		t.Errorf("%v calls %d", err, g.ports.n())
 	}
@@ -963,7 +969,10 @@ func (*noSink) Denied(context.Context, audit.Entry) (bool, error)  { return fals
 // the routes are ready: no "not applied" and no "Try again" for a portless
 // service, a tag, a health check, or clearing a port that is not set.
 func TestChangesWithoutARouteAreAppliedEvenWithTheGateClosed(t *testing.T) {
-	g := newSvcRig(t) // gate closed
+	var g *svcRig
+	g = newSvcRig(t, func(d *ServiceDeps) { // gate closed, and a Boot hook that counts its calls
+		d.Boot = func(context.Context) error { g.boots++; return nil }
+	})
 	check := func(what string, out ServiceChangeOut) {
 		t.Helper()
 		if !out.Applied || strings.Contains(out.Notice, "Try again") || strings.Contains(out.Notice, "not applied") {
@@ -980,8 +989,8 @@ func TestChangesWithoutARouteAreAppliedEvenWithTheGateClosed(t *testing.T) {
 		t.Error("a change without a route touched the proxy or the boot")
 	}
 	// With a port the same gate is "not applied".
-	if out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "public_port": 9000}); out.Applied {
-		t.Errorf("%+v", out)
+	if out := must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "public_port": 9000}); out.Applied || g.boots != 1 {
+		t.Errorf("%+v boots=%d", out, g.boots)
 	}
 }
 
@@ -1020,16 +1029,18 @@ func TestStaleRouteErrorShowsOnServicesAndClears(t *testing.T) {
 	if out.Applied || out.Service.RouteError != StaleMessage {
 		t.Fatalf("%+v", out)
 	}
-	if got := g.get("p/web").RouteError; got != StaleMessage {
-		t.Errorf("get: %q", got)
+	if got := g.get("p/web"); got.RouteError != StaleMessage || !got.RoutesStale {
+		t.Errorf("get: %q stale=%v", got.RouteError, got.RoutesStale)
 	}
-	if got := g.get("p/other").RouteError; got != "" { // no public port: no route to be stale
-		t.Errorf("other: %q", got)
+	// routes_stale is system-wide: a service that was just cleared shows it too.
+	must[ServiceChangeOut](g, "services.set_public_port", m{"service": "p/web", "clear": true})
+	if got := g.get("p/other"); !got.RoutesStale || got.RouteError != "" {
+		t.Errorf("other: %+v", got)
 	}
 	g.px.fail = nil
 	must[ServiceChangeOut](g, "services.retry_port", m{"service": "p/web"})
-	if got := g.get("p/web").RouteError; got != "" {
-		t.Errorf("after a successful apply: %q", got)
+	if got := g.get("p/web"); got.RouteError != "" || got.RoutesStale {
+		t.Errorf("after a successful apply: %+v", got)
 	}
 }
 
@@ -1127,3 +1138,38 @@ func (h *hangingPorts) ContainerPorts(context.Context) (agentops.PortsResult, er
 }
 
 func (h *hangingPorts) calls() int { h.mu.Lock(); defer h.mu.Unlock(); return h.n }
+
+// An action that arrives before the panel is up (the control socket serves
+// before the local agent loads the proxy) starts no boot and is told "not
+// applied yet"; once the panel is up the boot goes in order and a Try again works.
+func TestActionBeforeThePanelIsUpStartsNoBoot(t *testing.T) {
+	var g *svcRig
+	panelUp := make(chan struct{})
+	var booter *Booter
+	g = newSvcRig(t, func(d *ServiceDeps) {
+		d.Boot = func(ctx context.Context) error { return booter.Run(ctx) }
+		d.EnsureBound = 100 * time.Millisecond
+	})
+	s := &bootSeq{}
+	en := &fakeEnsurer{s: s}
+	booter = NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s, subnet: "10.250.7.0/24"}, Net: en, Routes: g.r,
+		Src: &fakeSource{seq: &s.seq}, SyncRoutes: true, PanelUp: panelUp})
+	g.create("p", "web", m{"container_port": 80})
+	// ensureRoutes waits for the panel, bounded by EnsureBound (100 ms here).
+	raw, _ := json.Marshal(m{"service": "p/web", "public_port": 9000})
+	res, err := g.reg.Invoke(context.Background(), adminActor(), "services.set_public_port", raw, actions.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := res.Out.(ServiceChangeOut); out.Applied || !strings.Contains(out.Notice, "not applied yet") {
+		t.Fatalf("%+v", out)
+	}
+	if len(s.seq) != 0 || en.calls.Load() != 0 || g.r.Ready() || g.px.n() != 0 {
+		t.Fatalf("a boot ran before the panel was up: %v", s.seq)
+	}
+	close(panelUp)
+	out := must[ServiceChangeOut](g, "services.retry_port", m{"service": "p/web"})
+	if !out.Applied || strings.Join(s.seq, ",") != "subnet,check,network_ensure,list" {
+		t.Errorf("%+v %v", out, s.seq)
+	}
+}

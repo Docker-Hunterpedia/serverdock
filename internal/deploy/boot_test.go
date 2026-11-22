@@ -68,6 +68,11 @@ const bootInstance = "0123456789abcdef0123456789abcdef"
 
 func newBooter(t *testing.T, sync bool) (*Booter, *bootSeq, *fakeEnsurer, *fakeSubnet, *fakeSource, *Routes) {
 	t.Helper()
+	return newBooterAfter(t, sync, nil)
+}
+
+func newBooterAfter(t *testing.T, sync bool, panelUp <-chan struct{}) (*Booter, *bootSeq, *fakeEnsurer, *fakeSubnet, *fakeSource, *Routes) {
+	t.Helper()
 	s := &bootSeq{}
 	st := openStore(t)
 	px := &fakeProxy{events: &s.seq}
@@ -75,7 +80,7 @@ func newBooter(t *testing.T, sync bool) (*Booter, *bootSeq, *fakeEnsurer, *fakeS
 	en := &fakeEnsurer{s: s}
 	sn := &fakeSubnet{s: s, subnet: "10.250.7.0/24"}
 	src := &fakeSource{seq: &s.seq}
-	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: sn, Net: en, Routes: r, Src: src, SyncRoutes: sync})
+	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: sn, Net: en, Routes: r, Src: src, SyncRoutes: sync, PanelUp: panelUp})
 	return b, s, en, sn, src, r
 }
 
@@ -248,29 +253,50 @@ func TestBootRunIsSingleFlight(t *testing.T) {
 	}
 }
 
-// A run that hangs ends with its own caller's context: the lazy run of an action
-// is bounded by the action's, and the start-up run by shutdown, never by a waiter.
-func TestBootRunEndsWithItsCallersContext(t *testing.T) {
-	b, _, en, _, _, _ := newBooter(t, true)
+// A run that hangs ends with its own caller's context, and a waiter whose own
+// context is alive does not inherit that cancellation: it starts a new run.
+func TestBootRunEndsWithItsCallersContextAndWaitersStartANewOne(t *testing.T) {
+	b, _, en, _, _, r := newBooter(t, true)
 	en.block, en.entered = make(chan struct{}), make(chan struct{}, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	res := make(chan error, 1)
 	go func() { res <- b.Run(ctx) }()
 	<-en.entered
-	// A second caller waits on the first.
 	waiter := make(chan error, 1)
-	go func() { waiter <- b.Run(context.Background()) }()
+	go func() { waiter <- b.Run(context.Background()) }() // waits on the first
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 	if err := <-res; err == nil {
 		t.Error("the cancelled run reported success")
 	}
-	if err := <-waiter; err == nil {
-		t.Error("the waiter got success from a cancelled run")
+	<-en.entered // the waiter started its own run
+	close(en.block)
+	if err := <-waiter; err != nil || !r.Ready() {
+		t.Fatalf("the waiter: %v ready=%v", err, r.Ready())
 	}
-	// The next call starts a fresh run.
-	en.block = nil
+	if en.calls.Load() != 2 {
+		t.Errorf("network_ensure ran %d times, want 2 (the cancelled one and the waiter's)", en.calls.Load())
+	}
+}
+
+// A lazy Run before the panel is up starts nothing and says so through its
+// context; after PanelUp the boot goes panel, then network_ensure, then Sync.
+func TestBootRunWaitsForThePanel(t *testing.T) {
+	panelUp := make(chan struct{})
+	b, s, en, _, _, r := newBooterAfter(t, true, panelUp)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := b.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%v", err)
+	}
+	if len(s.seq) != 0 || en.calls.Load() != 0 || r.Ready() {
+		t.Fatalf("a run started before the panel was up: %v", s.seq)
+	}
+	close(panelUp)
 	if err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if got := strings.Join(s.seq, ","); got != "subnet,check,network_ensure,list" || !r.Ready() {
+		t.Errorf("%s ready=%v", got, r.Ready())
 	}
 }

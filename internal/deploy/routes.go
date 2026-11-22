@@ -274,7 +274,8 @@ func (e *MutateError) Unwrap() error { return e.Err }
 //
 // After a mutate that returned nil the change is committed, so steps 2 to 4 run
 // on a context detached from ctx's cancellation, bounded by ApplyBound; if they
-// fail, the routes are marked stale (Stale) until an apply succeeds. mutate must
+// fail, the routes are marked stale (Stale) until an apply succeeds (any failed
+// send marks them, committed change or not). mutate must
 // commit anything it writes before returning, must not be called with a SQLite
 // write transaction open, and never takes a service or allocation lock.
 //
@@ -295,10 +296,10 @@ func (r *Routes) hasFailed() bool {
 	return len(r.failed) > 0
 }
 
-// Stale reports that a change was committed to the database but the proxy has
-// not applied it (the apply that followed failed or timed out). It clears when
-// an apply succeeds. Not set for ErrRoutesNotReady: that is "not yet", not
-// "failed".
+// Stale reports that the proxy may not match the desired route list: the last
+// send after the gate opened failed or timed out (after a committed change, the
+// boot Sync, an override re-apply). A successful send clears it. Not set for
+// ErrRoutesNotReady: that is "not yet", not "failed".
 func (r *Routes) Stale() bool {
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
@@ -334,12 +335,10 @@ func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach b
 		defer cancel()
 	}
 	err := r.send(ctx, retry)
-	switch {
-	case err == nil:
-		r.setStale(false)
-	case committed:
-		r.setStale(true)
-	}
+	// Stale means "the proxy may not match the desired list": any send that fails
+	// once the gate is open (a committed change, the boot Sync, an override
+	// re-apply) sets it, and a successful send clears it.
+	r.setStale(err != nil)
 	return err
 }
 

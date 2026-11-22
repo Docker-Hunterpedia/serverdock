@@ -530,6 +530,10 @@
                 "description": "false until the first container list has finished: no app route is served before that",
                 "type": "boolean"
               },
+              "routes_stale": {
+                "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                "type": "boolean"
+              },
               "service": {
                 "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                 "type": "string"
@@ -578,6 +582,7 @@
               "drain_s",
               "stop_grace_s",
               "state",
+              "routes_stale",
               "routes_ready",
               "warnings",
               "created_at",
@@ -679,6 +684,10 @@
             "description": "false until the first container list has finished: no app route is served before that",
             "type": "boolean"
           },
+          "routes_stale": {
+            "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+            "type": "boolean"
+          },
           "service": {
             "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
             "type": "string"
@@ -727,6 +736,7 @@
           "drain_s",
           "stop_grace_s",
           "state",
+          "routes_stale",
           "routes_ready",
           "warnings",
           "created_at",
@@ -817,6 +827,10 @@
                   "description": "false until the first container list has finished: no app route is served before that",
                   "type": "boolean"
                 },
+                "routes_stale": {
+                  "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                  "type": "boolean"
+                },
                 "service": {
                   "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                   "type": "string"
@@ -865,6 +879,7 @@
                 "drain_s",
                 "stop_grace_s",
                 "state",
+                "routes_stale",
                 "routes_ready",
                 "warnings",
                 "created_at",
@@ -977,6 +992,10 @@
                 "description": "false until the first container list has finished: no app route is served before that",
                 "type": "boolean"
               },
+              "routes_stale": {
+                "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                "type": "boolean"
+              },
               "service": {
                 "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                 "type": "string"
@@ -1025,6 +1044,7 @@
               "drain_s",
               "stop_grace_s",
               "state",
+              "routes_stale",
               "routes_ready",
               "warnings",
               "created_at",
@@ -1147,6 +1167,10 @@
                 "description": "false until the first container list has finished: no app route is served before that",
                 "type": "boolean"
               },
+              "routes_stale": {
+                "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                "type": "boolean"
+              },
               "service": {
                 "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                 "type": "string"
@@ -1195,6 +1219,7 @@
               "drain_s",
               "stop_grace_s",
               "state",
+              "routes_stale",
               "routes_ready",
               "warnings",
               "created_at",
@@ -1311,6 +1336,10 @@
                 "description": "false until the first container list has finished: no app route is served before that",
                 "type": "boolean"
               },
+              "routes_stale": {
+                "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                "type": "boolean"
+              },
               "service": {
                 "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                 "type": "string"
@@ -1359,6 +1388,7 @@
               "drain_s",
               "stop_grace_s",
               "state",
+              "routes_stale",
               "routes_ready",
               "warnings",
               "created_at",
@@ -1535,6 +1565,10 @@
                 "description": "false until the first container list has finished: no app route is served before that",
                 "type": "boolean"
               },
+              "routes_stale": {
+                "description": "true while the proxy may not match the desired routes (the last apply failed); Try again",
+                "type": "boolean"
+              },
               "service": {
                 "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
                 "type": "string"
@@ -1583,6 +1617,7 @@
               "drain_s",
               "stop_grace_s",
               "state",
+              "routes_stale",
               "routes_ready",
               "warnings",
               "created_at",

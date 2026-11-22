@@ -31,6 +31,9 @@ import (
 // the age is checked on read, and there is no timer.
 const ExposureTTL = 30 * time.Second
 
+// exposureErrTTL is how long a failed Docker call is remembered.
+const exposureErrTTL = 5 * time.Second
+
 const timeLayout = "2006-01-02T15:04:05.000Z"
 
 // PortLister is what system.exposure asks Docker: *agentops.Client.
@@ -50,6 +53,8 @@ type ServiceDeps struct {
 	// app, so setting a public port is refused with a clear message instead of
 	// being saved and never applied.
 	NoProxy bool
+	// EnsureBound bounds the lazy boot an action may run (default 10 s).
+	EnsureBound time.Duration
 	// Policy carries --allow-loopback-registry (image references are checked with
 	// it here, and again at deploy time).
 	Policy policy.Options
@@ -75,6 +80,11 @@ type exposureCache struct {
 	at  time.Time
 	val ExposureOut
 	ok  bool
+	// errAt is when Docker last failed (valid with errOK): the failure is
+	// remembered for exposureErrTTL, so waiters behind a hung Docker do not each
+	// make a long call of their own. Age is checked on read; no timer.
+	errAt time.Time
+	errOK bool
 	// sem lets one caller at a time ask Docker; the others wait on it in a select
 	// against their own context, so a hung Docker call cannot make them pile up.
 	sem chan struct{}
@@ -137,6 +147,7 @@ type ServiceOut struct {
 	State          string    `json:"state" doc:"not_deployed, running, restarting, stopped, missing or unknown"`
 	ActiveDeploy   *int      `json:"active_deploy" doc:"the number of the live deploy, if any"`
 	NeedsAttention string    `json:"needs_attention,omitempty"`
+	RoutesStale    bool      `json:"routes_stale" doc:"true while the proxy may not match the desired routes (the last apply failed); Try again"`
 	RoutesReady    bool      `json:"routes_ready" doc:"false until the first container list has finished: no app route is served before that"`
 	RouteError     string    `json:"route_error,omitempty" doc:"set when the proxy could not open the public port"`
 	Warnings       []Warning `json:"warnings"`
@@ -598,7 +609,7 @@ func (d *svcDeps) out(r svcRow) ServiceOut {
 		Health:   HealthOut{Kind: r.healthKind, Path: r.healthPath.String, TimeoutS: r.timeoutS, Passes: r.passes},
 		Strategy: r.strategy, DrainS: r.drainS, StopGraceS: r.graceS,
 		ActiveDeploy: intPtr(r.activeNumber), NeedsAttention: r.attention.String,
-		RoutesReady: d.Routes.Ready(), Warnings: []Warning{}, CreatedAt: r.created, UpdatedAt: r.updated,
+		RoutesReady: d.Routes.Ready(), RoutesStale: d.Routes.Stale(), Warnings: []Warning{}, CreatedAt: r.created, UpdatedAt: r.updated,
 	}
 	o.State = d.state(r)
 	if r.publicPort.Valid {
@@ -928,7 +939,11 @@ func (d *svcDeps) ensureRoutes(ctx context.Context) {
 	if d.Boot == nil || d.Routes.Ready() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, ensureBound)
+	bound := d.EnsureBound
+	if bound <= 0 {
+		bound = ensureBound
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	_ = d.Boot(ctx)
 }
@@ -1041,12 +1056,15 @@ func (d *svcDeps) retryPort(ctx context.Context, in ServiceRefIn) (ServiceChange
 
 // exposure answers system.exposure from a 30-second cache. The age is checked
 // here, on read: there is no timer, and Docker is asked only when someone asks
-// and the answer is older than the TTL. An error is not cached.
+// and the answer is older than the TTL. A failure is remembered for 5 s.
 func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 	if d.Exposure == nil {
 		return ExposureOut{}, actions.Unavailable("the exposure check needs the local agent")
 	}
-	if v, ok := d.cachedExposure(); ok {
+	if v, failed, ok := d.cachedExposure(); ok {
+		if failed {
+			return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
+		}
 		return v, nil
 	}
 	// One caller asks Docker; the others wait here in a select against their own
@@ -1058,12 +1076,20 @@ func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 		return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
 	}
 	defer func() { <-d.exp.sem }()
-	if v, ok := d.cachedExposure(); ok {
+	if v, failed, ok := d.cachedExposure(); ok {
+		if failed {
+			return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
+		}
 		return v, nil
 	}
 	res, err := d.Exposure.ContainerPorts(ctx)
 	if err != nil {
 		d.Log.Warn("exposure check failed", "err", err.Error())
+		// Remember the failure for a few seconds (age checked on read, no timer), so
+		// callers behind a hung Docker do not each make a long call of their own.
+		d.exp.mu.Lock()
+		d.exp.errAt, d.exp.errOK = d.Now(), true
+		d.exp.mu.Unlock()
 		return ExposureOut{}, actions.Unavailable("could not ask Docker which containers publish ports")
 	}
 	var panel []netip.Addr
@@ -1085,18 +1111,24 @@ func (d *svcDeps) exposure(ctx context.Context) (ExposureOut, error) {
 	sort.Slice(out.Containers, func(i, j int) bool { return out.Containers[i].Name < out.Containers[j].Name })
 	d.exp.mu.Lock()
 	d.exp.at, d.exp.val, d.exp.ok = d.Now(), out, true
+	d.exp.errOK = false
 	d.exp.mu.Unlock()
 	return out, nil
 }
 
-func (d *svcDeps) cachedExposure() (ExposureOut, bool) {
+// cachedExposure returns a fresh answer, or (failed=true) a remembered recent
+// failure; ok is false when Docker must be asked.
+func (d *svcDeps) cachedExposure() (v ExposureOut, failed, ok bool) {
 	d.exp.mu.Lock()
 	defer d.exp.mu.Unlock()
 	now := d.Now()
-	if d.exp.ok && now.Sub(d.exp.at) < ExposureTTL && !d.exp.at.After(now) {
-		return d.exp.val, true
+	if d.exp.errOK && now.Sub(d.exp.errAt) < exposureErrTTL && !d.exp.errAt.After(now) {
+		return ExposureOut{}, true, true
 	}
-	return ExposureOut{}, false
+	if d.exp.ok && now.Sub(d.exp.at) < ExposureTTL && !d.exp.at.After(now) {
+		return d.exp.val, false, true
+	}
+	return ExposureOut{}, false, false
 }
 
 // sharesPanelAddress is true for a port published on every interface or on one

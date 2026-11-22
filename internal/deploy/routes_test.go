@@ -767,3 +767,31 @@ func TestStaleAfterAFailedApplyClearsOnSuccess(t *testing.T) {
 		t.Fatalf("%v stale=%v", err, r.Stale())
 	}
 }
+
+// A failing send marks the routes stale whatever caused it, not only a committed
+// mutate: here the boot Sync's own send. A later successful Refresh clears it.
+func TestStaleAfterAFailedBootSync(t *testing.T) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
+	seq := []string{}
+	src := &fakeSource{seq: &seq, list: []agentops.ListedContainer{{ID: cid(1)}}, inspect: map[string]agentops.ContainerState{cid(1): {
+		ID: cid(1), State: "running", Running: true, Owned: true, ConfiguredIP: "10.250.1.2", IP: "10.250.1.2",
+		Labels: map[string]string{agentops.LabelService: strconv.FormatInt(svc, 10), agentops.LabelDeploy: strconv.FormatInt(d, 10)}}}}
+	px.fail = errors.New("agent gone")
+	if err := r.Sync(bg, src); err == nil {
+		t.Fatal("the Sync's failed send returned nil")
+	}
+	if !r.Ready() || !r.Stale() {
+		t.Fatalf("ready=%v stale=%v", r.Ready(), r.Stale())
+	}
+	px.fail = nil
+	if err := r.Refresh(bg); err != nil || r.Stale() || px.n() != 1 {
+		t.Fatalf("%v stale=%v calls %d", err, r.Stale(), px.n())
+	}
+	// An override re-apply that fails marks it as well.
+	px.fail = errors.New("agent gone")
+	if err := r.SetOverride(bg, svc, Override{Kind: OverrideMaintenance}); err == nil || !r.Stale() {
+		t.Fatalf("%v stale=%v", err, r.Stale())
+	}
+}

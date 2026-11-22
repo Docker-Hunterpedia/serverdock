@@ -454,7 +454,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// once the panel is up (below), and lazily again from the actions.
 	opsClient := agentops.NewClient(localCaller{h: h})
 	routes := deploy.NewRoutes(st, opsClient, log)
-	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, Log: log})
+	// panelUp is closed once the local agent has loaded the panel: the Booter does
+	// not start (or join) a run before that, whether it is the start-up run or a
+	// lazy one from an action that arrives early on the control socket.
+	panelUp := make(chan struct{})
+	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, PanelUp: panelUp, Log: log})
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -518,7 +522,6 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// Boot order: the panel alone first (RunLocal loads it), then network_ensure,
 	// then Sync, which opens the route gate. One short-lived goroutine, joined
 	// below; if Docker is down it logs and ends, and the actions retry it lazily.
-	panelUp := make(chan struct{})
 	var boot sync.WaitGroup
 	boot.Go(func() {
 		select {

@@ -28,7 +28,12 @@ type BootConfig struct {
 	// SyncRoutes is false when the embedded proxy is off: there is no route to
 	// apply, so the boot gate stays closed and the panel (if any) runs alone.
 	SyncRoutes bool
-	Log        *slog.Logger
+	// PanelUp is closed once the local agent has loaded the panel (the proxy is
+	// started). Run waits for it, against its own context, before it starts or
+	// joins a run: a lazy run before that would Sync into a proxy that is not
+	// started and open the gate for nothing. Nil means already up.
+	PanelUp <-chan struct{}
+	Log     *slog.Logger
 }
 
 // Booter runs the boot sequence of the app side, in this order: the panel runs
@@ -93,25 +98,40 @@ func (b *Booter) setProblem(s string) {
 // whichever comes first. The run itself uses the context of the caller that
 // started it, so a caller's bound (and shutdown) always ends what it started.
 func (b *Booter) Run(ctx context.Context) error {
-	b.flight.Lock()
-	if r := b.cur; r != nil {
-		b.flight.Unlock()
+	if b.cfg.PanelUp != nil {
 		select {
-		case <-r.done:
-			return r.err
+		case <-b.cfg.PanelUp:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	r := &bootRun{done: make(chan struct{})}
-	b.cur = r
-	b.flight.Unlock()
-	r.err = b.run(ctx)
-	b.flight.Lock()
-	b.cur = nil
-	b.flight.Unlock()
-	close(r.done)
-	return r.err
+	for {
+		b.flight.Lock()
+		if r := b.cur; r != nil {
+			b.flight.Unlock()
+			select {
+			case <-r.done:
+				// The starter's own context may have ended the run; ours is still
+				// alive, so try again (join or start a new run) instead of failing
+				// on someone else's cancellation.
+				if ctx.Err() == nil && (errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded)) {
+					continue
+				}
+				return r.err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		r := &bootRun{done: make(chan struct{})}
+		b.cur = r
+		b.flight.Unlock()
+		r.err = b.run(ctx)
+		b.flight.Lock()
+		b.cur = nil
+		b.flight.Unlock()
+		close(r.done)
+		return r.err
+	}
 }
 
 func (b *Booter) run(ctx context.Context) error {

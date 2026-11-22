@@ -702,6 +702,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -744,6 +746,8 @@ export interface components {
             route_error?: string;
             /** @description false until the first container list has finished: no app route is served before that */
             routes_ready: boolean;
+            /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+            routes_stale: boolean;
             /** @description <project>/<service>: the name every service action takes */
             service: string;
             /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -783,6 +787,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -829,6 +835,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -879,6 +887,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -927,6 +937,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
@@ -989,6 +1001,8 @@ export interface components {
                 route_error?: string;
                 /** @description false until the first container list has finished: no app route is served before that */
                 routes_ready: boolean;
+                /** @description true while the proxy may not match the desired routes (the last apply failed); Try again */
+                routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
                 /** @description not_deployed, running, restarting, stopped, missing or unknown */
