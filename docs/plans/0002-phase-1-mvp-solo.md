@@ -1197,7 +1197,7 @@ Panics are recovered and recorded as an `error` outcome.
    - (b) CI signing **only** in a protected `release` environment (required reviewer, tag-only trigger), with the key in a cloud KMS or an environment-scoped secret.
 
    Either way, the binary embeds the current and next public keys.
-6. **Q6 — Dogfood, VPS and docs hosting** *(before M7a, because the first VPS bench is its exit)*. Which of our apps, which 1 GB VPS provider, and which subdomain for the docs site?
+6. **Q6 — Dogfood, VPS and docs hosting** *(before M7a, because the first VPS bench is its exit)*. Which of our apps, which 1 GB VPS provider, and which subdomain for the docs site? **Partial answer (maintainer, 2026-11-22): the M7a VPS bench runs on the maintainer's test server (Hetzner, Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM).** It is not a 1 GB machine: the bench already caps the measured container at `--memory 1g --cpus 1`, and the research/06 entry must say the host is larger than 1 GB (so host-level free memory and swap pressure are not the 1 GB case). A true 1 GB VPS stays required for the M9 final run unless the maintainer decides otherwise. Dogfood apps and docs subdomain: still open.
 7. **Q7 — Minimum Docker version** *(before M1 step 4)*.
    - Engine 25 / API 1.44 excludes Debian 12's `docker.io` (20.10).
    - **Recommendation:** require 25+. Pre-flight explains why and offers (after asking) to install from Docker's official repository.

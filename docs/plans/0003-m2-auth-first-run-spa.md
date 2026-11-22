@@ -50,7 +50,7 @@ Binary 53.0 MB (19.3 MB gzip -9, M1 18.9 MB). SPA JavaScript 73.2 KB gzip in tot
 **Idle-memory check (step 14, report only under ADR 0011):** one rise of about 5 MB (transparent huge pages in the Docker Desktop VM), then flat; the Go heap and goroutines flat. Details in [Idle-memory check](#idle-memory-check-step-14).
 
 **Open items:**
-1. **Follow-up after merge (maintainer's decision, 2026-11-21: merge first, pass later):** the maintainer's manual screen-reader passes for step 12 ([checklist](#step-12-manual-screen-reader-pass-checklist-for-the-maintainer)) and step 13 ([checklist](#step-13-manual-screen-reader-pass-checklist-for-the-maintainer)), recorded in the PR (VoiceOver on iOS plus NVDA or VoiceOver on macOS).
+1. **Closed 2026-11-22: the maintainer approved this item** ("The screen-reader passes: approved"); the roadmap accessible-UI item is ticked. Original text: **Follow-up after merge (maintainer's decision, 2026-11-21: merge first, pass later):** the maintainer's manual screen-reader passes for step 12 ([checklist](#step-12-manual-screen-reader-pass-checklist-for-the-maintainer)) and step 13 ([checklist](#step-13-manual-screen-reader-pass-checklist-for-the-maintainer)), recorded in the PR (VoiceOver on iOS plus NVDA or VoiceOver on macOS).
 2. ~~The CI bench numbers above, and the PR #3 merge.~~ Done: numbers above (footprint approved), PR #3 merged. The roadmap's accessible-UI item stays unticked until item 1 is recorded.
 3. Obligations M2 hands to later plans (each must be in that plan's steps and tests):
    - **Plan 0004 / M3a:** warn when an app publishes a host port on the panel's IP (SEC6: cookies are host-scoped, so another HTTPS service on the same host name could receive them).
