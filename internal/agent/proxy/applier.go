@@ -3,7 +3,10 @@ package proxy
 import (
 	"context"
 	"errors"
+	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -113,6 +116,19 @@ func (a *Applier) Apply(ctx context.Context, routes []AppRoute) (failed []int, e
 	if len(added) == 0 {
 		return nil, loadErr // nothing new to bind: not a bind failure
 	}
+	// Caddy's bind error names the port ("listen tcp :9001: bind: address already
+	// in use"): when it is one of the new ports, try without it first. That is
+	// one extra reload in the usual case instead of up to N.
+	if p, ok := bindErrorPort(loadErr); ok && slices.Contains(added, p) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rest := without(routes, p)
+		if a.try(rest) == nil {
+			a.applied = rest
+			return []int{p}, nil
+		}
+	}
 	// One port at a time: usually exactly one is the culprit.
 	for _, p := range added {
 		if err := ctx.Err(); err != nil {
@@ -153,6 +169,20 @@ func (a *Applier) Apply(ctx context.Context, routes []AppRoute) (failed []int, e
 		}
 	}
 	return failed, nil
+}
+
+var bindErrRe = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`listen tcp [^ ]*:([0-9]{1,5}): [^ ]*\s*(?:bind: )?address already in use`)
+})
+
+// bindErrorPort extracts the port from a Caddy "address already in use" error.
+func bindErrorPort(err error) (int, bool) {
+	m := bindErrRe().FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	p, err2 := strconv.Atoi(m[1])
+	return p, err2 == nil
 }
 
 // Applied returns the ports Caddy is serving app routes on.

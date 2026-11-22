@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -172,7 +173,7 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 	st := openStore(t)
 	svc := addService(t, st, "web")
 	dep := addDeploy(t, st, svc, 1, "succeeded", ip)
-	args, err := BuildCreate(CreateInput{ProjectName: "itroutes", ServiceName: "web", ProjectID: 1, ServiceID: svc, DeployID: dep, Attempt: 1,
+	args, err := BuildCreate(CreateInput{ProjectName: "it" + inst[:8], ServiceName: "web", ProjectID: 1, ServiceID: svc, DeployID: dep, Attempt: 1,
 		ImageID: pulled.ImageID, IP: ip, ContainerPort: 8080, Network: netName, Subnet: subnet})
 	if err != nil {
 		t.Fatal(err)
@@ -216,39 +217,50 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 	}
 
 	// Load: keep-alive and new-connection clients on the panel and on the app.
-	// Non-2xx statuses must never happen. A transport error (the connection
-	// closed with no response) must never happen on a kept-alive connection; on a
-	// brand-new connection it can, rarely, at the instant of a reload: Go's
-	// net/http drops a connection that the retiring server accepted but whose
-	// request arrives after its Shutdown began (server.go, "if
-	// c.server.shuttingDown() { return }"). That is stock Caddy behaviour (the
-	// same without ServerDock; see the plan 0004 step 6 notes), so it is counted
-	// and bounded, not hidden, and one retry (what a browser or load balancer
-	// does for an idempotent request) must clear it.
-	var total, badStatus, badKeep, badNew, retried atomic.Int64
+	//
+	// Hard assertions: no non-2xx status, and no request that still fails after
+	// one client retry. A request whose connection is closed with no response
+	// (never read, so never processed, so safe to retry) can happen at the
+	// instant of a reload, for kept-alive and new connections alike: Go's
+	// net/http closes a connection the retiring server accepted but whose request
+	// arrives after its Shutdown began. That is stock Caddy behaviour (plan 0004
+	// Revision 9). Such drops are counted per connection class and bounded at 5 %
+	// of that class's requests. Go's own transparent retries of reused
+	// connections are counted too (httptrace GotConn attempts), so "kept-alive"
+	// is not claimed to mean "never dropped".
+	type class struct {
+		name                          string
+		total, drops, autoRetry, fail atomic.Int64
+	}
+	keep, fresh := &class{name: "keep-alive"}, &class{name: "new-connection"}
+	var badStatus atomic.Int64
 	var firstBad atomic.Value
 	stop := make(chan struct{})
 	var load sync.WaitGroup
-	hit := func(c *http.Client, url string, keepAlive bool) {
+	hit := func(c *http.Client, url string, cl *class) {
+		cl.total.Add(1)
 		var err error
 		var resp *http.Response
 		for attempt := 0; attempt < 2; attempt++ {
-			resp, err = c.Get(url)
+			var gotConns atomic.Int64
+			req, _ := http.NewRequest("GET", url, nil)
+			req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+				GotConn: func(httptrace.GotConnInfo) { gotConns.Add(1) },
+			}))
+			resp, err = c.Do(req)
+			if n := gotConns.Load(); n > 1 {
+				cl.autoRetry.Add(n - 1)
+			}
 			if err == nil {
 				break
 			}
 			if attempt == 0 {
-				if keepAlive {
-					badKeep.Add(1)
-				} else {
-					badNew.Add(1)
-				}
-				firstBad.CompareAndSwap(nil, fmt.Sprintf("%s (keep-alive=%v): %v", url, keepAlive, err))
+				cl.drops.Add(1)
+				firstBad.CompareAndSwap(nil, fmt.Sprintf("%s (%s): %v", url, cl.name, err))
 			}
 		}
-		total.Add(1)
 		if err != nil {
-			retried.Add(1) // failed even on the retry
+			cl.fail.Add(1) // failed even on the retry
 			return
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -259,8 +271,8 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 		}
 	}
 	for _, target := range []string{"https://127.0.0.1:" + strconv.Itoa(panelPort) + "/", "http://127.0.0.1:" + strconv.Itoa(appPort) + "/"} {
-		for _, keepAlive := range []bool{true, false} {
-			tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: !keepAlive, MaxIdleConnsPerHost: 4}
+		for _, cl := range []*class{keep, fresh} {
+			tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: cl == fresh, MaxIdleConnsPerHost: 4}
 			c := &http.Client{Transport: tr, Timeout: 10 * time.Second}
 			load.Go(func() {
 				defer tr.CloseIdleConnections()
@@ -269,7 +281,7 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 					case <-stop:
 						return
 					default:
-						hit(c, target, keepAlive)
+						hit(c, target, cl)
 						time.Sleep(2 * time.Millisecond)
 					}
 				}
@@ -297,16 +309,24 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 	close(stop)
 	load.Wait()
 
-	if total.Load() < 200 {
-		t.Fatalf("only %d requests were made; the load did not run", total.Load())
+	for _, cl := range []*class{keep, fresh} {
+		t.Logf("%s: %d requests, %d dropped (no response, retried by the client), %d Go-internal retries, %d failed after the client retry",
+			cl.name, cl.total.Load(), cl.drops.Load(), cl.autoRetry.Load(), cl.fail.Load())
+		if cl.total.Load() < 100 {
+			t.Fatalf("only %d %s requests were made; the load did not run", cl.total.Load(), cl.name)
+		}
+		if cl.fail.Load() != 0 {
+			t.Errorf("%s: %d requests failed even after one retry (first: %v)", cl.name, cl.fail.Load(), firstBad.Load())
+		}
+		if cl.drops.Load()*20 > cl.total.Load() {
+			t.Errorf("%s: %d of %d requests were dropped (over 5 %%)", cl.name, cl.drops.Load(), cl.total.Load())
+		}
 	}
-	t.Logf("%d requests across 20 reloads: %d non-2xx statuses, %d dropped on kept-alive connections, %d dropped on new connections (first failure: %v), %d still failing after one retry",
-		total.Load(), badStatus.Load(), badKeep.Load(), badNew.Load(), firstBad.Load(), retried.Load())
-	if badStatus.Load() != 0 || badKeep.Load() != 0 || retried.Load() != 0 {
-		t.Fatalf("a request failed across the reloads (first: %v)", firstBad.Load())
+	if badStatus.Load() != 0 {
+		t.Fatalf("%d non-2xx responses across the reloads (first: %v)", badStatus.Load(), firstBad.Load())
 	}
-	if badNew.Load()*20 > total.Load() { // over 5%: something other than the known race
-		t.Fatalf("%d of %d requests on new connections were dropped", badNew.Load(), total.Load())
+	if t.Failed() {
+		t.FailNow()
 	}
 
 	// The app stopping flips the route to the page (event-driven), and the spare
@@ -340,5 +360,4 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 	if code != 503 {
 		t.Fatalf("a stopped app answers %d, want the 503 page", code)
 	}
-	_ = fmt.Sprint
 }

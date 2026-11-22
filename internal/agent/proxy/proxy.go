@@ -211,7 +211,9 @@ func appServer(a AppRoute, limits func(m) m) m {
 			handler["headers"].(m)["Retry-After"] = []string{strconv.Itoa(a.Static.RetryAfter)}
 		}
 	} else {
-		handler = reverseProxy(a.Upstream, nil)
+		// Never follow HTTP_PROXY/HTTPS_PROXY from the environment: an app route
+		// dials its container directly (the panel's handler is unchanged).
+		handler = reverseProxy(a.Upstream, m{"transport": m{"protocol": "http", "network_proxy": m{"from": "none"}}})
 	}
 	return limits(m{
 		"listen":    []string{":" + strconv.Itoa(a.Port)},

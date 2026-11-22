@@ -27,6 +27,9 @@ type fakeProxy struct {
 	sleep   time.Duration
 	busy    bool // detects two proxy_apply running at once
 	overlap bool
+	// afterApply, if set, is returned after the list was recorded (the agent
+	// applied it but the reply was lost).
+	afterApply error
 }
 
 func (f *fakeProxy) ProxyApply(_ context.Context, routes []agentops.Route) (agentops.ApplyResult, error) {
@@ -46,6 +49,9 @@ func (f *fakeProxy) ProxyApply(_ context.Context, routes []agentops.Route) (agen
 	f.calls = append(f.calls, append([]agentops.Route(nil), routes...))
 	if f.events != nil {
 		*f.events = append(*f.events, "proxy_apply")
+	}
+	if f.afterApply != nil {
+		return agentops.ApplyResult{}, f.afterApply
 	}
 	return agentops.ApplyResult{Applied: true, FailedPorts: f.failed}, nil
 }
@@ -428,7 +434,7 @@ func TestFailedApplyIsRetriedAndBindResultsAreRecorded(t *testing.T) {
 	if err := r.Refresh(bg); err != nil || px.n() != 1 { // the hash was not recorded by the failure
 		t.Fatalf("%v %d", err, px.n())
 	}
-	if msg := r.BindStatus(9000); msg != "port 9000 is in use by another program on this server" {
+	if msg := r.BindStatus(9000); msg != BindMessage(9000) {
 		t.Fatalf("%q", msg)
 	}
 	if r.BindStatus(9001) != "" {
@@ -439,6 +445,14 @@ func TestFailedApplyIsRetriedAndBindResultsAreRecorded(t *testing.T) {
 	_ = r.SetContainer(bg, up(svc, d, 1, "exited", "10.250.1.2"))
 	if r.BindStatus(9000) != "" {
 		t.Error("the bind failure outlived the next apply")
+	}
+}
+
+// tryExec is mustExec for goroutines: t.Error, never t.Fatal.
+func tryExec(t *testing.T, st *store.Store, q string, args ...any) {
+	t.Helper()
+	if _, err := st.W.Exec(q, args...); err != nil {
+		t.Errorf("%s: %v", q, err)
 	}
 }
 
@@ -464,7 +478,7 @@ func TestConcurrentRouteChangesForTwoServicesLoseNothing(t *testing.T) {
 			t.Error(err)
 		}
 		err := r.ApplyRoutes(bg, func() {
-			mustExec(t, st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, newDeploy, svc)
+			tryExec(t, st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, newDeploy, svc)
 			delete(r.overrides, svc)
 		})
 		if err != nil {
@@ -490,7 +504,7 @@ func TestConcurrentRouteChangesForTwoServicesLoseNothing(t *testing.T) {
 	}()
 	go func() { // services.set_public_port for c: the write is the mutation
 		defer wg.Done()
-		err := r.ApplyRoutes(bg, func() { mustExec(t, st, `UPDATE services SET public_port = 9100 WHERE id = ?`, c) })
+		err := r.ApplyRoutes(bg, func() { tryExec(t, st, `UPDATE services SET public_port = 9100 WHERE id = ?`, c) })
 		if err != nil {
 			t.Error(err)
 		}
@@ -513,5 +527,124 @@ func TestConcurrentRouteChangesForTwoServicesLoseNothing(t *testing.T) {
 	_ = r.Refresh(bg)
 	if px.n() != n {
 		t.Error("the last applied config was not what the state says")
+	}
+}
+
+func TestOutcomeUnknownErrorForgetsTheHashSoARevertIsSent(t *testing.T) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
+	open(t, r, up(svc, d, 1, StateRunning, "10.250.1.2")) // applied: upstream
+	// The agent applies the not-running list, but the reply is lost.
+	px.afterApply = context.DeadlineExceeded
+	if err := r.SetContainer(bg, up(svc, d, 1, "exited", "10.250.1.2")); err == nil {
+		t.Fatal("the lost reply was reported as success")
+	}
+	if px.last()[0].Page != agentops.PageNotRunning {
+		t.Fatalf("%+v", px.last())
+	}
+	// The container is back: the list reverts to the one the hub last thought was
+	// applied. It must still be sent, because the agent now serves the page.
+	px.afterApply = nil
+	if err := r.SetContainer(bg, up(svc, d, 1, StateRunning, "10.250.1.2")); err != nil {
+		t.Fatal(err)
+	}
+	if px.last()[0].Upstream != "10.250.1.2:8080" || px.n() != 3 {
+		t.Fatalf("%d %+v", px.n(), px.last())
+	}
+}
+
+func failedPortRig(t *testing.T) (*Routes, *fakeProxy, int64, int64) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
+	px.failed = []int{9000}
+	open(t, r, up(svc, d, 1, StateRunning, "10.250.1.2"))
+	if r.BindStatus(9000) == "" || px.n() != 1 {
+		t.Fatalf("%q %d", r.BindStatus(9000), px.n())
+	}
+	return r, px, svc, d
+}
+
+func TestFailedPortIsRetriedByRefreshRetryAndExplicitMutations(t *testing.T) {
+	// Refresh sends again, and BindStatus clears once the port opens.
+	r, px, _, _ := failedPortRig(t)
+	px.failed = nil
+	if err := r.Refresh(bg); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
+		t.Fatalf("%v %d %q", err, px.n(), r.BindStatus(9000))
+	}
+	if err := r.Refresh(bg); err != nil || px.n() != 2 { // nothing failed now: deduped
+		t.Fatalf("%v %d", err, px.n())
+	}
+	// RetryFailedPorts does the same, and does nothing when nothing failed.
+	r, px, _, _ = failedPortRig(t)
+	px.failed = nil
+	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
+		t.Fatalf("%v %d %q", err, px.n(), r.BindStatus(9000))
+	}
+	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 2 {
+		t.Fatalf("%v %d", err, px.n())
+	}
+	// An explicit DB mutation that changes nothing (the same port saved again).
+	r, px, svc, _ := failedPortRig(t)
+	px.failed = nil
+	if err := r.ApplyRoutes(bg, func() { r.db.W.Exec(`UPDATE services SET public_port = 9000 WHERE id = ?`, svc) }); err != nil || px.n() != 2 || r.BindStatus(9000) != "" {
+		t.Fatalf("%v %d %q", err, px.n(), r.BindStatus(9000))
+	}
+	// Still failing: it stays reported and is sent again each time it is asked.
+	r, px, _, _ = failedPortRig(t)
+	_ = r.RetryFailedPorts(bg)
+	if px.n() != 2 || r.BindStatus(9000) == "" {
+		t.Fatalf("%d %q", px.n(), r.BindStatus(9000))
+	}
+}
+
+func TestCrashLoopWithAFailedPortStillCausesNoReload(t *testing.T) {
+	r, px, svc, d := failedPortRig(t)
+	n := px.n()
+	for i := 0; i < 30; i++ {
+		s := StateRestarting
+		if i%2 == 0 {
+			s = StateRunning
+		}
+		if err := r.SetContainer(bg, up(svc, d, 1, s, "10.250.1.2")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = r.RemoveContainer(bg, cid(99))
+	if px.n() != n {
+		t.Fatalf("%d reloads from events while a port was failed", px.n()-n)
+	}
+}
+
+func TestApplyBeforeTheGateOpensReturnsNotReady(t *testing.T) {
+	r, _, px := newRoutes(t)
+	ran := false
+	err := r.ApplyRoutes(bg, func() { ran = true })
+	if !errors.Is(err, ErrRoutesNotReady) || !ran || px.n() != 0 {
+		t.Fatalf("%v %v %d", err, ran, px.n())
+	}
+	for _, f := range []func() error{
+		func() error { return r.Refresh(bg) },
+		func() error { return r.SetContainer(bg, up(1, 1, 1, StateRunning, "10.0.0.2")) },
+		func() error { return r.SetOverride(bg, 1, Override{Kind: OverrideMaintenance}) },
+	} {
+		if err := f(); !errors.Is(err, ErrRoutesNotReady) {
+			t.Fatalf("%v", err)
+		}
+	}
+}
+
+func TestPausedOrAddresslessContainerIsNotRoutable(t *testing.T) {
+	base := agentops.ContainerState{ID: cid(1), State: "running", Running: true, IP: "10.1.0.2", ConfiguredIP: "10.1.0.2", Owned: true, Labels: lbl(3, 4)}
+	paused := base
+	paused.State = "paused"
+	if c, ok := ContainerFromInspect(paused); !ok || c.State == StateRunning {
+		t.Fatalf("a paused container is routable: %+v", c)
+	}
+	live := base
+	live.ConfiguredIP = ""
+	if c, _ := ContainerFromInspect(live); c.IP != "" {
+		t.Fatalf("the live address was trusted alone: %q", c.IP)
 	}
 }

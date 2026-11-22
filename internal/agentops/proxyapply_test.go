@@ -47,19 +47,19 @@ func TestProxyApplyConvertsRoutesAndReportsFailedPorts(t *testing.T) {
 	f := &fakeApplier{failed: []int{9003, 9001}}
 	rg := proxyRig(t, f)
 	res, err := rg.cl.ProxyApply(ctx5(t), []Route{
-		{Port: 9000, Upstream: "10.250.1.2:8080"},
+		{Port: 9000, Upstream: "10.250.7.2:8080"},
 		{Port: 9001, Page: PageNotRunning},
 		{Port: 9002, Page: PageMaintenance},
-		{Port: 9003, Upstream: "100.64.1.2:80"},
+		{Port: 9003, Upstream: "10.250.7.9:80"},
 	})
 	if err != nil || !res.Applied || !reflect.DeepEqual(res.FailedPorts, []int{9001, 9003}) {
 		t.Fatalf("%+v %v", res, err)
 	}
 	want := []proxy.AppRoute{
-		{Port: 9000, Upstream: "10.250.1.2:8080"},
+		{Port: 9000, Upstream: "10.250.7.2:8080"},
 		{Port: 9001, Static: proxy.NotRunning()},
 		{Port: 9002, Static: proxy.Maintenance()},
-		{Port: 9003, Upstream: "100.64.1.2:80"},
+		{Port: 9003, Upstream: "10.250.7.9:80"},
 	}
 	if len(f.got) != 1 || !reflect.DeepEqual(f.got[0], want) {
 		t.Fatalf("%+v", f.got)
@@ -79,26 +79,22 @@ func TestProxyApplyRefusesBadRoutes(t *testing.T) {
 		many[i] = Route{Port: 20000 + i, Page: PageNotRunning}
 	}
 	for name, routes := range map[string][]Route{
-		"port 80":               {{Port: 80, Page: PageNotRunning}},
-		"port 443":              {{Port: 443, Page: PageNotRunning}},
-		"below 1024":            {{Port: 1023, Page: PageNotRunning}},
-		"above 65535":           {{Port: 65536, Page: PageNotRunning}},
-		"the agent listener":    {{Port: 7443, Page: PageNotRunning}},
-		"neither":               {{Port: 9000}},
-		"both":                  {{Port: 9000, Upstream: "10.0.0.2:80", Page: PageNotRunning}},
-		"an unknown page":       {{Port: 9000, Page: "custom"}},
-		"a public address":      {{Port: 9000, Upstream: "8.8.8.8:80"}},
-		"loopback":              {{Port: 9000, Upstream: "127.0.0.1:7070"}},
-		"unspecified":           {{Port: 9000, Upstream: "0.0.0.0:80"}},
-		"link-local (metadata)": {{Port: 9000, Upstream: "169.254.169.254:80"}},
-		"a host name":           {{Port: 9000, Upstream: "app.internal:80"}},
-		"ipv6":                  {{Port: 9000, Upstream: "[fd00::2]:80"}},
-		"a unix socket":         {{Port: 9000, Upstream: "unix//run/x.sock"}},
-		"a zero port":           {{Port: 9000, Upstream: "10.0.0.2:0"}},
-		"a padded port":         {{Port: 9000, Upstream: "10.0.0.2:0080"}},
-		"no port":               {{Port: 9000, Upstream: "10.0.0.2"}},
-		"duplicate ports":       {{Port: 9000, Page: PageNotRunning}, {Port: 9000, Page: PageNotRunning}},
-		"more than the cap":     many,
+		"port 80":            {{Port: 80, Page: PageNotRunning}},
+		"port 443":           {{Port: 443, Page: PageNotRunning}},
+		"below 1024":         {{Port: 1023, Page: PageNotRunning}},
+		"above 65535":        {{Port: 65536, Page: PageNotRunning}},
+		"the agent listener": {{Port: 7443, Page: PageNotRunning}},
+		"neither":            {{Port: 9000}},
+		"both":               {{Port: 9000, Upstream: "10.0.0.2:80", Page: PageNotRunning}},
+		"an unknown page":    {{Port: 9000, Page: "custom"}},
+		"a host name":        {{Port: 9000, Upstream: "app.internal:80"}},
+		"ipv6":               {{Port: 9000, Upstream: "[fd00::2]:80"}},
+		"a unix socket":      {{Port: 9000, Upstream: "unix//run/x.sock"}},
+		"a zero port":        {{Port: 9000, Upstream: "10.0.0.2:0"}},
+		"a padded port":      {{Port: 9000, Upstream: "10.0.0.2:0080"}},
+		"no port":            {{Port: 9000, Upstream: "10.0.0.2"}},
+		"duplicate ports":    {{Port: 9000, Page: PageNotRunning}, {Port: 9000, Page: PageNotRunning}},
+		"more than the cap":  many,
 	} {
 		_, err := rg.cl.ProxyApply(ctx5(t), routes)
 		if !IsCode(err, agent.CodeInvalid) {
@@ -108,11 +104,45 @@ func TestProxyApplyRefusesBadRoutes(t *testing.T) {
 	if len(f.got) != 0 {
 		t.Fatalf("%d bad lists reached the proxy", len(f.got))
 	}
-	// A private address of each allowed range passes.
-	for _, up := range []string{"10.0.0.2:80", "172.16.5.2:80", "192.168.1.2:80", "100.64.0.2:80", "100.127.255.2:80"} {
+	// A host address of the static range passes.
+	for _, up := range []string{"10.250.7.2:80", "10.250.7.100:8080", "10.250.7.191:80"} {
 		if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Upstream: up}}); err != nil {
 			t.Errorf("%s: %v", up, err)
 		}
+	}
+}
+
+func TestProxyApplyRefusesUpstreamOutsideTheStaticRange(t *testing.T) {
+	f := &fakeApplier{}
+	rg := proxyRig(t, f)
+	for name, up := range map[string]string{
+		"the gateway":              "10.250.7.1:80",
+		"the network address":      "10.250.7.0:80",
+		"the broadcast address":    "10.250.7.255:80",
+		"the dynamic range":        "10.250.7.200:80",
+		"another RFC 1918 address": "10.0.0.2:80",
+		"another 172.16 address":   "172.16.5.2:80",
+		"a CGNAT address outside":  "100.64.0.2:80",
+		"loopback":                 "127.0.0.1:7070",
+		"unspecified":              "0.0.0.0:80",
+		"link-local (metadata)":    "169.254.169.254:80",
+		"a public address":         "8.8.8.8:80",
+	} {
+		_, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9001, Page: PageNotRunning}, {Port: 9000, Upstream: up}})
+		if !IsCode(err, agent.CodePolicy) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(f.got) != 0 {
+		t.Fatalf("%d lists reached the proxy", len(f.got))
+	}
+	// Static pages alone need no network at all.
+	rg.fd.netMissing = true
+	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9001, Page: PageNotRunning}}); err != nil {
+		t.Fatalf("static pages before the network exists: %v", err)
+	}
+	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Upstream: "10.250.7.2:80"}}); !IsCode(err, agent.CodeNotFound) {
+		t.Fatalf("an upstream without the network: %v", err)
 	}
 }
 

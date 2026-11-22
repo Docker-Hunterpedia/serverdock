@@ -81,8 +81,8 @@ var opSpecs = []OpSpec{
 	{Name: OpNetworkInspect, MaxResult: 64 << 10, Timeout: shortOpTimeout},
 	{Name: OpEvents, MaxProgressLines: 1, Timeout: 0}, // one progress line: "the stream is open"
 	{Name: OpHealthCheck, Timeout: shortOpTimeout},
-	// The agent owns Caddy (ADR 0004). 20 s is longer than Caddy's 10 s reload
-	// grace; the bind-failure retries run inside it.
+	// The agent owns Caddy (ADR 0004). 20 s covers provisioning, start and the
+	// bind-failure retries (a reload does not wait for the old servers' grace).
 	{Name: OpProxyApply, Timeout: ProxyApplyTimeout},
 }
 

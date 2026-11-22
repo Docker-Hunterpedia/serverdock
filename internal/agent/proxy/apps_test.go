@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -488,4 +490,110 @@ func sortedInts(v ...int) []int {
 		}
 	}
 	return out
+}
+
+// hostIPv4 returns a non-loopback IPv4 address of this machine ("" if none):
+// Go's ProxyFromEnvironment never proxies loopback, so the test needs one.
+func hostIPv4() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() {
+			return ipn.IP.String()
+		}
+	}
+	return ""
+}
+
+// TestAppRouteIgnoresProxyEnvironment: an app route must dial its container
+// directly even when HTTP_PROXY is set. Go reads the environment once per
+// process, so the proxied request runs in a child process that starts with it.
+func TestAppRouteIgnoresProxyEnvironment(t *testing.T) {
+	if os.Getenv("SD_PROXY_ENV_CHILD") == "1" {
+		return // the child runs childAppRouteProxyEnv below
+	}
+	ip := hostIPv4()
+	if ip == "" {
+		t.Skip("no non-loopback IPv4 address")
+	}
+	var hits atomic.Int64
+	pl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pl.Close()
+	go func() {
+		for {
+			c, err := pl.Accept()
+			if err != nil {
+				return
+			}
+			hits.Add(1)
+			c.Close()
+		}
+	}()
+	upLn, err := net.Listen("tcp", ip+":0")
+	if err != nil {
+		t.Skip(err)
+	}
+	up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "direct") }))
+	up.Listener.Close()
+	up.Listener = upLn
+	up.Start()
+	defer up.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestChildAppRouteProxyEnv$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "SD_PROXY_ENV_CHILD=1", "SD_PROXY_ENV_UPSTREAM="+hostPort(up),
+		"HTTP_PROXY=http://"+pl.Addr().String(), "http_proxy=http://"+pl.Addr().String(),
+		"HTTPS_PROXY=http://"+pl.Addr().String(), "NO_PROXY=", "no_proxy=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("the proxy named by HTTP_PROXY received %d connections", n)
+	}
+}
+
+func TestChildAppRouteProxyEnv(t *testing.T) {
+	if os.Getenv("SD_PROXY_ENV_CHILD") != "1" {
+		t.Skip("run by TestAppRouteIgnoresProxyEnvironment")
+	}
+	upstream := os.Getenv("SD_PROXY_ENV_UPSTREAM")
+	// Control: the environment really would proxy a request to this address.
+	req, _ := http.NewRequest("GET", "http://"+upstream+"/", nil)
+	if u, err := http.ProxyFromEnvironment(req); err != nil || u == nil {
+		t.Fatalf("the control failed: the environment does not select a proxy (%v, %v)", u, err)
+	}
+	ap := startApplier(t)
+	port := freePort(t)
+	if failed, err := ap.Apply(context.Background(), []AppRoute{{Port: port, Upstream: upstream}}); err != nil || len(failed) != 0 {
+		t.Fatalf("%v %v", failed, err)
+	}
+	// The request to Caddy itself is on loopback, which is never proxied.
+	if _, body := get(t, "http://127.0.0.1:"+strconv.Itoa(port)+"/"); body != "direct" {
+		t.Fatalf("body %q", body)
+	}
+}
+
+func TestBindErrorPortIsTriedFirst(t *testing.T) {
+	// The fake names the port like Caddy does: one reload without it, not a loop.
+	f := &fakeLoad{failOn: map[int]bool{9002: true}}
+	ap := fakeApplier(f)
+	_ = ap.Start()
+	n := len(f.loads)
+	failed, err := ap.Apply(context.Background(), routes(9000, 9001, 9002, 9003))
+	if err != nil || !reflect.DeepEqual(failed, []int{9002}) {
+		t.Fatalf("%v %v", failed, err)
+	}
+	if got := len(f.loads) - n; got != 2 { // the full list, then without 9002
+		t.Fatalf("%d loads", got)
+	}
+	if p, ok := bindErrorPort(errors.New("loading new config: http app module: start: listening on :9001: listen tcp :9001: bind: address already in use")); !ok || p != 9001 {
+		t.Fatalf("%d %v", p, ok)
+	}
+	for _, e := range []string{"permission denied", "listen tcp :9001: bind: permission denied"} {
+		if _, ok := bindErrorPort(errors.New(e)); ok {
+			t.Errorf("%q parsed as a bind error", e)
+		}
+	}
 }

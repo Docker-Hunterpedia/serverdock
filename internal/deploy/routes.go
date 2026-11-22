@@ -31,6 +31,11 @@ import (
 //     (that opens the boot gate), then SetContainer and RemoveContainer per
 //     event, and Refresh after a resync. The watcher takes only the route lock.
 //
+// The route lock ignores ctx while waiting (a plain mutex). Step 8b should make
+// it a channel semaphore selected against ctx.Done(). A mutate function must
+// commit anything it writes before returning, must not be called with a SQLite
+// write transaction open, and never takes a service or allocation lock.
+//
 // Lock order (plan 0004): service lock, then allocation lock, then the route
 // lock; the route lock is a leaf here (nothing else is taken inside it except
 // the state map's own short mutex and the database).
@@ -58,10 +63,10 @@ type Container struct {
 // ContainerFromInspect turns a container_inspect result into a state map entry.
 // It reports false for a container that is not ours (not owned) or whose
 // service and deploy labels are not ids: such a container is never an upstream.
-// State comes from State.Restarting and State.Running, never from event order. A
-// restarting container has no live network address, so the configured address
-// is used; if both are present and differ, the address is left empty (an
-// upstream is then never emitted for it).
+// State comes from State.Restarting and State.Running, never from event order,
+// and a paused container is not routable. The address is the configured static
+// address (a restarting container has no live one); with no configured address,
+// or a live one that differs, it is left empty and an upstream is never emitted.
 func ContainerFromInspect(st agentops.ContainerState) (Container, bool) {
 	if !st.Owned {
 		return Container{}, false
@@ -75,16 +80,13 @@ func ContainerFromInspect(st agentops.ContainerState) (Container, bool) {
 	switch {
 	case st.Restarting:
 		c.State = StateRestarting
-	case st.Running:
+	case st.Running && st.State != "paused": // a paused container reports Running too, and serves nothing
 		c.State = StateRunning
 	}
-	switch {
-	case st.IP != "" && st.ConfiguredIP != "" && st.IP != st.ConfiguredIP:
-		c.IP = ""
-	case st.ConfiguredIP != "":
+	// Only the configured static address is trusted, never the live one on its
+	// own; if a live address exists and differs, nothing is trusted.
+	if st.ConfiguredIP != "" && (st.IP == "" || st.IP == st.ConfiguredIP) {
 		c.IP = st.ConfiguredIP
-	default:
-		c.IP = st.IP
 	}
 	return c, true
 }
@@ -183,10 +185,17 @@ type BootSource interface {
 	ContainerInspect(ctx context.Context, id string) (agentops.ContainerState, error)
 }
 
-// BindMessage is what a service whose port could not be bound shows.
+// BindMessage is what a service whose port the proxy could not open shows. The
+// agent reports the port, not the reason (a bind failure is the usual one), so
+// the wording does not claim to know it.
 func BindMessage(port int) string {
-	return fmt.Sprintf("port %d is in use by another program on this server", port)
+	return fmt.Sprintf("port %d could not be opened, most likely because another program on this server uses it", port)
 }
+
+// ErrRoutesNotReady is returned by ApplyRoutes (after running its mutation)
+// while the state map has not been filled by the first list and inspect: nothing
+// was sent, so a caller must not report the routes as applied.
+var ErrRoutesNotReady = errors.New("deploy: the app routes are not applied yet (the first container list has not finished)")
 
 // Routes owns the app routes. All of its state is guarded by the one global
 // route lock.
@@ -247,24 +256,44 @@ func (r *Routes) BindStatus(port int) string {
 // recorded hash alone, so the next call retries. Before the boot gate opens,
 // mutate still runs but nothing is sent.
 func (r *Routes) ApplyRoutes(ctx context.Context, mutate func()) error {
+	// An explicit caller (a DB mutation such as saving the same public port)
+	// must not be short-circuited by the hash while a port is failed.
+	return r.apply(ctx, mutate, mutate != nil)
+}
+
+// hasFailed reports whether the last successful apply left ports unopened.
+func (r *Routes) hasFailed() bool {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	return len(r.failed) > 0
+}
+
+// apply is ApplyRoutes. retry is true for an explicit caller: with failed
+// ports it sends even when the route list is unchanged. State-map and override
+// paths pass false, so a crash loop never reloads, failed port or not.
+func (r *Routes) apply(ctx context.Context, mutate func(), retry bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if mutate != nil {
 		mutate()
 	}
 	if !r.state.Ready() {
-		return nil
+		return ErrRoutesNotReady
 	}
 	routes, err := r.build(ctx)
 	if err != nil {
 		return err
 	}
 	h := hashRoutes(routes)
-	if h == r.lastHash {
+	if h == r.lastHash && !(retry && r.hasFailed()) {
 		return nil
 	}
 	res, err := r.px.ProxyApply(ctx, routes)
 	if err != nil {
+		// The outcome is unknown (the agent may have applied the list before the
+		// call timed out or the reply was lost): forget the hash so the next call
+		// always sends, even a revert to the previous list.
+		r.lastHash = ""
 		return fmt.Errorf("applying the app routes: %w", err)
 	}
 	r.lastHash = h
@@ -276,43 +305,58 @@ func (r *Routes) ApplyRoutes(ctx context.Context, mutate func()) error {
 	r.failed = failed
 	r.statusMu.Unlock()
 	if len(failed) > 0 {
-		r.log.Warn("some app ports could not be bound", "ports", res.FailedPorts)
+		r.log.Warn("some app ports could not be opened", "ports", res.FailedPorts)
 	}
 	return nil
 }
 
+// RetryFailedPorts sends the route list again when the last apply left ports
+// unopened (the other program let go, or the user pressed "Try again"); with
+// none failed it does nothing. Step 7 calls it from the "Try again" action and
+// when the same port is saved again; step 10's resync calls it after each
+// (re)connect.
+func (r *Routes) RetryFailedPorts(ctx context.Context) error {
+	if !r.hasFailed() {
+		return nil
+	}
+	return r.apply(ctx, nil, true)
+}
+
 // Refresh re-reads everything and applies if the routes changed.
-func (r *Routes) Refresh(ctx context.Context) error { return r.ApplyRoutes(ctx, nil) }
+func (r *Routes) Refresh(ctx context.Context) error { return r.apply(ctx, nil, true) }
 
 // SetOverride sets the service's override and applies.
 func (r *Routes) SetOverride(ctx context.Context, service int64, o Override) error {
-	return r.ApplyRoutes(ctx, func() { r.overrides[service] = o })
+	return r.apply(ctx, func() { r.overrides[service] = o }, false)
 }
 
 // ClearOverride removes the service's override and applies.
 func (r *Routes) ClearOverride(ctx context.Context, service int64) error {
-	return r.ApplyRoutes(ctx, func() { delete(r.overrides, service) })
+	return r.apply(ctx, func() { delete(r.overrides, service) }, false)
 }
 
 // SetContainer records a container (from an inspect) and applies. A change that
 // leaves the routes as they were (a crash-looping container flipping between
 // running and restarting) sends nothing.
 func (r *Routes) SetContainer(ctx context.Context, c Container) error {
-	return r.ApplyRoutes(ctx, func() { r.state.set(c) })
+	return r.apply(ctx, func() { r.state.set(c) }, false)
 }
 
 // RemoveContainer forgets a container (a destroy event) and applies.
 func (r *Routes) RemoveContainer(ctx context.Context, id string) error {
-	return r.ApplyRoutes(ctx, func() { r.state.remove(id) })
+	return r.apply(ctx, func() { r.state.remove(id) }, false)
 }
 
-// Sync is the boot hook: list the containers, inspect each of ours, load the
-// result into the state map (which opens the boot gate) and apply the routes,
-// all in one critical section. Step 10's watcher calls it after its events
-// stream is open (so no event is missed), then re-inspects the ids that had
-// events during the list with SetContainer. A container that disappears between
-// the list and its inspect is skipped; any other error leaves the gate closed
-// and the panel alone, and the caller retries.
+// Sync is the boot hook: list the containers and inspect each of ours (outside
+// the route lock: these are Docker calls), then, under the route lock, load the
+// result into the state map, which opens the boot gate, and apply the routes. An
+// apply failure after the load leaves the gate open (the state is known; the
+// next apply retries). Step 10's watcher calls it after its events stream is
+// open (so no event is missed) and serialises event handling behind it, then
+// re-inspects the ids that had events during the list, one by one, with
+// SetContainer. A container that disappears between the list and its inspect is
+// skipped; any other error leaves the gate closed and the panel alone, and the
+// caller retries.
 func (r *Routes) Sync(ctx context.Context, src BootSource) error {
 	list, err := src.ContainerList(ctx)
 	if err != nil {
@@ -334,7 +378,7 @@ func (r *Routes) Sync(ctx context.Context, src BootSource) error {
 			all = append(all, c)
 		}
 	}
-	return r.ApplyRoutes(ctx, func() { r.state.replace(all) })
+	return r.apply(ctx, func() { r.state.replace(all) }, true)
 }
 
 // routeRow is a service with a public port and its active deploy.

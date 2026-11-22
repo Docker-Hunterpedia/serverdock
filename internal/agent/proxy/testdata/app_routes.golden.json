@@ -27,6 +27,12 @@
               "handle": [
                 {
                   "handler": "reverse_proxy",
+                  "transport": {
+                    "network_proxy": {
+                      "from": "none"
+                    },
+                    "protocol": "http"
+                  },
                   "upstreams": [
                     {
                       "dial": "10.200.0.2:8080"
