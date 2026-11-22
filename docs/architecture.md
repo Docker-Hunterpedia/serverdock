@@ -194,6 +194,7 @@ internal/memstat/         * /proc/self/status + Go runtime stats (heap in use, i
 internal/mcp/             MCP server
 internal/ai/              assistant loop, redaction, approvals
 internal/deploy/          pipeline, health gate, rollback, reconciler
+internal/policy/          + default-deny rulebook (no state, no background work): name, image reference, registry host, port and health-path validators, resource caps, `CheckImage`, `CheckCreate` (run in the control plane and again in the agent on the exact create bytes)
 internal/build/           railpack/buildkit, builder selection
 web/                      ++ SvelteKit SPA (Svelte 5, static adapter, SPA fallback). `go build -tags spa` embeds `web/build` (embed_spa.go); without the tag `web/dist/index.html` is the placeholder (embed_placeholder.go). Node is needed only to build it (`make web`, `make dev`, CI). `e2e/` holds the Playwright + axe suite, `src/lib/api-types.ts` is generated from `docs/api/openapi.json`
 bench/                    * Dockerfile (builds with `-tags spa` and asserts `ui=spa`), run.sh, measure.sh, results/; ++ after-login.sh and idle-memory.sh (report-only M2 checks)

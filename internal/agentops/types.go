@@ -8,12 +8,15 @@
 // with agent.CleanText before anything else sees it.
 package agentops
 
-import "github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+import (
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
+)
 
 // Limits shared by the handlers and the client.
 const (
 	// MinFreeBytes is the free space image_pull needs on Docker's data root.
-	MinFreeBytes = 1 << 30
+	MinFreeBytes = policy.MinFreeBytes
 	// DefaultStallS is the image_pull stall limit when the request leaves it out.
 	DefaultStallS = 120
 	MaxStallS     = 600
@@ -30,13 +33,22 @@ const (
 
 // Our label keys.
 const (
-	LabelManaged  = "serverdock.managed"
-	LabelInstance = "serverdock.instance"
-	LabelProject  = "serverdock.project"
-	LabelService  = "serverdock.service"
-	LabelDeploy   = "serverdock.deploy"
-	LabelAttempt  = "serverdock.attempt"
+	LabelManaged  = policy.LabelManaged
+	LabelInstance = policy.LabelInstance
+	LabelProject  = policy.LabelProject
+	LabelService  = policy.LabelService
+	LabelDeploy   = policy.LabelDeploy
+	LabelAttempt  = policy.LabelAttempt
 )
+
+// CreateExpect is what the agent hands the create check (see policy).
+type CreateExpect = policy.CreateExpect
+
+// CheckCreateFunc is the policy hook: it gets the exact bytes about to be sent
+// to Docker and returns nil only if every part of the body is allowed. The
+// server plugs policy.CheckCreateAgent in here. There is deliberately no "allow
+// all" implementation: Deps.CheckCreate is required.
+type CheckCreateFunc func(body []byte, exp CreateExpect) error
 
 // callerLabels are the five keys a caller may send; the agent adds the sixth
 // (LabelInstance) itself.

@@ -31,6 +31,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
@@ -76,6 +77,15 @@ type serverConfig struct {
 	// AppSubnet is --app-subnet: the app network's subnet (/24 to /20), applied
 	// at first start only. Empty means choose one clear of every network.
 	AppSubnet string
+	// AllowLoopbackRegistry is --allow-loopback-registry: image references may
+	// name a registry on localhost, 127.0.0.0/8 or ::1 (homelab registries; the
+	// integration tests). Link-local and metadata addresses stay refused.
+	AllowLoopbackRegistry bool
+}
+
+// policyOptions are the install-wide switches the policy validators take.
+func (c serverConfig) policyOptions() policy.Options {
+	return policy.Options{AllowLoopbackRegistry: c.AllowLoopbackRegistry}
 }
 
 // stringList is a repeatable string flag.
@@ -102,6 +112,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.IntVar(&c.AgentMaxSessions, "agent-max-sessions", hub.DefaultMaxSessions, "maximum concurrent remote agent sessions")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
 	fs.StringVar(&c.AppSubnet, "app-subnet", "", "subnet of the app network, /24 to /20 (default: the first free /24 in 10.250.0.0/16). Used at first start only; it is never changed afterwards")
+	fs.BoolVar(&c.AllowLoopbackRegistry, "allow-loopback-registry", false, "allow image references that name a registry on localhost, 127.0.0.0/8 or ::1 (off by default; link-local and cloud metadata addresses are always refused)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}

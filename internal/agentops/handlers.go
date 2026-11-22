@@ -19,6 +19,7 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 // Deps is what the agent-side handlers need. Docker, Instance and CheckCreate
@@ -160,6 +161,11 @@ func decode(raw json.RawMessage, dst any) error {
 	return nil
 }
 
+// labelValueRe is the shape the ownership rule accepts for the four id labels
+// (looser than what policy.CheckCreate writes: it must also recognise containers
+// created by an earlier release).
+var labelValueRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`) })
+
 // ownedLabels is the ownership rule: exactly our six labels, none dropped, with
 // the expected shape and this install's instance id.
 func ownedLabels(labels map[string]string, dropped bool, instance string) bool {
@@ -225,7 +231,7 @@ func (h *handlers) pull(ctx context.Context, raw json.RawMessage, out *agent.Out
 	switch {
 	case ferr != nil:
 		_ = out.Progress(PullProgress{Status: "free disk space unknown"})
-	case free < MinFreeBytes:
+	case policy.CheckFreeDisk(free) != nil:
 		return nil, opErr(agent.CodeDiskFull, "less than 1 GiB free on Docker's data root")
 	}
 
@@ -412,7 +418,8 @@ func (h *handlers) create(ctx context.Context, raw json.RawMessage, _ *agent.Out
 		spec.Labels[k] = v
 	}
 	spec.Labels[LabelInstance] = h.Instance
-	exp := CreateExpect{Instance: h.Instance, Network: h.network, IP: a.IP, ImageID: a.ImageID}
+	exp := CreateExpect{Instance: h.Instance, Network: h.network, IP: a.IP, ImageID: a.ImageID,
+		Subnet: n.Subnet, Gateway: n.Gateway, IPRange: n.IPRange}
 
 	var refused error
 	id, err := h.Docker.ContainerCreate(ctx, a.Name, spec, func(body []byte) error {
@@ -757,18 +764,6 @@ func (h *handlers) events(ctx context.Context, raw json.RawMessage, out *agent.O
 
 // ---- health ----
 
-func healthPathOK(p string) bool {
-	if len(p) == 0 || len(p) > 256 || p[0] != '/' {
-		return false
-	}
-	for i := 0; i < len(p); i++ {
-		if c := p[i]; c <= ' ' || c >= 0x7f || c == '#' || c == '\\' {
-			return false
-		}
-	}
-	return true
-}
-
 func (h *handlers) health(ctx context.Context, raw json.RawMessage, _ *agent.Out) (any, error) {
 	var a HealthArgs
 	if err := decode(raw, &a); err != nil {
@@ -780,7 +775,7 @@ func (h *handlers) health(ctx context.Context, raw json.RawMessage, _ *agent.Out
 	}
 	switch a.Kind {
 	case KindHTTP:
-		if !healthPathOK(a.Path) {
+		if policy.ValidateHealthPath(a.Path) != nil {
 			return nil, opErr(agent.CodeInvalid, "path must start with / and be printable ASCII (at most 256 bytes)")
 		}
 	case KindTCP:

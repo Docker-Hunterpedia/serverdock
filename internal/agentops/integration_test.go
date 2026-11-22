@@ -15,6 +15,7 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 // These need a running Docker and the app image in a registry on loopback (the
@@ -81,7 +82,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 		}
 		_ = exec.Command("docker", "network", "rm", netName).Run()
 	})
-	sess := attachAgent(t, docker, Deps{Docker: docker, Instance: inst, CheckCreate: InterimCheckCreate, Log: quiet})
+	sess := attachAgent(t, docker, Deps{Docker: docker, Instance: inst, CheckCreate: policy.CheckCreateAgent, Log: quiet})
 	cl := NewClient(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -100,6 +101,14 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 
 	// Pull, from the local registry, with the local copy removed first so
 	// layers really move; then the id comes from the inspect after the pull.
+	// The harness runs with --allow-loopback-registry: the policy accepts the
+	// local registry with it and refuses it without.
+	if _, err := policy.ValidateImageRef(ref, policy.Options{}); err == nil {
+		t.Fatal("a loopback registry was accepted without --allow-loopback-registry")
+	}
+	if pr, err := policy.ValidateImageRef(ref, policy.Options{AllowLoopbackRegistry: true}); err != nil || pr != ref {
+		t.Fatalf("the harness registry: %q %v", pr, err)
+	}
 	_ = exec.Command("docker", "rmi", ref).Run()
 	var lines int
 	pulled, err := cl.ImagePull(ctx, ref, 0, func(PullProgress) { lines++ })
@@ -220,7 +229,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 	itDocker(t, "create", "--name", "sd-p-web-d9-a1", ref)
 	b := a
 	b.Name = "sd-p-web-d9-a1"
-	b.Spec.Labels = map[string]string{LabelManaged: "1", LabelProject: "p", LabelService: "7", LabelDeploy: "9", LabelAttempt: "1"}
+	b.Spec.Labels = map[string]string{LabelManaged: "1", LabelProject: "3", LabelService: "7", LabelDeploy: "9", LabelAttempt: "1"}
 	if _, err := cl.ContainerCreate(ctx, b.Name, b.Spec, b.IP, b.ImageID); !IsCode(err, agent.CodeConflict) {
 		t.Fatalf("name taken by a foreign container: %v", err)
 	}

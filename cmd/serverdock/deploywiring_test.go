@@ -19,6 +19,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
 
@@ -231,4 +232,27 @@ func waitSession(t *testing.T, h *hub.Hub, id string) *hub.Session {
 	}
 	t.Fatalf("no session %q", id)
 	return nil
+}
+
+// --allow-loopback-registry is off by default and reaches the policy options;
+// the loopback rule itself is tested in internal/policy.
+func TestAllowLoopbackRegistryFlag(t *testing.T) {
+	var buf strings.Builder
+	c, err := parseServerFlags(nil, &buf)
+	if err != nil || c.AllowLoopbackRegistry {
+		t.Fatalf("default: %+v %v", c, err)
+	}
+	if _, err := policy.ValidateImageRef("127.0.0.1:5000/app:1", c.policyOptions()); err == nil {
+		t.Error("a loopback registry was accepted by default")
+	}
+	c, err = parseServerFlags([]string{"--allow-loopback-registry"}, &buf)
+	if err != nil || !c.AllowLoopbackRegistry {
+		t.Fatalf("flag: %+v %v", c, err)
+	}
+	if _, err := policy.ValidateImageRef("127.0.0.1:5000/app:1", c.policyOptions()); err != nil {
+		t.Errorf("a loopback registry was refused with the flag: %v", err)
+	}
+	if _, err := policy.ValidateImageRef("169.254.169.254/app", c.policyOptions()); err == nil {
+		t.Error("a metadata registry was accepted with the flag")
+	}
 }

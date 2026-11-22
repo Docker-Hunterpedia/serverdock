@@ -13,6 +13,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
 
@@ -37,10 +38,10 @@ func loadInstallID(ctx context.Context, st *store.Store) (string, error) {
 
 // localOps builds the handlers of the local-only agent ops for the in-process
 // local agent. The remote agent process never gets them: its handler table holds
-// RemoteOK ops only, whatever Config.Ops says. CheckCreate is the interim strict
-// check until policy.CheckCreate lands (plan 0004 step 5).
+// RemoteOK ops only, whatever Config.Ops says. CheckCreate is policy.CheckCreateAgent:
+// default-deny on the exact bytes sent to Docker.
 func localOps(docker *dockerapi.Client, instance string, log *slog.Logger) (map[string]agent.Handler, error) {
-	return agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: agentops.InterimCheckCreate, Log: log})
+	return agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, Log: log})
 }
 
 // recordAppSubnet picks (first start) or reads (later starts) the app subnet and

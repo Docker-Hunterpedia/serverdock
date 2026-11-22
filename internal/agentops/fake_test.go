@@ -22,6 +22,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -96,7 +97,7 @@ func (f *fakeDocker) add(c *fakeContainer) *fakeContainer {
 
 func ours(extra map[string]string) map[string]string {
 	l := map[string]string{
-		LabelManaged: "1", LabelInstance: testInstance, LabelProject: "p", LabelService: "7", LabelDeploy: "1", LabelAttempt: "1",
+		LabelManaged: "1", LabelInstance: testInstance, LabelProject: "3", LabelService: "7", LabelDeploy: "1", LabelAttempt: "1",
 	}
 	for k, v := range extra {
 		if v == "" {
@@ -325,7 +326,7 @@ func newRig(t *testing.T, mods ...func(*Deps)) *rig {
 	docker := dockerapi.New(sock)
 	t.Cleanup(docker.Close)
 
-	deps := Deps{Docker: docker, Instance: testInstance, CheckCreate: InterimCheckCreate, Log: quiet,
+	deps := Deps{Docker: docker, Instance: testInstance, CheckCreate: policy.CheckCreateAgent, Log: quiet,
 		freeBytes: func(string) (uint64, error) { return 100 << 30, nil }}
 	for _, m := range mods {
 		m(&deps)
@@ -340,7 +341,7 @@ func goodCreate() CreateArgs {
 		Name: "sd-p-web-d1-a1", IP: "10.250.7.2", ImageID: imgID,
 		Spec: dockerapi.CreateSpec{
 			Image:        imgID,
-			Labels:       map[string]string{LabelManaged: "1", LabelProject: "p", LabelService: "7", LabelDeploy: "1", LabelAttempt: "1"},
+			Labels:       map[string]string{LabelManaged: "1", LabelProject: "3", LabelService: "7", LabelDeploy: "1", LabelAttempt: "1"},
 			ExposedPorts: map[string]struct{}{"8080/tcp": {}},
 			HostConfig: dockerapi.HostConfig{
 				RestartPolicy: dockerapi.RestartPolicy{Name: "unless-stopped"},

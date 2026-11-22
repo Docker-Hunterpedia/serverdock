@@ -16,6 +16,7 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 func ctx5(t *testing.T) context.Context {
@@ -36,11 +37,11 @@ func TestHandlersRequirePolicyAndInstance(t *testing.T) {
 	c := dockerapi.New("/nonexistent")
 	defer c.Close()
 	for name, d := range map[string]Deps{
-		"no docker":       {Instance: testInstance, CheckCreate: InterimCheckCreate},
+		"no docker":       {Instance: testInstance, CheckCreate: policy.CheckCreateAgent},
 		"no policy":       {Docker: c, Instance: testInstance},
-		"no instance":     {Docker: c, CheckCreate: InterimCheckCreate},
-		"short instance":  {Docker: c, Instance: "abc", CheckCreate: InterimCheckCreate},
-		"non-hex install": {Docker: c, Instance: strings.Repeat("g", 32), CheckCreate: InterimCheckCreate},
+		"no instance":     {Docker: c, CheckCreate: policy.CheckCreateAgent},
+		"short instance":  {Docker: c, Instance: "abc", CheckCreate: policy.CheckCreateAgent},
+		"non-hex install": {Docker: c, Instance: strings.Repeat("g", 32), CheckCreate: policy.CheckCreateAgent},
 	} {
 		if _, err := Handlers(d); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -49,7 +50,7 @@ func TestHandlersRequirePolicyAndInstance(t *testing.T) {
 }
 
 func TestEveryLocalOpHasAHandlerAndNoRemoteOpDoes(t *testing.T) {
-	h, err := Handlers(Deps{Docker: dockerapi.New("/x"), Instance: testInstance, CheckCreate: InterimCheckCreate})
+	h, err := Handlers(Deps{Docker: dockerapi.New("/x"), Instance: testInstance, CheckCreate: policy.CheckCreateAgent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +237,7 @@ func TestCreateSetsTheInstanceLabelItselfAndSendsTheCheckedBytes(t *testing.T) {
 	r := newRig(t, func(d *Deps) {
 		d.CheckCreate = func(body []byte, e CreateExpect) error {
 			got, exp = append([]byte(nil), body...), e
-			return InterimCheckCreate(body, e)
+			return policy.CheckCreateAgent(body, e)
 		}
 	})
 	res, err := r.create(goodCreate())
@@ -846,7 +847,7 @@ func TestContainerListReturnsStoppedContainersWithTheirConfiguredAddress(t *test
 	}
 	stopped := by["sd-p-web-d1-a1"]
 	if stopped.State != "exited" || stopped.IP != "" || stopped.ConfiguredIP != "10.250.7.9" || stopped.Unowned ||
-		stopped.Labels != (ListedLabels{Project: "p", Service: "7", Deploy: "1", Attempt: "1"}) {
+		stopped.Labels != (ListedLabels{Project: "3", Service: "7", Deploy: "1", Attempt: "1"}) {
 		t.Errorf("stopped: %+v", stopped)
 	}
 	if c := by["sd-p-web-d2-a1"]; c.IP != "10.250.7.3" || c.Labels.Deploy != "2" {
