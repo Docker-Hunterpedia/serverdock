@@ -385,8 +385,9 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	// Leave the cancel map before the result is recorded: a cancel that arrives
 	// from here on only flags the row (the outcome is already decided by cause).
 	// It may still add a pending entry, which is removed below once the result is
-	// recorded; at worst a store failure leaves one small entry for a job id that
-	// is never reused, so the map stays bounded.
+	// recorded. A cancel that lands after that cleanup (or a store failure) can
+	// leave one small entry for a finished job; job ids are never reused, so the
+	// map stays bounded and terminal-only.
 	s.mu.Lock()
 	delete(s.running, j.ID)
 	s.mu.Unlock()
