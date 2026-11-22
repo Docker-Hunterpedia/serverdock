@@ -54,8 +54,17 @@ export type TestServer = {
 	stop: () => Promise<void>;
 };
 
-/** Starts the real binary (-tags spa) on free high ports with a temp data directory. */
-export async function startServer(fixed?: { https: number }): Promise<TestServer> {
+/**
+ * Starts the real binary (-tags spa) on free high ports with a temp data directory.
+ *
+ * The server creates its Docker app network at start (network_ensure), and every
+ * test server has a fresh data directory, so a fresh install id and network name.
+ * Against the machine's real Docker that would create (and leak) a bridge network
+ * per server, and a changed host interface makes Chromium abort navigations in
+ * flight (net::ERR_NETWORK_CHANGED). So the server gets a Docker socket that does
+ * not exist, unless a test opts in with `dockerSocket`.
+ */
+export async function startServer(fixed?: { https?: number; dockerSocket?: string }): Promise<TestServer> {
 	const bin = resolve(process.env.SERVERDOCK_BIN ?? '../bin/serverdock');
 	const v = spawnSync(bin, ['version'], { encoding: 'utf8' });
 	if (v.status !== 0 || !v.stdout.includes('ui=spa')) {
@@ -68,7 +77,19 @@ export async function startServer(fixed?: { https: number }): Promise<TestServer
 	const baseURL = `https://127.0.0.1:${https}`;
 	const child: ChildProcess = spawn(
 		bin,
-		['server', '--data', data, '--control-socket', join(dir, 'c.sock'), '--listen', `127.0.0.1:${http}`, '--https-listen', `127.0.0.1:${https}`],
+		[
+			'server',
+			'--data',
+			data,
+			'--control-socket',
+			join(dir, 'c.sock'),
+			'--listen',
+			`127.0.0.1:${http}`,
+			'--https-listen',
+			`127.0.0.1:${https}`,
+			'--docker-socket',
+			fixed?.dockerSocket ?? join(dir, 'no-docker.sock')
+		],
 		{ stdio: ['ignore', 'ignore', 'pipe'] }
 	);
 	let log = '';
