@@ -1163,3 +1163,29 @@ func TestStallIsCappedAndShortStallsRoundUp(t *testing.T) {
 		}
 	}
 }
+
+func TestPullRefusesMetadataAndLoopbackRegistriesInTheAgent(t *testing.T) {
+	r := newRig(t)
+	r.fd.addImage("x:1", imgID)
+	for _, ref := range []string{"169.254.169.254/x:1", "metadata.google.internal/x:1", "127.0.0.1:5000/x:1", "localhost/x:1", "localhost4:5000/x:1"} {
+		_, err := r.cl.ImagePull(ctx5(t), ref, 0, nil)
+		wantCode(t, err, agent.CodePolicy)
+	}
+	// Forms the Docker client's own reference check already refuses.
+	for _, ref := range []string{"[fe80::1]:5000/x:1", "[::ffff:169.254.169.254]/x:1"} {
+		if _, err := r.cl.ImagePull(ctx5(t), ref, 0, nil); err == nil {
+			t.Errorf("%s accepted", ref)
+		}
+	}
+	if r.fd.called("POST /images/create") != 0 {
+		t.Error("a refused registry reached Docker")
+	}
+	// With the option the loopback registry is allowed; a metadata one never is.
+	r2 := newRig(t, func(d *Deps) { d.AllowLoopbackRegistry = true })
+	r2.fd.addImage("127.0.0.1:5000/x:1", imgID)
+	if _, err := r2.cl.ImagePull(ctx5(t), "127.0.0.1:5000/x:1", 0, nil); err != nil {
+		t.Errorf("loopback with the option: %v", err)
+	}
+	_, err := r2.cl.ImagePull(ctx5(t), "169.254.169.254/x:1", 0, nil)
+	wantCode(t, err, agent.CodePolicy)
+}

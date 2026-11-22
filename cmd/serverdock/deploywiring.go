@@ -40,8 +40,8 @@ func loadInstallID(ctx context.Context, st *store.Store) (string, error) {
 // local agent. The remote agent process never gets them: its handler table holds
 // RemoteOK ops only, whatever Config.Ops says. CheckCreate is policy.CheckCreateAgent:
 // default-deny on the exact bytes sent to Docker.
-func localOps(docker *dockerapi.Client, instance string, log *slog.Logger) (map[string]agent.Handler, error) {
-	return agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, Log: log})
+func localOps(docker *dockerapi.Client, instance string, allowLoopbackRegistry bool, log *slog.Logger) (map[string]agent.Handler, error) {
+	return agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: allowLoopbackRegistry, Log: log})
 }
 
 // recordAppSubnet picks (first start) or reads (later starts) the app subnet and

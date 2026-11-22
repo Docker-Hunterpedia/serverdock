@@ -80,7 +80,7 @@ func BuildCreate(in CreateInput) (agentops.CreateArgs, error) {
 		Network: in.Network, IP: in.IP, ImageID: in.ImageID, Subnet: in.Subnet,
 		Project: strconv.FormatInt(in.ProjectID, 10), Service: strconv.FormatInt(in.ServiceID, 10),
 		Deploy: strconv.FormatInt(in.DeployID, 10), Attempt: strconv.Itoa(in.Attempt),
-		ContainerPort: in.ContainerPort,
+		ContainerPort: in.ContainerPort, Worker: in.ContainerPort == 0,
 	}
 	if err := policy.CheckCreateControlPlane(body, exp); err != nil {
 		return agentops.CreateArgs{}, fmt.Errorf("the create request was refused by policy: %w", err)

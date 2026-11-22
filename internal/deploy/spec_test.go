@@ -59,6 +59,12 @@ func TestBuildCreateOutputPassesInBothProcesses(t *testing.T) {
 	if err != nil || w.Spec.ExposedPorts != nil {
 		t.Fatalf("worker: %+v %v", w, err)
 	}
+	wb, _ := w.Spec.Marshal()
+	wexp := exp
+	wexp.ContainerPort, wexp.Worker = 0, true
+	if err := policy.CheckCreateControlPlane(wb, wexp); err != nil {
+		t.Fatalf("worker body: %v", err)
+	}
 }
 
 func TestBuildCreateRefusesBadInputBeforeAnythingIsSent(t *testing.T) {
@@ -73,6 +79,12 @@ func TestBuildCreateRefusesBadInputBeforeAnythingIsSent(t *testing.T) {
 		"dynamic range":      func(i *CreateInput) { i.IP = "10.250.7.250" },
 		"outside the subnet": func(i *CreateInput) { i.IP = "10.250.8.2" },
 		"no network":         func(i *CreateInput) { i.Network = "" },
+		"network host":       func(i *CreateInput) { i.Network = "host" },
+		"network bridge":     func(i *CreateInput) { i.Network = "bridge" },
+		"network none":       func(i *CreateInput) { i.Network = "none" },
+		"network default":    func(i *CreateInput) { i.Network = "default" },
+		"network container":  func(i *CreateInput) { i.Network = "container:x" },
+		"network Host":       func(i *CreateInput) { i.Network = "Host" },
 		"host network name":  func(i *CreateInput) { i.Network = "host net" },
 	} {
 		in := goodInput()

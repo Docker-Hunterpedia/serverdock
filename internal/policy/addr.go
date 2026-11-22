@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-
-	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 )
 
 // StaticAddr reports whether ip is an address ServerDock may give a container
@@ -35,7 +33,7 @@ func StaticAddr(subnetStr, gateway, ipRange string, ip netip.Addr) error {
 	if gw, err := netip.ParseAddr(gateway); err == nil && ip == gw {
 		return fmt.Errorf("%s is the gateway", ip)
 	}
-	dyn, err := dockerapi.DynamicRange(subnetStr)
+	dyn, err := DynamicRange(subnetStr)
 	if err != nil {
 		return err
 	}
@@ -55,4 +53,32 @@ func lastAddr(p netip.Prefix) netip.Addr {
 	n := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
 	n |= host
 	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
+}
+
+// ErrInvalidSubnet is a subnet the app network may not use.
+var ErrInvalidSubnet = errors.New("subnet must be a canonical IPv4 CIDR from /16 to /26")
+
+// NetworkAddrs derives the gateway (the subnet's .1) and the dynamic IPRange
+// (the top quarter: a /26 of a /24) of an app subnet. It accepts /16 to /26; the
+// --app-subnet flag narrows that to /24 to /20 (step 4a).
+func NetworkAddrs(subnet string) (gateway netip.Addr, ipRange netip.Prefix, err error) {
+	p, err := netip.ParsePrefix(subnet)
+	if err != nil || !p.Addr().Is4() || p.Masked() != p || p.Bits() < 16 || p.Bits() > 26 {
+		return netip.Addr{}, netip.Prefix{}, ErrInvalidSubnet
+	}
+	gateway = p.Addr().Next()
+	// Top quarter: two more prefix bits, the last of the four blocks.
+	a := p.Addr().As4()
+	n := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
+	size := uint32(1) << (32 - p.Bits())
+	start := n + size - size/4
+	r := netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(start >> 24), byte(start >> 16), byte(start >> 8), byte(start)}), p.Bits()+2)
+	return gateway, r, nil
+}
+
+// DynamicRange returns the IPRange Docker may hand out dynamically on a subnet
+// created by the app network code (its top quarter).
+func DynamicRange(subnet string) (netip.Prefix, error) {
+	_, r, err := NetworkAddrs(subnet)
+	return r, err
 }

@@ -41,7 +41,11 @@ type CreateExpect struct {
 	IPRange string // optional; the network's dynamic range as Docker reports it
 
 	Project, Service, Deploy, Attempt string // label values (decimal ids)
-	ContainerPort                     int    // 0 = any single TCP port (or none)
+	// ContainerPort is the service's port. 0 means "not stated": the agent
+	// accepts any single TCP port or none. Worker (control plane, a service with
+	// no HTTP entry) requires ExposedPorts to be absent.
+	ContainerPort int
+	Worker        bool
 }
 
 // Limits on the body the checker is willing to parse. The one allowed shape is
@@ -98,6 +102,9 @@ func checkCreate(body []byte, exp CreateExpect, agent bool) error {
 		return err
 	}
 	if ep, ok := root["ExposedPorts"]; ok {
+		if exp.Worker {
+			return errors.New("ExposedPorts must be absent for a service with no container port")
+		}
 		if err := checkExposed(ep, exp.ContainerPort); err != nil {
 			return err
 		}
@@ -109,7 +116,7 @@ func checkCreate(body []byte, exp CreateExpect, agent bool) error {
 }
 
 func (e CreateExpect) validate(agent bool) error {
-	if !networkNameRe().MatchString(e.Network) {
+	if !networkNameRe().MatchString(e.Network) || reservedNetwork(e.Network) {
 		return errors.New("incomplete expectations: network")
 	}
 	if !imageIDRe().MatchString(e.ImageID) {
@@ -138,7 +145,22 @@ func (e CreateExpect) validate(agent bool) error {
 	if e.ContainerPort != 0 && ValidateContainerPort(e.ContainerPort) != nil {
 		return errors.New("incomplete expectations: container port")
 	}
+	if e.Worker && e.ContainerPort != 0 {
+		return errors.New("incomplete expectations: a worker has no container port")
+	}
 	return nil
+}
+
+// reservedNetwork reports whether n is one of Docker's own network modes, which
+// must never be the app network whatever the caller says: host, bridge, none,
+// default and container:<x>, in any case.
+func reservedNetwork(n string) bool {
+	l := strings.ToLower(n)
+	switch l {
+	case "host", "bridge", "none", "default":
+		return true
+	}
+	return strings.HasPrefix(l, "container:")
 }
 
 func checkLabels(v any, exp CreateExpect, agent bool) error {

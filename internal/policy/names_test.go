@@ -121,7 +121,7 @@ func TestUserLabelsRefuseTheReservedNamespaceInAnyCase(t *testing.T) {
 	if err := ValidateUserLabels(map[string]string{"com.example.team": "web", "a": ""}); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"serverdock.managed", "serverdock.x", "SERVERDOCK.MANAGED", "ServerDock.Instance", "serverdock."} {
+	for _, k := range []string{"serverdock.managed", "serverdock.x", "SERVERDOCK.MANAGED", "ServerDock.Instance", "serverdock.", "\u017ferverdock.x", "\u017fERVERDOCK.x", "SERVERDOCK.\u00e9"} {
 		if ValidateUserLabels(map[string]string{k: "1"}) == nil {
 			t.Errorf("%q accepted", k)
 		}
@@ -165,5 +165,17 @@ func TestCheckImage(t *testing.T) {
 	}
 	if rep, _ := CheckImage(ImageFacts{Volumes: vols}); len(rep.Warnings) != 8 {
 		t.Errorf("%d warnings", len(rep.Warnings))
+	}
+}
+
+func TestIsReservedLabelKey(t *testing.T) {
+	for k, want := range map[string]bool{
+		"serverdock.x": true, "ServerDock.x": true, "\u017ferverdock.x": true, "serverdock.": true,
+		"serverdock": false, "serverdoc": false, "": false, "xserverdock.x": false, "serverdock-x": false,
+		"com.serverdock.x": false, "\u00e9": false,
+	} {
+		if got := IsReservedLabelKey(k); got != want {
+			t.Errorf("IsReservedLabelKey(%q) = %v", k, got)
+		}
 	}
 }

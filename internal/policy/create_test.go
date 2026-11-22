@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 )
 
 const (
@@ -17,25 +15,6 @@ const (
 	tOtherImg = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-func goodSpec(withInstance bool) dockerapi.CreateSpec {
-	l := map[string]string{LabelManaged: "1", LabelProject: "3", LabelService: "7", LabelDeploy: "12", LabelAttempt: "1"}
-	if withInstance {
-		l[LabelInstance] = tInstance
-	}
-	return dockerapi.CreateSpec{
-		Image:        tImg,
-		Labels:       l,
-		ExposedPorts: map[string]struct{}{"8080/tcp": {}},
-		HostConfig: dockerapi.HostConfig{
-			RestartPolicy: dockerapi.RestartPolicy{Name: "unless-stopped"},
-			LogConfig:     dockerapi.LogConfig{Type: "local", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
-			NetworkMode:   tNet, PidsLimit: 4096,
-		},
-		NetworkingConfig: dockerapi.NetworkingConfig{EndpointsConfig: map[string]dockerapi.EndpointConfig{
-			tNet: {IPAMConfig: dockerapi.EndpointIPAM{IPv4Address: tIP}}}},
-	}
-}
-
 func goodExp() CreateExpect {
 	return CreateExpect{
 		Instance: tInstance, Network: tNet, IP: tIP, ImageID: tImg, Subnet: tSubnet,
@@ -43,17 +22,26 @@ func goodExp() CreateExpect {
 	}
 }
 
+// tree is the allowed body as the builder marshals it, written out so this
+// package does not depend on the Docker client.
 func tree(t testing.TB, withInstance bool) map[string]any {
 	t.Helper()
-	b, err := goodSpec(withInstance).Marshal()
-	if err != nil {
-		t.Fatal(err)
+	l := map[string]any{LabelManaged: "1", LabelProject: "3", LabelService: "7", LabelDeploy: "12", LabelAttempt: "1"}
+	if withInstance {
+		l[LabelInstance] = tInstance
 	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		t.Fatal(err)
+	return map[string]any{
+		"Image":        tImg,
+		"Labels":       l,
+		"ExposedPorts": map[string]any{"8080/tcp": map[string]any{}},
+		"HostConfig": map[string]any{
+			"RestartPolicy": map[string]any{"Name": "unless-stopped"},
+			"LogConfig":     map[string]any{"Type": "local", "Config": map[string]any{"max-size": "10m", "max-file": "3"}},
+			"NetworkMode":   tNet, "PidsLimit": 4096,
+		},
+		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{
+			tNet: map[string]any{"IPAMConfig": map[string]any{"IPv4Address": tIP}}}},
 	}
-	return m
 }
 
 func sub(m map[string]any, path ...string) map[string]any {
@@ -269,11 +257,86 @@ func TestCheckCreateRefusesDuplicateKeysAtAnyDepth(t *testing.T) {
 		"in an array":   strings.Replace(good, `"HostConfig":{`, `"HostConfig":{"CapAdd":[{"a":1,"a":2}],`, 1),
 		"endpoint":      strings.Replace(good, `"IPv4Address":"`+tIP+`"`, `"IPv4Address":"10.250.7.3","IPv4Address":"`+tIP+`"`, 1),
 		"case variants": strings.Replace(good, `"Image":`, `"image":"x","Image":`, 1),
-		"escaped":       strings.Replace(good, `"Image":`, `"Image":"x","Image":`, 1),
+		"escaped":       strings.Replace(good, `"Image":`, `"\u0049mage":"x","Image":`, 1),
 	} {
 		if err := CheckCreateAgent([]byte(b), goodExp()); err == nil {
 			t.Errorf("%s: accepted %s", name, b)
 		}
+	}
+	// The escaped key really is a JSON escape, and it is refused as a duplicate.
+	esc := strings.Replace(good, `"Image":`, `"\u0049mage":"x","Image":`, 1)
+	if !strings.Contains(esc, `\u0049`) {
+		t.Fatal("the fixture has no JSON escape")
+	}
+	if err := CheckCreateAgent([]byte(esc), goodExp()); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("escaped duplicate: %v", err)
+	}
+}
+
+// The agent's real expectations: no label values, no container port. Everything
+// in the table is refused except what only a deploy row can judge.
+func TestAgentFixtureTableWithTheAgentsRealExpectations(t *testing.T) {
+	exp := goodExp()
+	exp.Project, exp.Service, exp.Deploy, exp.Attempt, exp.ContainerPort = "", "", "", "", 0
+	onlyTheControlPlaneCanJudge := map[string]bool{
+		"project wrong": true, "service wrong": true, "deploy wrong": true, "attempt wrong": true, "other port": true,
+	}
+	if err := CheckCreateAgent(enc(tree(t, true)), exp); err != nil {
+		t.Fatal(err)
+	}
+	for name, mod := range refusals {
+		m := tree(t, true)
+		mod(m)
+		err := CheckCreateAgent(enc(m), exp)
+		if onlyTheControlPlaneCanJudge[name] {
+			if err != nil {
+				t.Errorf("%s: refused: %v", name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("accepted %q: %s", name, enc(m))
+		}
+	}
+}
+
+func TestReservedNetworksCanNeverBeTheExpectedNetwork(t *testing.T) {
+	for _, n := range []string{"host", "bridge", "none", "default", "HOST", "Bridge", "None", "DEFAULT", "container:x", "Container:abc", "CONTAINER:x"} {
+		e := goodExp()
+		e.Network = n
+		m := tree(t, false)
+		sub(m, "HostConfig")["NetworkMode"] = n
+		ec := sub(m, "NetworkingConfig", "EndpointsConfig")
+		ec[n] = ec[tNet]
+		delete(ec, tNet)
+		if err := CheckCreateControlPlane(enc(m), e); err == nil {
+			t.Errorf("control plane accepted network %q", n)
+		}
+		m6 := tree(t, true)
+		sub(m6, "HostConfig")["NetworkMode"] = n
+		ec = sub(m6, "NetworkingConfig", "EndpointsConfig")
+		ec[n] = ec[tNet]
+		delete(ec, tNet)
+		if err := CheckCreateAgent(enc(m6), e); err == nil {
+			t.Errorf("agent accepted network %q", n)
+		}
+	}
+}
+
+func TestWorkerModeRequiresNoExposedPorts(t *testing.T) {
+	e := goodExp()
+	e.ContainerPort, e.Worker = 0, true
+	m := tree(t, false)
+	if err := CheckCreateControlPlane(enc(m), e); err == nil {
+		t.Error("a worker body with ExposedPorts was accepted")
+	}
+	delete(m, "ExposedPorts")
+	if err := CheckCreateControlPlane(enc(m), e); err != nil {
+		t.Errorf("a worker body without ExposedPorts: %v", err)
+	}
+	e.ContainerPort = 8080
+	if err := CheckCreateControlPlane(enc(m), e); err == nil {
+		t.Error("a worker with a container port was accepted as expectations")
 	}
 }
 

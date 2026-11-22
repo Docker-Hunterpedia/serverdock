@@ -389,7 +389,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
 	logDockerVersion(ctx, docker, log)
-	ops, err := localOps(docker, installID, log)
+	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, log)
 	if err != nil {
 		return err
 	}

@@ -33,6 +33,10 @@ type Deps struct {
 	Instance string
 	// CheckCreate runs on the exact bytes sent to Docker for container_create.
 	CheckCreate CheckCreateFunc
+	// AllowLoopbackRegistry is --allow-loopback-registry: image_pull may use a
+	// registry on this machine. Link-local and metadata registries are refused
+	// whatever it says.
+	AllowLoopbackRegistry bool
 	// Log receives internal errors that are not sent to the control plane.
 	Log *slog.Logger
 
@@ -161,10 +165,10 @@ func decode(raw json.RawMessage, dst any) error {
 	return nil
 }
 
-// labelValueRe is the shape the ownership rule accepts for the four id labels
-// (looser than what policy.CheckCreate writes: it must also recognise containers
-// created by an earlier release).
-var labelValueRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`) })
+// labelValueRe is the shape of the four id labels: the decimal ids policy.CheckCreate
+// writes (^[1-9][0-9]{0,17}$). No release created deploy containers before this
+// shape was fixed, so the ownership rule needs no looser form.
+var labelValueRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[1-9][0-9]{0,17}$`) })
 
 // ownedLabels is the ownership rule: exactly our six labels, none dropped, with
 // the expected shape and this install's instance id.
@@ -209,6 +213,15 @@ func (h *handlers) pull(ctx context.Context, raw json.RawMessage, out *agent.Out
 	}
 	if !dockerapi.ValidPullRef(a.Ref) {
 		return nil, opErr(agent.CodeInvalid, "ref must name one image by tag or sha256 digest")
+	}
+	// The agent judges the registry itself: it must not pull from the host's
+	// metadata endpoint whatever the control plane asked.
+	pr, err := policy.ParseRef(a.Ref)
+	if err == nil {
+		err = policy.CheckRegistry(pr.Host, policy.Options{AllowLoopbackRegistry: h.AllowLoopbackRegistry})
+	}
+	if err != nil {
+		return nil, opErr(agent.CodePolicy, "registry refused: %v", err)
 	}
 	if a.StallS == 0 {
 		a.StallS = DefaultStallS

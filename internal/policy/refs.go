@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -389,14 +390,74 @@ var metadataAddrs = sync.OnceValue(func() []netip.Addr {
 })
 
 var nat64 = sync.OnceValue(func() netip.Prefix { return netip.MustParsePrefix("64:ff9b::/96") })
+var nat64Local = sync.OnceValue(func() netip.Prefix { return netip.MustParsePrefix("64:ff9b:1::/48") })
+
+// loopbackNames are host names that resolve to this machine by convention
+// (glibc's and systemd's /etc/hosts entries).
+var loopbackNames = map[string]bool{
+	"localhost": true, "localhost4": true, "localhost6": true,
+	"localhost.localdomain": true, "localhost4.localdomain4": true, "localhost6.localdomain6": true,
+	"ip6-localhost": true, "ip6-loopback": true, "ip6-localnet": true,
+}
+
+// metadataNames are cloud metadata host names, refused always.
+var metadataNames = map[string]bool{"metadata": true, "metadata.google.internal": true}
+
+// localHostname is this machine's name (os.Hostname), read once on first use.
+// A variable so tests can fake it.
+var localHostname = sync.OnceValue(func() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(h, "."))
+})
+
+func isThisHost(h string) bool {
+	me := localHostname()
+	if me == "" {
+		return false
+	}
+	short, _, _ := strings.Cut(me, ".")
+	return h == me || h == short
+}
+
+// embeddedV4 returns the IPv4 address an IPv6 address carries when it is one of
+// the translation or compatibility forms, so it is judged as that address:
+// IPv4-mapped (::ffff:a.b.c.d, unwrapped by Unmap), IPv4-compatible (::a.b.c.d),
+// NAT64 64:ff9b::/96 and the local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215,
+// with the address laid out as RFC 6052 does for a /48).
+func embeddedV4(a netip.Addr) (netip.Addr, bool) {
+	if !a.Is6() {
+		return a, false
+	}
+	b := a.As16()
+	switch {
+	case nat64().Contains(a):
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case nat64Local().Contains(a):
+		return netip.AddrFrom4([4]byte{b[6], b[7], b[9], b[10]}), true
+	}
+	zero := true
+	for _, x := range b[:12] {
+		if x != 0 {
+			zero = false
+		}
+	}
+	if zero && !a.IsUnspecified() && a != netip.IPv6Loopback() {
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	}
+	return a, false
+}
 
 // CheckRegistry applies the registry-host rules to the host part of a
 // reference (as written, "" = Docker Hub). Link-local and metadata IP literals
-// are always refused. Loopback hosts (localhost, 127.0.0.0/8, ::1, and the
-// unspecified address, which connects to this host) are refused unless
-// o.AllowLoopbackRegistry. Host names are not resolved here: a name that points
-// at an internal address is the DNS-rebinding case plan 0004 accepts and the
-// firewall note covers; only literals can be judged without a network call.
+// and names (metadata.google.internal) are always refused. Loopback hosts
+// (localhost and the usual aliases, this machine's own host name, 127.0.0.0/8,
+// ::1, the unspecified address) are refused unless o.AllowLoopbackRegistry.
+// Other host names are not resolved here: a name that points at an internal
+// address is the DNS-rebinding case plan 0004 accepts; only literals and the
+// well-known names can be judged without a network call.
 func CheckRegistry(host string, o Options) error {
 	if host == "" {
 		return nil
@@ -406,9 +467,12 @@ func CheckRegistry(host string, o Options) error {
 	}
 	h, _, _ := splitHost(host)
 	h = strings.ToLower(h)
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+	if metadataNames[h] {
+		return errors.New("a cloud metadata host name is refused as a registry")
+	}
+	if loopbackNames[h] || strings.HasSuffix(h, ".localhost") || isThisHost(h) {
 		if !o.AllowLoopbackRegistry {
-			return errors.New("registries on localhost need --allow-loopback-registry")
+			return errors.New("registries on this machine (localhost and its aliases) need --allow-loopback-registry")
 		}
 		return nil
 	}
@@ -417,9 +481,8 @@ func CheckRegistry(host string, o Options) error {
 		return nil // a name
 	}
 	a = a.Unmap()
-	if nat64().Contains(a) {
-		b := a.As16()
-		a = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}) // judge what it embeds
+	if v4, ok := embeddedV4(a); ok {
+		a = v4 // judge what it embeds
 	}
 	switch {
 	case a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsInterfaceLocalMulticast():

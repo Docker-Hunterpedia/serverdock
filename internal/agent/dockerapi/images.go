@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 // maxRefLen bounds an image reference (Docker's own limit is 255 plus a tag).
@@ -248,7 +249,7 @@ func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInfo, error
 		info.Volumes = capList(sortedKeys(r.Config.Volumes))
 		var reserved []string
 		for k := range r.Config.Labels {
-			if strings.HasPrefix(strings.ToLower(k), "serverdock.") {
+			if policy.IsReservedLabelKey(k) {
 				reserved = append(reserved, k)
 			}
 		}

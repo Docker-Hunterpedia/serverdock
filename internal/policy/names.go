@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValidateName checks a project or service name: ^[a-z][a-z0-9-]{0,29}$, and it
@@ -98,9 +99,18 @@ func CheckFreeDisk(free uint64) error {
 const reservedPrefix = "serverdock."
 
 // IsReservedLabelKey reports whether a label key is in ServerDock's namespace,
-// whatever its case.
+// whatever its case: its first 11 characters fold to "serverdock." (Unicode
+// simple folding, so "SERVERDOCK." and "ſerverdock." both count).
 func IsReservedLabelKey(k string) bool {
-	return strings.HasPrefix(strings.ToLower(k), reservedPrefix)
+	end := 0
+	for n := 0; n < len(reservedPrefix); n++ { // the prefix is ASCII: 11 characters
+		if end >= len(k) {
+			return false
+		}
+		_, w := utf8.DecodeRuneInString(k[end:])
+		end += w
+	}
+	return strings.EqualFold(k[:end], reservedPrefix)
 }
 
 // Bounds on user labels (M3b and M6 use them; M3a has no label input).

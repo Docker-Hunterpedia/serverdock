@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 // ErrForeignNetwork is a same-name network that is not ours (it lacks one of
@@ -60,18 +61,11 @@ type NetworkInfo struct {
 // (the top quarter: a /26 of a /24) of a subnet. This client accepts /16 to /26;
 // the policy narrows --app-subnet to /24 to /20 (step 4a).
 func networkAddrs(subnet string) (gateway netip.Addr, ipRange netip.Prefix, err error) {
-	p, err := netip.ParsePrefix(subnet)
-	if err != nil || !p.Addr().Is4() || p.Masked() != p || p.Bits() < 16 || p.Bits() > 26 {
+	gateway, ipRange, err = policy.NetworkAddrs(subnet)
+	if err != nil {
 		return netip.Addr{}, netip.Prefix{}, ErrInvalidSubnet
 	}
-	gateway = p.Addr().Next()
-	// Top quarter: two more prefix bits, the last of the four blocks.
-	a := p.Addr().As4()
-	n := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
-	size := uint32(1) << (32 - p.Bits())
-	start := n + size - size/4
-	r := netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(start >> 24), byte(start >> 16), byte(start >> 8), byte(start)}), p.Bits()+2)
-	return gateway, r, nil
+	return gateway, ipRange, nil
 }
 
 // DynamicRange returns the IPRange Docker may hand out dynamically on a subnet

@@ -243,3 +243,56 @@ func FuzzSameRepository(f *testing.F) {
 		}
 	})
 }
+
+func TestLoopbackNamesAndThisHost(t *testing.T) {
+	old := localHostname
+	localHostname = func() string { return "build-box.example.net" }
+	t.Cleanup(func() { localHostname = old })
+	names := []string{"localhost4", "localhost6", "localhost.localdomain", "localhost4.localdomain4", "localhost6.localdomain6",
+		"ip6-localhost", "ip6-loopback", "ip6-localnet", "IP6-LOCALHOST:5000", "build-box", "BUILD-BOX:5000", "build-box.example.net", "Build-Box.Example.Net"}
+	for _, h := range names {
+		if err := CheckRegistry(h, Options{}); err == nil {
+			t.Errorf("%s accepted without the flag", h)
+		}
+		if err := CheckRegistry(h, Options{AllowLoopbackRegistry: true}); err != nil {
+			t.Errorf("%s refused with the flag: %v", h, err)
+		}
+	}
+	for _, h := range []string{"metadata.google.internal", "METADATA.google.internal:80", "metadata"} {
+		for _, o := range []Options{{}, {AllowLoopbackRegistry: true}} {
+			if err := CheckRegistry(h, o); err == nil {
+				t.Errorf("%s accepted (%+v)", h, o)
+			}
+		}
+	}
+	for _, h := range []string{"other-box", "build-box2", "example.net", "registry.build-box.example.net"} {
+		if err := CheckRegistry(h, Options{}); err != nil {
+			t.Errorf("%s refused: %v", h, err)
+		}
+	}
+}
+
+func TestTranslationFormsAreJudgedByTheAddressTheyCarry(t *testing.T) {
+	always := []string{
+		"[::169.254.169.254]", "[::a9fe:a9fe]", "[::100.100.100.200]", "[::168.63.129.16]",
+		"[64:ff9b::a9fe:a9fe]", "[64:ff9b:1:a9fe:a9:fe00:0:0]", // RFC 8215 /48 layout: 169.254 | u | 169.254
+	}
+	for _, h := range always {
+		if err := CheckRegistry(h, Options{AllowLoopbackRegistry: true}); err == nil {
+			t.Errorf("%s accepted with the flag", h)
+		}
+	}
+	loop := []string{"[::127.0.0.1]", "[::7f00:1]", "[64:ff9b:1:7f00:0:100::]", "[64:ff9b:1:7f00:1::]"}
+	for _, h := range loop {
+		if err := CheckRegistry(h, Options{}); err == nil {
+			t.Errorf("%s accepted without the flag", h)
+		}
+	}
+	// ::1 and :: keep their own rules; an ordinary compatible address passes.
+	if err := CheckRegistry("[::8.8.8.8]", Options{}); err != nil {
+		t.Errorf("[::8.8.8.8]: %v", err)
+	}
+	if err := CheckRegistry("[::1]", Options{AllowLoopbackRegistry: true}); err != nil {
+		t.Errorf("[::1]: %v", err)
+	}
+}

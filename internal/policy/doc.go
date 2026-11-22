@@ -7,8 +7,8 @@
 // and the agent runs it again on the bytes it sends, so a bug or a hostile
 // caller on either side cannot widen what a container may do.
 //
-// Everything here treats its input as hostile: error texts never echo a value
-// longer than a few cleaned characters, and nothing logs.
+// Everything here treats its input as hostile: error texts echo nothing from
+// the input except addresses and key names (cleaned and cut), and nothing logs.
 package policy
 
 // Resource caps (plan 0004, "Limits"). They are policy, not tuning knobs.

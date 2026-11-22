@@ -82,7 +82,7 @@ func TestIntegrationAgentOpsLifecycle(t *testing.T) {
 		}
 		_ = exec.Command("docker", "network", "rm", netName).Run()
 	})
-	sess := attachAgent(t, docker, Deps{Docker: docker, Instance: inst, CheckCreate: policy.CheckCreateAgent, Log: quiet})
+	sess := attachAgent(t, docker, Deps{Docker: docker, Instance: inst, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: true, Log: quiet})
 	cl := NewClient(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
