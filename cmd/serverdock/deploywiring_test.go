@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -11,13 +12,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
+	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
@@ -29,6 +34,11 @@ type fakeEngine struct {
 	mu       sync.Mutex
 	networks string // JSON for GET /networks
 	paths    []string
+	// created holds the networks made through POST /networks/create, by name,
+	// as the inspect JSON GET /networks/<name> then returns.
+	created map[string]string
+	// listFails makes GET /containers/json answer 500 (Docker "down" for Sync).
+	listFails atomic.Bool
 }
 
 func startFakeEngine(t *testing.T, networks string) (string, *fakeEngine) {
@@ -57,7 +67,42 @@ func startFakeEngine(t *testing.T, networks string) (string, *fakeEngine) {
 		fe.mu.Unlock()
 		switch {
 		case r.Method == "GET" && path == "containers/json":
+			if fe.listFails.Load() {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			io.WriteString(w, `[]`)
+		case r.Method == "POST" && path == "networks/create":
+			var c struct {
+				Name   string
+				IPAM   struct{ Config []map[string]string }
+				Labels map[string]string
+				Option map[string]string `json:"Options"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || len(c.IPAM.Config) != 1 {
+				http.Error(w, "bad create", http.StatusBadRequest)
+				return
+			}
+			lb, _ := json.Marshal(c.Labels)
+			ob, _ := json.Marshal(c.Option)
+			cfg, _ := json.Marshal(c.IPAM.Config)
+			fe.mu.Lock()
+			if fe.created == nil {
+				fe.created = map[string]string{}
+			}
+			fe.created[c.Name] = `{"Id":"` + strings.Repeat("a", 64) + `","Name":"` + c.Name + `","Driver":"bridge","Options":` + string(ob) + `,"Labels":` + string(lb) + `,"IPAM":{"Config":` + string(cfg) + `},"Containers":{}}`
+			fe.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"Id":"`+strings.Repeat("a", 64)+`"}`)
+		case r.Method == "GET" && strings.HasPrefix(path, "networks/"):
+			fe.mu.Lock()
+			body, ok := fe.created[strings.TrimPrefix(path, "networks/")]
+			fe.mu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			io.WriteString(w, body)
 		case r.Method == "GET" && path == "networks":
 			io.WriteString(w, nets)
 		case r.Method == "GET" && path == "version":
@@ -254,5 +299,170 @@ func TestAllowLoopbackRegistryFlag(t *testing.T) {
 	}
 	if _, err := policy.ValidateImageRef("169.254.169.254/app", c.policyOptions()); err == nil {
 		t.Error("a metadata registry was accepted with the flag")
+	}
+}
+
+// ---- step 7: the boot order, the reserved ports and the registry ----
+
+func (fe *fakeEngine) sawPaths() []string {
+	fe.mu.Lock()
+	defer fe.mu.Unlock()
+	return append([]string(nil), fe.paths...)
+}
+
+func indexOf(list []string, want string) int {
+	for i, p := range list {
+		if p == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Boot order (plan 0004 step 7, Revision 9): the panel alone first (the server is
+// ready and serving), then network_ensure with the recorded subnet (the network
+// is created with the app subnet and inter-container traffic off), then Sync,
+// which lists the containers and opens the route gate.
+func TestServerBootCreatesTheAppNetworkThenOpensTheRouteGate(t *testing.T) {
+	sock, fe := startFakeEngine(t, `[]`)
+	data := newData(t)
+	addrs, stop := startServer(t, serverConfig{Data: data, ControlSocket: shortSock(t), DockerSocket: sock, Proxy: true,
+		Listen: testbinFree(t), HTTPSListen: testbinFree(t), AppSubnet: "10.77.0.0/24"})
+	defer func() {
+		if err := stop(); err != nil {
+			t.Error(err)
+		}
+	}()
+	waitFor(t, "the route gate", func() bool { return addrs.routes.Ready() })
+	id, _ := readMeta(t, data, "install_id")
+	name := agentops.NetworkName(id)
+	paths := fe.sawPaths()
+	create, list := indexOf(paths, "POST /networks/create"), indexOf(paths, "GET /containers/json")
+	if create < 0 || list < 0 || create > list {
+		t.Fatalf("network_ensure (%d) must come before the first container list (%d): %v", create, list, paths)
+	}
+	fe.mu.Lock()
+	body := fe.created[name]
+	fe.mu.Unlock()
+	if !strings.Contains(body, `"Subnet":"10.77.0.0/24"`) || !strings.Contains(body, `"com.docker.network.bridge.enable_icc":"false"`) ||
+		!strings.Contains(body, `"serverdock.instance":"`+id+`"`) {
+		t.Errorf("the network was created as %s", body)
+	}
+	if addrs.booter.NetworkProblem() != "" {
+		t.Errorf("network problem %q", addrs.booter.NetworkProblem())
+	}
+}
+
+// With Docker failing at start the server still runs (the panel alone) and the
+// gate stays closed; a service action then opens it lazily once Docker answers,
+// and reports the port as applied only after that.
+func TestServerKeepsTheGateClosedUntilDockerAnswers(t *testing.T) {
+	sock, fe := startFakeEngine(t, `[]`)
+	fe.listFails.Store(true)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), Proxy: true,
+		Listen: testbinFree(t), HTTPSListen: testbinFree(t), DockerSocket: sock})
+	defer stop()
+	waitFor(t, "the boot attempt", func() bool { return indexOf(fe.sawPaths(), "GET /containers/json") >= 0 })
+	if addrs.routes.Ready() {
+		t.Fatal("the gate opened although the container list failed")
+	}
+	admin := actions.UserActor("1", actions.ScopeAdmin, time.Now().Add(time.Hour))
+	_, port, _ := net.SplitHostPort(testbinFree(t))
+	in := json.RawMessage(`{"project":"p","name":"web","image_ref":"nginx","container_port":80,"public_port":` + port + `}`)
+	res, err := addrs.reg.Invoke(context.Background(), admin, "services.create", in, actions.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := res.Out.(deploy.ServiceChangeOut); out.Applied || out.Service.RoutesReady || !strings.Contains(out.Notice, "not applied yet") {
+		t.Fatalf("reported as applied with the gate closed: %+v", out)
+	}
+	// Docker answers again: "Try again" (retry_port) opens the gate and applies the port.
+	fe.listFails.Store(false)
+	res, err = addrs.reg.Invoke(context.Background(), admin, "services.retry_port", json.RawMessage(`{"service":"p/web"}`), actions.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := res.Out.(deploy.ServiceChangeOut); !out.Applied || !out.Service.RoutesReady || !addrs.routes.Ready() {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// One list of ServerDock's own ports feeds both the agent's proxy_apply and the
+// service actions: --agent-listen, --listen and --https-listen (80 and 443 are
+// refused by policy itself).
+func TestReservedPortsAreOneListForTheAgentAndTheServiceActions(t *testing.T) {
+	c := serverConfig{AgentListen: "127.0.0.1:7443", Listen: ":8080", HTTPSListen: "0.0.0.0:8443"}
+	if got := c.reservedPorts(); len(got) != 3 || got[0] != 7443 || got[1] != 8080 || got[2] != 8443 {
+		t.Errorf("%v", got)
+	}
+	if got := (serverConfig{Listen: "bad", HTTPSListen: ":0", AgentListen: ""}).reservedPorts(); len(got) != 0 {
+		t.Errorf("%v", got)
+	}
+
+	sock, _ := startFakeEngine(t, `[]`)
+	agentAddr, listen, https := testbinFree(t), testbinFree(t), testbinFree(t)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), DockerSocket: sock, Proxy: true,
+		Listen: listen, HTTPSListen: https, AgentListen: agentAddr, AgentSANs: []string{"127.0.0.1"}, AgentToken: testToken})
+	defer stop()
+	local := waitSession(t, addrs.hub, hub.LocalID)
+	admin := actions.UserActor("1", actions.ScopeAdmin, time.Now().Add(time.Hour))
+	for what, addr := range map[string]string{"agent-listen": agentAddr, "listen": listen, "https-listen": https} {
+		_, p, _ := net.SplitHostPort(addr)
+		port, _ := strconv.Atoi(p)
+		// The service action refuses it ...
+		in := `{"project":"p","name":"` + strings.ReplaceAll(what, "-", "") + `","image_ref":"nginx","container_port":80,"public_port":` + p + `}`
+		if _, err := addrs.reg.Invoke(context.Background(), admin, "services.create", json.RawMessage(in), actions.Options{}); !errors.Is(err, actions.ErrInvalidInput) {
+			t.Errorf("%s (%d): services.create: %v", what, port, err)
+		}
+		// ... and so does the agent's proxy_apply, from the same list.
+		_, err := local.Call(context.Background(), agent.OpProxyApply, agentops.ApplyArgs{Routes: []agentops.Route{{Port: port, Page: agentops.PageNotRunning}}}, nil)
+		var oe *agent.OpError
+		if !errors.As(err, &oe) || oe.Code != agent.CodeInvalid {
+			t.Errorf("%s (%d): proxy_apply: %v", what, port, err)
+		}
+	}
+}
+
+// The server's registry carries the step 7 actions (and the sentinel suite, run
+// unchanged, covers the rest of the server).
+func TestServerRegistryHasTheServiceActions(t *testing.T) {
+	sock, _ := startFakeEngine(t, `[]`)
+	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), DockerSocket: sock})
+	defer stop()
+	for _, n := range []string{"projects.list", "services.list", "services.get", "services.create", "services.update", "services.set_source",
+		"services.set_public_port", "services.retry_port", "system.exposure"} {
+		if _, ok := addrs.reg.Lookup(n); !ok {
+			t.Errorf("%s is not registered", n)
+		}
+	}
+	if _, ok := addrs.reg.Lookup("services.delete"); ok {
+		t.Error("services.delete is step 9's")
+	}
+}
+
+func TestPanelAddrsReturnsTheBoundAddressOrEveryInterface(t *testing.T) {
+	if got := panelAddrs("203.0.113.5:443")(); len(got) != 1 || got[0].String() != "203.0.113.5" {
+		t.Errorf("%v", got)
+	}
+	if got := panelAddrs(":443")(); len(got) == 0 {
+		t.Error("no interface addresses for a panel on every interface")
+	}
+	lo := false
+	for _, a := range panelAddrs("0.0.0.0:443")() {
+		lo = lo || a.IsLoopback()
+	}
+	if !lo {
+		t.Error("loopback is missing: an SSH tunnel reaches the panel there")
 	}
 }

@@ -320,6 +320,1278 @@
         ],
         "type": "object"
       },
+      "ProjectsListInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "ProjectsListOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "projects": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "services": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "services",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "type": "object"
+      },
+      "ServicesCreateInput": {
+        "additionalProperties": false,
+        "properties": {
+          "container_port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deploy": {
+            "description": "not available yet: create the service, then deploy it",
+            "type": "boolean"
+          },
+          "drain_s": {
+            "description": "10 to 300, default 10",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "description": "http, tcp or running (default: tcp with a container port, running without)",
+                "type": "string"
+              },
+              "passes": {
+                "description": "consecutive passes, 1 to 10, default 3",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "description": "http only: starts with /, at most 256 bytes",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "timeout_s": {
+                "description": "5 to 600, default 60",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "image_ref": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "public_port": {
+            "description": "needs a container port; exposes the app on this host port over plain HTTP",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stop_grace_s": {
+            "description": "0 to 300, default 10",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "strategy": {
+            "description": "blue_green (default) or stop_first",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "name",
+          "image_ref"
+        ],
+        "type": "object"
+      },
+      "ServicesCreateOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "service": {
+            "additionalProperties": false,
+            "properties": {
+              "active_deploy": {
+                "description": "the number of the live deploy, if any",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "container_port": {
+                "description": "the port the app listens on; null for a worker",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "drain_s": {
+                "type": "integer"
+              },
+              "health": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "passes": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeout_s",
+                  "passes"
+                ],
+                "type": "object"
+              },
+              "image_ref": {
+                "description": "the image the next deploy uses",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_attention": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "public_port": {
+                "description": "the host port the proxy serves; null when not exposed",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_error": {
+                "description": "set when the proxy could not open the public port",
+                "type": "string"
+              },
+              "routes_ready": {
+                "description": "false until the first container list has finished: no app route is served before that",
+                "type": "boolean"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                "type": "string"
+              },
+              "state": {
+                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "type": "string"
+              },
+              "stop_grace_s": {
+                "type": "integer"
+              },
+              "strategy": {
+                "description": "blue_green or stop_first",
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "service",
+              "project",
+              "name",
+              "image_ref",
+              "health",
+              "strategy",
+              "drain_s",
+              "stop_grace_s",
+              "state",
+              "routes_ready",
+              "warnings",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "service",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesGetInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesGetOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "active_deploy": {
+            "description": "the number of the live deploy, if any",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "container_port": {
+            "description": "the port the app listens on; null for a worker",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "drain_s": {
+            "type": "integer"
+          },
+          "health": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "passes": {
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "timeout_s": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "timeout_s",
+              "passes"
+            ],
+            "type": "object"
+          },
+          "image_ref": {
+            "description": "the image the next deploy uses",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "needs_attention": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "public_port": {
+            "description": "the host port the proxy serves; null when not exposed",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "route_error": {
+            "description": "set when the proxy could not open the public port",
+            "type": "string"
+          },
+          "routes_ready": {
+            "description": "false until the first container list has finished: no app route is served before that",
+            "type": "boolean"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+            "type": "string"
+          },
+          "state": {
+            "description": "not_deployed, running, restarting, stopped, missing or unknown",
+            "type": "string"
+          },
+          "stop_grace_s": {
+            "type": "integer"
+          },
+          "strategy": {
+            "description": "blue_green or stop_first",
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "service",
+          "project",
+          "name",
+          "image_ref",
+          "health",
+          "strategy",
+          "drain_s",
+          "stop_grace_s",
+          "state",
+          "routes_ready",
+          "warnings",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ServicesListInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "ServicesListOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "services": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "active_deploy": {
+                  "description": "the number of the live deploy, if any",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "container_port": {
+                  "description": "the port the app listens on; null for a worker",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "drain_s": {
+                  "type": "integer"
+                },
+                "health": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "passes": {
+                      "type": "integer"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "timeout_s": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "timeout_s",
+                    "passes"
+                  ],
+                  "type": "object"
+                },
+                "image_ref": {
+                  "description": "the image the next deploy uses",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "needs_attention": {
+                  "type": "string"
+                },
+                "project": {
+                  "type": "string"
+                },
+                "public_port": {
+                  "description": "the host port the proxy serves; null when not exposed",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "route_error": {
+                  "description": "set when the proxy could not open the public port",
+                  "type": "string"
+                },
+                "routes_ready": {
+                  "description": "false until the first container list has finished: no app route is served before that",
+                  "type": "boolean"
+                },
+                "service": {
+                  "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                  "type": "string"
+                },
+                "state": {
+                  "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                  "type": "string"
+                },
+                "stop_grace_s": {
+                  "type": "integer"
+                },
+                "strategy": {
+                  "description": "blue_green or stop_first",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "warnings": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "message"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "service",
+                "project",
+                "name",
+                "image_ref",
+                "health",
+                "strategy",
+                "drain_s",
+                "stop_grace_s",
+                "state",
+                "routes_ready",
+                "warnings",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "type": "object"
+      },
+      "ServicesRetryPortInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesRetryPortOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "service": {
+            "additionalProperties": false,
+            "properties": {
+              "active_deploy": {
+                "description": "the number of the live deploy, if any",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "container_port": {
+                "description": "the port the app listens on; null for a worker",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "drain_s": {
+                "type": "integer"
+              },
+              "health": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "passes": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeout_s",
+                  "passes"
+                ],
+                "type": "object"
+              },
+              "image_ref": {
+                "description": "the image the next deploy uses",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_attention": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "public_port": {
+                "description": "the host port the proxy serves; null when not exposed",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_error": {
+                "description": "set when the proxy could not open the public port",
+                "type": "string"
+              },
+              "routes_ready": {
+                "description": "false until the first container list has finished: no app route is served before that",
+                "type": "boolean"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                "type": "string"
+              },
+              "state": {
+                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "type": "string"
+              },
+              "stop_grace_s": {
+                "type": "integer"
+              },
+              "strategy": {
+                "description": "blue_green or stop_first",
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "service",
+              "project",
+              "name",
+              "image_ref",
+              "health",
+              "strategy",
+              "drain_s",
+              "stop_grace_s",
+              "state",
+              "routes_ready",
+              "warnings",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "service",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesSetPublicPortInput": {
+        "additionalProperties": false,
+        "properties": {
+          "clear": {
+            "description": "true stops exposing the service",
+            "type": "boolean"
+          },
+          "public_port": {
+            "description": "1024 to 65535, never 80, 443 or one of ServerDock's own ports",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesSetPublicPortOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "service": {
+            "additionalProperties": false,
+            "properties": {
+              "active_deploy": {
+                "description": "the number of the live deploy, if any",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "container_port": {
+                "description": "the port the app listens on; null for a worker",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "drain_s": {
+                "type": "integer"
+              },
+              "health": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "passes": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeout_s",
+                  "passes"
+                ],
+                "type": "object"
+              },
+              "image_ref": {
+                "description": "the image the next deploy uses",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_attention": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "public_port": {
+                "description": "the host port the proxy serves; null when not exposed",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_error": {
+                "description": "set when the proxy could not open the public port",
+                "type": "string"
+              },
+              "routes_ready": {
+                "description": "false until the first container list has finished: no app route is served before that",
+                "type": "boolean"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                "type": "string"
+              },
+              "state": {
+                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "type": "string"
+              },
+              "stop_grace_s": {
+                "type": "integer"
+              },
+              "strategy": {
+                "description": "blue_green or stop_first",
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "service",
+              "project",
+              "name",
+              "image_ref",
+              "health",
+              "strategy",
+              "drain_s",
+              "stop_grace_s",
+              "state",
+              "routes_ready",
+              "warnings",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "service",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesSetSourceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "image_ref": {
+            "description": "the new image, any repository or registry",
+            "type": "string"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "image_ref"
+        ],
+        "type": "object"
+      },
+      "ServicesSetSourceOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "service": {
+            "additionalProperties": false,
+            "properties": {
+              "active_deploy": {
+                "description": "the number of the live deploy, if any",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "container_port": {
+                "description": "the port the app listens on; null for a worker",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "drain_s": {
+                "type": "integer"
+              },
+              "health": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "passes": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeout_s",
+                  "passes"
+                ],
+                "type": "object"
+              },
+              "image_ref": {
+                "description": "the image the next deploy uses",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_attention": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "public_port": {
+                "description": "the host port the proxy serves; null when not exposed",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_error": {
+                "description": "set when the proxy could not open the public port",
+                "type": "string"
+              },
+              "routes_ready": {
+                "description": "false until the first container list has finished: no app route is served before that",
+                "type": "boolean"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                "type": "string"
+              },
+              "state": {
+                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "type": "string"
+              },
+              "stop_grace_s": {
+                "type": "integer"
+              },
+              "strategy": {
+                "description": "blue_green or stop_first",
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "service",
+              "project",
+              "name",
+              "image_ref",
+              "health",
+              "strategy",
+              "drain_s",
+              "stop_grace_s",
+              "state",
+              "routes_ready",
+              "warnings",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "service",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesUpdateInput": {
+        "additionalProperties": false,
+        "properties": {
+          "container_port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "drain_s": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "description": "http, tcp or running (default: tcp with a container port, running without)",
+                "type": "string"
+              },
+              "passes": {
+                "description": "consecutive passes, 1 to 10, default 3",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "description": "http only: starts with /, at most 256 bytes",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "timeout_s": {
+                "description": "5 to 600, default 60",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "image_ref": {
+            "description": "another tag or digest of the same repository (changing the repository needs services.set_source)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "stop_grace_s": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "strategy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesUpdateOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "service": {
+            "additionalProperties": false,
+            "properties": {
+              "active_deploy": {
+                "description": "the number of the live deploy, if any",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "container_port": {
+                "description": "the port the app listens on; null for a worker",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "drain_s": {
+                "type": "integer"
+              },
+              "health": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "passes": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "timeout_s",
+                  "passes"
+                ],
+                "type": "object"
+              },
+              "image_ref": {
+                "description": "the image the next deploy uses",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_attention": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "public_port": {
+                "description": "the host port the proxy serves; null when not exposed",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_error": {
+                "description": "set when the proxy could not open the public port",
+                "type": "string"
+              },
+              "routes_ready": {
+                "description": "false until the first container list has finished: no app route is served before that",
+                "type": "boolean"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e: the name every service action takes",
+                "type": "string"
+              },
+              "state": {
+                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "type": "string"
+              },
+              "stop_grace_s": {
+                "type": "integer"
+              },
+              "strategy": {
+                "description": "blue_green or stop_first",
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "service",
+              "project",
+              "name",
+              "image_ref",
+              "health",
+              "strategy",
+              "drain_s",
+              "stop_grace_s",
+              "state",
+              "routes_ready",
+              "warnings",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "service",
+          "applied"
+        ],
+        "type": "object"
+      },
       "SystemDockerInput": {
         "additionalProperties": false,
         "properties": {},
@@ -343,6 +1615,74 @@
         },
         "required": [
           "available"
+        ],
+        "type": "object"
+      },
+      "SystemExposureInput": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "SystemExposureOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "containers": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "ports": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "container_port": {
+                        "type": "integer"
+                      },
+                      "host_ip": {
+                        "type": "string"
+                      },
+                      "host_port": {
+                        "type": "integer"
+                      },
+                      "proto": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "host_ip",
+                      "host_port",
+                      "container_port",
+                      "proto"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "ports_truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "ports"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "containers",
+          "checked_at"
         ],
         "type": "object"
       },
@@ -695,7 +2035,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -735,7 +2085,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -867,7 +2217,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -907,7 +2267,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1036,7 +2396,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1076,7 +2446,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1205,7 +2575,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1245,7 +2625,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1374,7 +2754,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1414,7 +2804,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1543,7 +2933,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1583,7 +2983,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1712,7 +3112,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1752,7 +3162,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1881,7 +3291,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -1921,7 +3341,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -1938,6 +3358,1462 @@
         "x-sd-scope": "admin",
         "x-sd-sensitive": true,
         "x-sd-session-only": true
+      }
+    },
+    "/api/v1/actions/projects.list": {
+      "post": {
+        "operationId": "projects.list",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectsListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectsListOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List the projects and how many services each has.",
+        "tags": [
+          "projects"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.create": {
+      "post": {
+        "operationId": "services.create",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesCreateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesCreateOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create a service from an image (creates the project if it is new). It does not deploy yet.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.get": {
+      "post": {
+        "operationId": "services.get",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesGetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesGetOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "One service: settings, state, live deploy, route problems and warnings.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.list": {
+      "post": {
+        "operationId": "services.list",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesListOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List the services with their state, live deploy, route problems and warnings.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.retry_port": {
+      "post": {
+        "operationId": "services.retry_port",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesRetryPortInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesRetryPortOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Try again to open a service's public port (after another program let go of it). Same power as services.set_public_port.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.set_public_port": {
+      "post": {
+        "operationId": "services.set_public_port",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesSetPublicPortInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesSetPublicPortOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set, change or clear the host port the proxy serves a service on. Applies now and exposes the app on this server's address over plain HTTP.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.set_source": {
+      "post": {
+        "operationId": "services.set_source",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesSetSourceInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesSetSourceOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Change which image repository or registry a service deploys. Takes effect at the next deploy.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.update": {
+      "post": {
+        "operationId": "services.update",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesUpdateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesUpdateOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Change a service's health check, strategy, timings, container port or image tag (the same repository only). Takes effect at the next deploy.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
       }
     },
     "/api/v1/actions/system.docker": {
@@ -2050,7 +4926,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2090,7 +4976,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -2102,6 +4988,188 @@
           }
         ],
         "summary": "Docker engine version and the negotiated API version.",
+        "tags": [
+          "system"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/system.exposure": {
+      "post": {
+        "operationId": "system.exposure",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemExposureInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/SystemExposureOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Containers ServerDock did not create that publish host ports on the panel's address (SEC6). Kept for 30 seconds.",
         "tags": [
           "system"
         ],
@@ -2222,7 +5290,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2262,7 +5340,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -2394,7 +5472,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2434,7 +5522,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -2566,7 +5654,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2606,7 +5704,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -2735,7 +5833,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2775,7 +5883,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [
@@ -2904,7 +6012,17 @@
                 }
               }
             },
-            "description": "Error (unknown_action)."
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
           },
           "421": {
             "content": {
@@ -2944,7 +6062,7 @@
                 }
               }
             },
-            "description": "Error (audit_unavailable or busy)."
+            "description": "Error (audit_unavailable, busy or unavailable)."
           }
         },
         "security": [

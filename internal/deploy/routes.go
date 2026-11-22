@@ -311,15 +311,16 @@ func (r *Routes) apply(ctx context.Context, mutate func(), retry bool) error {
 }
 
 // RetryFailedPorts sends the route list again when the last apply left ports
-// unopened (the other program let go, or the user pressed "Try again"); with
-// none failed it does nothing. Step 7 calls it from the "Try again" action and
-// when the same port is saved again; step 10's resync calls it after each
+// unopened (the other program let go, or the user pressed "Try again"). With
+// none failed it sends only if the list changed since the last successful apply,
+// which includes the case where the last apply failed with an unknown outcome
+// (the recorded hash is then cleared); otherwise it does nothing. Before the
+// boot gate opens it returns ErrRoutesNotReady, so a caller never reports
+// "applied" for routes that were not. Step 7's "Try again" action and a public
+// port saved again both call it; step 10's resync calls it after each
 // (re)connect.
 func (r *Routes) RetryFailedPorts(ctx context.Context) error {
-	if !r.hasFailed() {
-		return nil
-	}
-	return r.apply(ctx, nil, true)
+	return r.apply(ctx, nil, r.hasFailed())
 }
 
 // Refresh re-reads everything and applies if the routes changed.

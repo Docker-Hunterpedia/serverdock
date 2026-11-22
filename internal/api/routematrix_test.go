@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,6 +161,7 @@ func newFixture(t *testing.T, withAdmin bool) *fixture {
 	big := func(n int) *limits.Backoff { return limits.NewBackoff(n, time.Second, time.Hour, f.clk.Now) }
 	auth.RegisterAuthActions(f.reg, f.as, auth.ActionDeps{Hasher: matrixHasher{}, PasswordGate: big(1000000)})
 	registerTestCells(f.reg)
+	registerServiceActions(f.reg, st, f.clk.Now)
 	f.rec = &recordingRunner{ActionRunner: f.reg}
 	f.srv = New(Config{
 		SPA: fstest.MapFS{"index.html": {Data: []byte(`<html><body>spa</body></html>`)}}, Sessions: f.as,
@@ -257,6 +259,15 @@ func (f *fixture) cases() []mcase {
 		{"look-alike host", func(f *fixture, r *http.Request) { r.Host = "localhost.evil.test"; sess(r); csrf(r) }},
 		{"cross-site origin", func(f *fixture, r *http.Request) { sess(r); csrf(r); r.Header.Set("Origin", "https://evil.test") }},
 		{"origin null", func(f *fixture, r *http.Request) { sess(r); csrf(r); r.Header.Set("Origin", "null") }},
+		// SEC6 (plan 0004): a page served by an app on the panel's own address, here
+		// http://<panel ip>:<app port>, sends that Origin; it never equals
+		// https:// + Host, so no unsafe route accepts it.
+		{"app origin", func(f *fixture, r *http.Request) {
+			host, _, _ := net.SplitHostPort(r.Host)
+			sess(r)
+			csrf(r)
+			r.Header.Set("Origin", "http://"+host+":8080")
+		}},
 		{"wrong content type", func(f *fixture, r *http.Request) {
 			sess(r)
 			csrf(r)
@@ -284,7 +295,7 @@ func expect(rt Route, c string) (status int, code string) {
 	if has("wrong host", "look-alike host") {
 		return 421, "misdirected"
 	}
-	if unsafe && has("cross-site origin", "origin null") {
+	if unsafe && has("cross-site origin", "origin null", "app origin") {
 		return 403, "origin"
 	}
 	if unsafe && strings.HasPrefix(rt.Pattern, "/api/") && c == "wrong content type" {
@@ -300,17 +311,17 @@ func expect(rt Route, c string) (status int, code string) {
 		return 401, "unauthenticated"
 	}
 	sessionRule := func() (int, string) {
-		if !hasValidSession && !has("cross-site origin", "origin null", "wrong content type") {
+		if !hasValidSession && !has("cross-site origin", "origin null", "app origin", "wrong content type") {
 			return stale()
 		}
 		// A valid session. Unsafe requests (and upgrades) need Origin; unsafe ones also CSRF.
-		hasOrigin := has("session+origin", "session+csrf+origin", "pending+session+csrf+origin", "cross-site origin", "origin null", "wrong content type")
-		hasCSRF := has("session+csrf", "session+csrf+origin", "pending+session+csrf+origin", "cross-site origin", "origin null", "wrong content type")
+		hasOrigin := has("session+origin", "session+csrf+origin", "pending+session+csrf+origin", "cross-site origin", "origin null", "app origin", "wrong content type")
+		hasCSRF := has("session+csrf", "session+csrf+origin", "pending+session+csrf+origin", "cross-site origin", "origin null", "app origin", "wrong content type")
 		if rt.Upgrade {
 			if !hasOrigin {
 				return 403, "origin"
 			}
-			if has("cross-site origin", "origin null") { // a GET: Origin is checked only by the upgrade rule
+			if has("cross-site origin", "origin null", "app origin") { // a GET: Origin is checked only by the upgrade rule
 				return 403, "origin"
 			}
 			return 200, ""
@@ -517,6 +528,92 @@ func TestRouteMatrix(t *testing.T) {
 			})
 		}
 	}
+}
+
+// The service actions (plan 0004 step 7) through every credential case of the
+// matrix, plus the app-origin case, with the status the plan prescribes: the
+// middleware cases are the route's (expect), and a request that gets past them
+// runs the action's own policy: a token below the action's scope is 403, and
+// otherwise the action answers. The bodies are chosen so that nothing is changed:
+// the reads run, create names a registry that is refused, and the others name a
+// service that does not exist.
+func TestServiceActionsRouteMatrix(t *testing.T) {
+	f := newFixture(t, true)
+	rt := Route{Method: "POST", Pattern: "/api/v1/actions/{name}", Auth: SessionOrToken}
+	type act struct {
+		name  string
+		body  string
+		scope actions.Scope
+		real  int // the status of an authorised call
+		code  string
+	}
+	acts := []act{
+		{"projects.list", `{}`, actions.ScopeRead, 200, ""},
+		{"services.list", `{}`, actions.ScopeRead, 200, ""},
+		{"services.get", `{"service":"p/x"}`, actions.ScopeRead, 200, ""},
+		{"system.exposure", `{}`, actions.ScopeRead, 200, ""},
+		{"services.create", `{"project":"p","name":"n","image_ref":"169.254.169.254/x:1"}`, actions.ScopeAdmin, 400, "invalid_input"},
+		{"services.update", `{"service":"p/nosuch","strategy":"stop_first"}`, actions.ScopeWrite, 404, "not_found"},
+		{"services.set_source", `{"service":"p/nosuch","image_ref":"nginx"}`, actions.ScopeAdmin, 404, "not_found"},
+		{"services.set_public_port", `{"service":"p/nosuch","public_port":9000}`, actions.ScopeAdmin, 404, "not_found"},
+		{"services.retry_port", `{"service":"p/nosuch"}`, actions.ScopeAdmin, 404, "not_found"},
+	}
+	before := dumpServices(t, f)
+	for _, a := range acts {
+		for _, c := range f.cases() {
+			t.Run(a.name+" / "+c.name, func(t *testing.T) {
+				f.session = f.login()
+				f.pending, _ = f.as.CreatePending(context.Background(), f.userID, "203.0.113.5")
+				r := httptest.NewRequest("POST", "/api/v1/actions/"+a.name, strings.NewReader(a.body))
+				r.Host = "127.0.0.1:8443"
+				r.Header.Set("Content-Type", "application/json")
+				c.mutate(f, r)
+				rec := httptest.NewRecorder()
+				f.h.ServeHTTP(rec, r)
+				wantStatus, wantCode := expect(rt, c.name)
+				if wantStatus == 200 {
+					wantStatus, wantCode = a.real, a.code
+					if tokenScope, ok := map[string]actions.Scope{"token read": actions.ScopeRead, "token write": actions.ScopeWrite, "token admin": actions.ScopeAdmin}[c.name]; ok && tokenScope < a.scope {
+						wantStatus, wantCode = 403, "denied"
+					}
+				}
+				if rec.Code != wantStatus || (wantCode != "" && !strings.Contains(rec.Body.String(), `"code":"`+wantCode+`"`)) {
+					t.Fatalf("status %d (%s), want %d (%s)", rec.Code, rec.Body.String(), wantStatus, wantCode)
+				}
+			})
+		}
+	}
+	if after := dumpServices(t, f); after != before {
+		t.Errorf("a matrix request changed the services:\nbefore %s\nafter  %s", before, after)
+	}
+	// The app-origin case is a 403 "origin" for every action, session credentials and all.
+	for _, a := range acts {
+		f.session = f.login()
+		r := httptest.NewRequest("POST", "/api/v1/actions/"+a.name, strings.NewReader(a.body))
+		r.Host = "203.0.113.5:8443"
+		r.Header.Set("Content-Type", "application/json")
+		cookie(r, SessionCookie, f.session)
+		r.Header.Set(CSRFHeader, CSRFToken(f.session))
+		r.Header.Set("Origin", "http://203.0.113.5:8080")
+		rec := httptest.NewRecorder()
+		f.h.ServeHTTP(rec, r)
+		if rec.Code != 403 || !strings.Contains(rec.Body.String(), `"code":"origin"`) {
+			t.Errorf("%s with an app origin: %d %s", a.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func dumpServices(t *testing.T, f *fixture) string {
+	t.Helper()
+	var n, p int
+	var img string
+	if err := f.st.R.QueryRow(`SELECT COUNT(*), COALESCE(MAX(image_ref), '') FROM services`).Scan(&n, &img); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.R.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&p); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%d services, %d projects, image %s", n, p, img)
 }
 
 // A session cookie that is stale is NOT cleared on a Public route (it is simply

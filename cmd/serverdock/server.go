@@ -24,6 +24,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
@@ -46,6 +47,8 @@ const (
 	agentMaxConns      = 128 // idle TLS connections are cheap; the per-IP cap does the real work
 	agentHeaderTimeout = 5 * time.Second
 	agentMaxConnsPerIP = 4
+	// bootTimeout bounds the start-up network_ensure and first container list.
+	bootTimeout = 30 * time.Second
 )
 
 type serverConfig struct {
@@ -87,6 +90,25 @@ type serverConfig struct {
 // policyOptions are the install-wide switches the policy validators take.
 func (c serverConfig) policyOptions() policy.Options {
 	return policy.Options{AllowLoopbackRegistry: c.AllowLoopbackRegistry}
+}
+
+// reservedPorts are ServerDock's own listen ports, which no app may be exposed
+// on: --agent-listen, --listen and --https-listen (80 and 443 are refused by
+// policy.ValidatePublicPort itself). It is the one list behind the agent's
+// proxy_apply check and the service actions.
+func (c serverConfig) reservedPorts() []int {
+	var out []int
+	for _, addr := range []string{c.AgentListen, c.Listen, c.HTTPSListen} {
+		if addr == "" {
+			continue
+		}
+		if _, port, err := net.SplitHostPort(addr); err == nil {
+			if p, err := strconv.Atoi(port); err == nil && p > 0 && p <= 65535 {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // stringList is a repeatable string flag.
@@ -192,8 +214,12 @@ type serverAddrs struct {
 	// agent listener is off.
 	CAFingerprint string
 
-	// hub is the live hub, for tests that call ops on the local session.
-	hub *hub.Hub
+	// hub is the live hub, for tests that call ops on the local session; reg,
+	// routes and booter are the registry and the app side, for the same reason.
+	hub    *hub.Hub
+	reg    *actions.Registry
+	routes *deploy.Routes
+	booter *deploy.Booter
 }
 
 func (c serverConfig) validateAppSubnet() error {
@@ -393,28 +419,30 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// The proxy's route applier: RunLocal starts it (the panel alone), and the
 	// proxy_apply op adds app routes on top of it later.
 	var applier *proxy.Applier
-	var reserved []int
 	if cfg.Proxy {
 		applier = proxy.NewApplier(proxy.Config{
 			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Panel: panelProxy(panel, cfg),
 			// Read by the secret-sentinel test only (not a flag, not in --help).
 			LogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
 		})
-		if cfg.AgentListen != "" {
-			if _, port, err := net.SplitHostPort(cfg.AgentListen); err == nil {
-				if p, err := strconv.Atoi(port); err == nil {
-					reserved = append(reserved, p)
-				}
-			}
-		}
 	}
+	// One list of ServerDock's own ports, shared by the agent's proxy_apply and
+	// the service actions: an app may never be exposed on one of them.
+	reserved := cfg.reservedPorts()
 	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, applier, reserved, log)
 	if err != nil {
 		return err
 	}
-	if _, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log); err != nil {
+	appNet, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log)
+	if err != nil {
 		return err
 	}
+	// The app side talks to the local agent over its hub session. Routes is the
+	// only code that sends proxy_apply; Booter runs network_ensure and then Sync
+	// once the panel is up (below), and lazily again from the actions.
+	opsClient := agentops.NewClient(localCaller{h: h})
+	routes := deploy.NewRoutes(st, opsClient, log)
+	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, Log: log})
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -426,6 +454,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		}
 	}
 	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
+	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
+		DB: st, Routes: routes, Boot: booter.Run, Policy: cfg.policyOptions(), ReservedPorts: reserved,
+		Exposure: opsClient, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
+	})
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
 		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
@@ -461,7 +493,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
-	addrs.hub = h
+	addrs.hub, addrs.reg, addrs.routes, addrs.booter = h, reg, routes, booter
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
@@ -471,6 +503,23 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	session.Go(func() {
 		_ = agent.Serve(agentCtx, pipeAgent, agent.Config{Logs: docker, Version: version, Mode: agent.ModeLocal, Ops: ops}, 0, log)
 	})
+	// Boot order: the panel alone first (RunLocal loads it), then network_ensure,
+	// then Sync, which opens the route gate. One short-lived goroutine, joined
+	// below; if Docker is down it logs and ends, and the actions retry it lazily.
+	panelUp := make(chan struct{})
+	var boot sync.WaitGroup
+	boot.Go(func() {
+		select {
+		case <-panelUp:
+		case <-agentCtx.Done():
+			return
+		}
+		bctx, cancel := context.WithTimeout(agentCtx, bootTimeout)
+		defer cancel()
+		if err := booter.Run(bctx); err != nil && agentCtx.Err() == nil {
+			log.Warn("app network and routes are not ready yet; they are retried when a service action needs them", "err", err.Error())
+		}
+	})
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
@@ -479,6 +528,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			ProxyLogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
 			DataDir:       cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
+			close(panelUp)
 			if ready != nil {
 				ready(addrs)
 			}
@@ -501,6 +551,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 			first = err
 		}
 	}
+	boot.Wait()
 	cpCancel()
 	for ; cpRunning > 0; cpRunning-- {
 		if err := <-cpErr; err != nil && first == nil {

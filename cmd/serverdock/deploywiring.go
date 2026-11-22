@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"regexp"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
+	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
@@ -74,4 +78,57 @@ func recordAppSubnet(ctx context.Context, st *store.Store, docker *dockerapi.Cli
 		log.Warn("app subnet not recorded yet", "err", err)
 	}
 	return an, nil
+}
+
+// localCaller runs the local agent's ops over its hub session. The session is
+// registered a moment after the server starts, so a call that finds none waits a
+// short, bounded time (500 ms, in 10 ms steps, only while there is no session)
+// before it fails; nothing polls otherwise.
+type localCaller struct{ h *hub.Hub }
+
+var errLocalAgentDown = errors.New("the local agent is not connected")
+
+func (l localCaller) Call(ctx context.Context, op string, args any, onLine func(agent.Line)) (json.RawMessage, error) {
+	for i := 0; ; i++ {
+		if s, ok := l.h.Get(hub.LocalID); ok {
+			return s.Call(ctx, op, args, onLine)
+		}
+		if i >= 50 {
+			return nil, errLocalAgentDown
+		}
+		t := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// panelAddrs returns the function that lists the addresses the panel is reachable
+// on, for the exposure check: the one it is bound to, or, when it listens on every
+// interface (the default), every address of this host including loopback (an SSH
+// tunnel reaches the panel there). It runs only when the exposure cache refreshes.
+func panelAddrs(httpsListen string) func() []netip.Addr {
+	return func() []netip.Addr {
+		if host, _, err := net.SplitHostPort(httpsListen); err == nil && host != "" {
+			if a, err := netip.ParseAddr(host); err == nil && !a.IsUnspecified() {
+				return []netip.Addr{a.Unmap()}
+			}
+		}
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return nil
+		}
+		var out []netip.Addr
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok {
+				if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+					out = append(out, ip.Unmap())
+				}
+			}
+		}
+		return out
+	}
 }

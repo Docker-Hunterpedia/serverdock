@@ -212,6 +212,19 @@ func (s *Server) actionError(w http.ResponseWriter, reqID string, err error) {
 	case errors.Is(err, actions.ErrInvalidInput), errors.Is(err, actions.ErrNoDryRun):
 		msg := strings.TrimPrefix(err.Error(), "actions: invalid input: ")
 		send(http.StatusBadRequest, "invalid_input", msg, nil)
+	case errors.Is(err, actions.ErrNotFound), errors.Is(err, actions.ErrConflict), errors.Is(err, actions.ErrUnavailable):
+		// A refusal the action worded for the caller (see actions.UserError).
+		// err.Error() is the registry's redacted text of the action's own message.
+		msg := err.Error()
+		switch {
+		case errors.Is(err, actions.ErrNotFound):
+			send(http.StatusNotFound, "not_found", msg, nil)
+		case errors.Is(err, actions.ErrConflict):
+			send(http.StatusConflict, "conflict", msg, nil)
+		default:
+			w.Header().Set("Retry-After", "5")
+			send(http.StatusServiceUnavailable, "unavailable", msg, nil)
+		}
 	case errors.As(err, &de):
 		code := "denied"
 		if de.Code != "" {

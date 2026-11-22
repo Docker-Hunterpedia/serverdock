@@ -903,6 +903,29 @@ func TestContainerPortsResultCap(t *testing.T) {
 	}
 }
 
+// container_ports is the exposure check's source: it leaves this install's own
+// containers out (matched by the serverdock.instance label, never by name) and
+// keeps another install's and every unlabelled one.
+func TestContainerPortsExcludesOurOwnContainers(t *testing.T) {
+	r := newRig(t)
+	pub := []map[string]any{{"IP": "0.0.0.0", "PrivatePort": 80, "PublicPort": 8080, "Type": "tcp"}}
+	r.fd.add(&fakeContainer{Name: "ours", Labels: map[string]string{LabelInstance: testInstance}, Ports: pub})
+	r.fd.add(&fakeContainer{Name: "sd-looks-ours-d1-a1", Labels: map[string]string{}, Ports: pub}) // a name proves nothing
+	r.fd.add(&fakeContainer{Name: "other-install", Labels: map[string]string{LabelInstance: strings.Repeat("f", 32)}, Ports: pub})
+	r.fd.add(&fakeContainer{Name: "grafana", Labels: map[string]string{}, Ports: pub})
+	res, err := r.cl.ContainerPorts(ctx5(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range res.Containers {
+		names = append(names, c.Name)
+	}
+	if got := strings.Join(names, ","); got != "grafana,other-install,sd-looks-ours-d1-a1" {
+		t.Errorf("containers listed: %s", got)
+	}
+}
+
 func TestContainerPortsDedupesOrdersAndFlagsTruncation(t *testing.T) {
 	r := newRig(t)
 	p := func(ip string, host int) map[string]any {

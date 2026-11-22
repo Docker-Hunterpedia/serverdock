@@ -647,6 +647,9 @@ func (h *handlers) ports(ctx context.Context, raw json.RawMessage, _ *agent.Out)
 	}
 	res := PortsResult{Containers: []PublishingContainer{}}
 	for _, c := range all {
+		if c.Instance != "" && c.Instance == h.Instance {
+			continue // this install's own containers are not "foreign"; the exposure banner is about the others
+		}
 		e := PublishingContainer{Name: agent.CleanText(c.Name, MaxNameText), Ports: []PublishedPort{}}
 		e.Ports, e.PortsTruncated = pickPorts(c.Ports)
 		res.Containers = append(res.Containers, e)

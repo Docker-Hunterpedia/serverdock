@@ -140,6 +140,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actions/projects.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List the projects and how many services each has. */
+        post: operations["projects.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a service from an image (creates the project if it is new). It does not deploy yet. */
+        post: operations["services.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** One service: settings, state, live deploy, route problems and warnings. */
+        post: operations["services.get"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List the services with their state, live deploy, route problems and warnings. */
+        post: operations["services.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.retry_port": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Try again to open a service's public port (after another program let go of it). Same power as services.set_public_port. */
+        post: operations["services.retry_port"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.set_public_port": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set, change or clear the host port the proxy serves a service on. Applies now and exposes the app on this server's address over plain HTTP. */
+        post: operations["services.set_public_port"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.set_source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change which image repository or registry a service deploys. Takes effect at the next deploy. */
+        post: operations["services.set_source"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/services.update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change a service's health check, strategy, timings, container port or image tag (the same repository only). Takes effect at the next deploy. */
+        post: operations["services.update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actions/system.docker": {
         parameters: {
             query?: never;
@@ -151,6 +287,23 @@ export interface paths {
         put?: never;
         /** Docker engine version and the negotiated API version. */
         post: operations["system.docker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/system.exposure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Containers ServerDock did not create that publish host ports on the panel's address (SEC6). Kept for 30 seconds. */
+        post: operations["system.exposure"];
         delete?: never;
         options?: never;
         head?: never;
@@ -487,12 +640,386 @@ export interface components {
                 request_id: string;
             };
         };
+        ProjectsListInput: Record<string, never>;
+        ProjectsListOutput: {
+            projects: {
+                created_at: string;
+                name: string;
+                services: number;
+            }[];
+        };
+        ServicesCreateInput: {
+            container_port?: number | null;
+            /** @description not available yet: create the service, then deploy it */
+            deploy?: boolean;
+            /** @description 10 to 300, default 10 */
+            drain_s?: number | null;
+            health?: {
+                /** @description http, tcp or running (default: tcp with a container port, running without) */
+                kind?: string;
+                /** @description consecutive passes, 1 to 10, default 3 */
+                passes?: number | null;
+                /** @description http only: starts with /, at most 256 bytes */
+                path?: string | null;
+                /** @description 5 to 600, default 60 */
+                timeout_s?: number | null;
+            } | null;
+            image_ref: string;
+            name: string;
+            project: string;
+            /** @description needs a container port; exposes the app on this host port over plain HTTP */
+            public_port?: number | null;
+            /** @description 0 to 300, default 10 */
+            stop_grace_s?: number | null;
+            /** @description blue_green (default) or stop_first */
+            strategy?: string;
+        };
+        ServicesCreateOutput: {
+            applied: boolean;
+            notice?: string;
+            service: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            };
+        };
+        ServicesGetInput: {
+            /** @description <project>/<service> */
+            service: string;
+        };
+        ServicesGetOutput: {
+            /** @description the number of the live deploy, if any */
+            active_deploy?: number | null;
+            /** @description the port the app listens on; null for a worker */
+            container_port?: number | null;
+            created_at: string;
+            drain_s: number;
+            health: {
+                kind: string;
+                passes: number;
+                path?: string;
+                timeout_s: number;
+            };
+            /** @description the image the next deploy uses */
+            image_ref: string;
+            name: string;
+            needs_attention?: string;
+            project: string;
+            /** @description the host port the proxy serves; null when not exposed */
+            public_port?: number | null;
+            /** @description set when the proxy could not open the public port */
+            route_error?: string;
+            /** @description false until the first container list has finished: no app route is served before that */
+            routes_ready: boolean;
+            /** @description <project>/<service>: the name every service action takes */
+            service: string;
+            /** @description not_deployed, running, restarting, stopped, missing or unknown */
+            state: string;
+            stop_grace_s: number;
+            /** @description blue_green or stop_first */
+            strategy: string;
+            updated_at: string;
+            warnings: {
+                code: string;
+                message: string;
+            }[];
+        };
+        ServicesListInput: Record<string, never>;
+        ServicesListOutput: {
+            services: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            }[];
+        };
+        ServicesRetryPortInput: {
+            /** @description <project>/<service> */
+            service: string;
+        };
+        ServicesRetryPortOutput: {
+            applied: boolean;
+            notice?: string;
+            service: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            };
+        };
+        ServicesSetPublicPortInput: {
+            /** @description true stops exposing the service */
+            clear?: boolean;
+            /** @description 1024 to 65535, never 80, 443 or one of ServerDock's own ports */
+            public_port?: number | null;
+            /** @description <project>/<service> */
+            service: string;
+        };
+        ServicesSetPublicPortOutput: {
+            applied: boolean;
+            notice?: string;
+            service: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            };
+        };
+        ServicesSetSourceInput: {
+            /** @description the new image, any repository or registry */
+            image_ref: string;
+            /** @description <project>/<service> */
+            service: string;
+        };
+        ServicesSetSourceOutput: {
+            applied: boolean;
+            notice?: string;
+            service: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            };
+        };
+        ServicesUpdateInput: {
+            container_port?: number | null;
+            drain_s?: number | null;
+            health?: {
+                /** @description http, tcp or running (default: tcp with a container port, running without) */
+                kind?: string;
+                /** @description consecutive passes, 1 to 10, default 3 */
+                passes?: number | null;
+                /** @description http only: starts with /, at most 256 bytes */
+                path?: string | null;
+                /** @description 5 to 600, default 60 */
+                timeout_s?: number | null;
+            } | null;
+            /** @description another tag or digest of the same repository (changing the repository needs services.set_source) */
+            image_ref?: string | null;
+            /** @description <project>/<service> */
+            service: string;
+            stop_grace_s?: number | null;
+            strategy?: string | null;
+        };
+        ServicesUpdateOutput: {
+            applied: boolean;
+            notice?: string;
+            service: {
+                /** @description the number of the live deploy, if any */
+                active_deploy?: number | null;
+                /** @description the port the app listens on; null for a worker */
+                container_port?: number | null;
+                created_at: string;
+                drain_s: number;
+                health: {
+                    kind: string;
+                    passes: number;
+                    path?: string;
+                    timeout_s: number;
+                };
+                /** @description the image the next deploy uses */
+                image_ref: string;
+                name: string;
+                needs_attention?: string;
+                project: string;
+                /** @description the host port the proxy serves; null when not exposed */
+                public_port?: number | null;
+                /** @description set when the proxy could not open the public port */
+                route_error?: string;
+                /** @description false until the first container list has finished: no app route is served before that */
+                routes_ready: boolean;
+                /** @description <project>/<service>: the name every service action takes */
+                service: string;
+                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                state: string;
+                stop_grace_s: number;
+                /** @description blue_green or stop_first */
+                strategy: string;
+                updated_at: string;
+                warnings: {
+                    code: string;
+                    message: string;
+                }[];
+            };
+        };
         SystemDockerInput: Record<string, never>;
         SystemDockerOutput: {
             api?: string;
             available: boolean;
             engine?: string;
             error?: string;
+        };
+        SystemExposureInput: Record<string, never>;
+        SystemExposureOutput: {
+            /** Format: date-time */
+            checked_at: string;
+            containers: {
+                name: string;
+                ports: {
+                    container_port: number;
+                    host_ip: string;
+                    host_port: number;
+                    proto: string;
+                }[];
+                ports_truncated?: boolean;
+            }[];
+            truncated?: boolean;
         };
         SystemInfoInput: Record<string, never>;
         SystemInfoOutput: {
@@ -622,8 +1149,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -658,7 +1194,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -730,8 +1266,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -766,7 +1311,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -838,8 +1383,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -874,7 +1428,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -946,8 +1500,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -982,7 +1545,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1054,8 +1617,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1090,7 +1662,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1162,8 +1734,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1198,7 +1779,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1270,8 +1851,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1306,7 +1896,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1378,8 +1968,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1414,7 +2013,943 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "projects.list": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectsListInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ProjectsListOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.create": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesCreateInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesCreateOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.get": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesGetInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesGetOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.list": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesListInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesListOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.retry_port": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesRetryPortInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesRetryPortOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.set_public_port": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesSetPublicPortInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesSetPublicPortOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.set_source": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesSetSourceInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesSetSourceOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.update": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesUpdateOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1486,8 +3021,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1522,7 +3066,124 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "system.exposure": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemExposureInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["SystemExposureOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1594,8 +3255,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1630,7 +3300,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1702,8 +3372,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1738,7 +3417,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1810,8 +3489,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1846,7 +3534,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1918,8 +3606,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1954,7 +3651,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2026,8 +3723,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (unknown_action). */
+            /** @description Error (unknown_action or not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2062,7 +3768,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Error (audit_unavailable or busy). */
+            /** @description Error (audit_unavailable, busy or unavailable). */
             503: {
                 headers: {
                     [name: string]: unknown;

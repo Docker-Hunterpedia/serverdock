@@ -56,8 +56,8 @@ func BuildOpenAPI(list []actions.Info) (map[string]any, error) {
 						"request_id": map[string]any{"type": "string"},
 					}}}}},
 				"400": errRef("invalid_input"), "401": errRef("unauthenticated, token_expired, idle_expired, absolute_expired or revoked"),
-				"403": errRef("denied, mfa_required, confirm, csrf or origin"), "404": errRef("unknown_action"), "421": errRef("misdirected"),
-				"429": errRef("rate_limited"), "500": errRef("action_failed"), "503": errRef("audit_unavailable or busy"),
+				"403": errRef("denied, mfa_required, confirm, csrf or origin"), "404": errRef("unknown_action or not_found"), "409": errRef("conflict"), "421": errRef("misdirected"),
+				"429": errRef("rate_limited"), "500": errRef("action_failed"), "503": errRef("audit_unavailable, busy or unavailable"),
 			},
 		}}
 	}

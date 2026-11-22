@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
 var (
@@ -382,6 +383,9 @@ func (c *Client) ContainerList(ctx context.Context, opt ListOptions) ([]Containe
 type PublishingContainer struct {
 	Name  string
 	Ports []PublishedPort
+	// Instance is the container's serverdock.instance label ("" when it has none):
+	// the control-plane ops use it to leave an install's own containers out.
+	Instance string
 }
 
 // ContainerPorts lists every running container that publishes a host port
@@ -400,7 +404,7 @@ func (c *Client) ContainerPorts(ctx context.Context) ([]PublishingContainer, err
 		if len(s.Names) > 0 {
 			name = s.Names[0]
 		}
-		out = append(out, PublishingContainer{Name: name, Ports: s.Ports})
+		out = append(out, PublishingContainer{Name: name, Ports: s.Ports, Instance: s.Labels[policy.LabelInstance]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

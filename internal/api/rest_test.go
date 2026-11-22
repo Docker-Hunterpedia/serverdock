@@ -21,8 +21,11 @@ import (
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
+	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")
@@ -127,6 +130,31 @@ func registerTestCells(r *actions.Registry) {
 		}})
 }
 
+// ---- the service actions (plan 0004 step 7) ------------------------------------------------------
+
+type stubApplier struct{}
+
+func (stubApplier) ProxyApply(context.Context, []agentops.Route) (agentops.ApplyResult, error) {
+	return agentops.ApplyResult{Applied: true, FailedPorts: []int{}}, nil
+}
+
+type stubPorts struct{}
+
+func (stubPorts) ContainerPorts(context.Context) (agentops.PortsResult, error) {
+	return agentops.PortsResult{Containers: []agentops.PublishingContainer{}}, nil
+}
+
+// registerServiceActions registers the step 7 actions over the fixture's store
+// with an applier and an exposure source that answer without Docker, and adds
+// the service p/x that the read actions of the policy matrix look up.
+func registerServiceActions(reg *actions.Registry, st *store.Store, now func() time.Time) {
+	st.W.Exec(`INSERT OR IGNORE INTO projects(id, name, created_at) VALUES (1, 'p', 'x')`)
+	st.W.Exec(`INSERT OR IGNORE INTO services(id, project_id, name, image_ref, container_port, health_kind, health_timeout_s, health_passes, strategy, drain_s, stop_grace_s, created_at, updated_at)
+		VALUES (1, 1, 'x', 'nginx:1', 80, 'tcp', 60, 3, 'blue_green', 10, 10, 'x', 'x')`)
+	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{DB: st, Routes: deploy.NewRoutes(st, stubApplier{}, nil), ReservedPorts: []int{8443},
+		Exposure: stubPorts{}, Now: now})
+}
+
 // ---- helpers --------------------------------------------------------------------------------
 
 type restResp struct {
@@ -221,6 +249,17 @@ func validInput(name string) string {
 		return `{"name":"n","scope":"read"}`
 	case "tokens.revoke":
 		return `{"id":1}`
+	// The service actions: bodies that validate, against the fixture's service p/x.
+	case "services.get", "services.retry_port":
+		return `{"service":"p/x"}`
+	case "services.create":
+		return `{"project":"p","name":"n","image_ref":"nginx"}`
+	case "services.update":
+		return `{"service":"p/x","strategy":"stop_first"}`
+	case "services.set_source":
+		return `{"service":"p/x","image_ref":"nginx"}`
+	case "services.set_public_port":
+		return `{"service":"p/x","public_port":9000}`
 	}
 	return `{}`
 }
@@ -387,6 +426,45 @@ func TestRESTEnvelopeAndOptions(t *testing.T) {
 		if x := f.rest("POST", actionPath(n), `{}`, s); x.Code != 404 || x.errCode() != "unknown_action" {
 			t.Errorf("%s: %d %s", n, x.Code, x.Raw)
 		}
+	}
+}
+
+// An action's own refusals (actions.UserError) map to 404, 409, 503 and 400 with
+// the action's wording, and its secrets are redacted like any execution error.
+func TestRESTMapsActionRefusals(t *testing.T) {
+	f := newFixture(t, true)
+	s := restCred{session: f.freshSession()}
+	refuse := func(name string, mk func(string) error) {
+		actions.Register(f.reg, actions.Def[cellIn, string]{Name: name, Summary: "test cell", Risk: actions.RiskMutate, Scope: actions.ScopeWrite,
+			Target: func(cellIn) string { return "t" },
+			Execute: func(_ context.Context, _ actions.Call, in cellIn) (string, error) {
+				return "", mk(in.Pass)
+			}})
+	}
+	refuse("t.notfound", func(p string) error { return actions.NotFound("no service p/x (%s)", p) })
+	refuse("t.conflict", func(p string) error { return actions.Conflict("port 9000 is taken (%s)", p) })
+	refuse("t.unavailable", func(string) error { return actions.Unavailable("Docker did not answer") })
+	refuse("t.invalid", func(string) error { return actions.InvalidInput("the repository cannot change") })
+	for name, want := range map[string]struct {
+		code int
+		err  string
+		msg  string
+	}{
+		"t.notfound":    {404, "not_found", "no service p/x"},
+		"t.conflict":    {409, "conflict", "port 9000 is taken"},
+		"t.unavailable": {503, "unavailable", "Docker did not answer"},
+		"t.invalid":     {400, "invalid_input", "the repository cannot change"},
+	} {
+		x := f.rest("POST", actionPath(name), `{"pass":"hunter2-secret"}`, s)
+		if x.Code != want.code || x.errCode() != want.err || !strings.Contains(x.Raw, want.msg) {
+			t.Errorf("%s: %d %s", name, x.Code, x.Raw)
+		}
+		if strings.Contains(x.Raw, "hunter2-secret") {
+			t.Errorf("%s leaked the secret input: %s", name, x.Raw)
+		}
+	}
+	if x := f.rest("POST", actionPath("t.unavailable"), `{}`, s); x.Header.Get("Retry-After") == "" {
+		t.Error("503 unavailable without Retry-After")
 	}
 }
 
@@ -600,6 +678,7 @@ func TestOpenAPIGolden(t *testing.T) {
 	reg := actions.New(f.sink, slogDiscard(), actions.WithClock(f.clk.Now))
 	actions.RegisterBuiltins(reg, actions.Deps{PanelCert: func() actions.PanelCert { return actions.PanelCert{} }})
 	auth.RegisterAuthActions(reg, f.as, auth.ActionDeps{})
+	registerServiceActions(reg, f.st, f.clk.Now)
 	doc, err := BuildOpenAPI(reg.List())
 	if err != nil {
 		t.Fatal(err)

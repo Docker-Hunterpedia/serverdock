@@ -599,6 +599,29 @@ func TestFailedPortIsRetriedByRefreshRetryAndExplicitMutations(t *testing.T) {
 	}
 }
 
+// Retrying after an apply that failed with an unknown outcome sends again (the
+// recorded hash was cleared), and before the gate opens it says "not ready"
+// instead of returning nil.
+func TestRetryFailedPortsAfterAnApplyErrorAndBeforeTheGate(t *testing.T) {
+	r, st, px := newRoutes(t)
+	svc := addService(t, st, "web")
+	if err := r.RetryFailedPorts(bg); !errors.Is(err, ErrRoutesNotReady) {
+		t.Fatalf("closed gate: %v", err)
+	}
+	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
+	px.fail = errors.New("agent gone")
+	if err := r.ApplyRoutes(bg, func() { r.state.replace([]Container{up(svc, d, 1, StateRunning, "10.250.1.2")}) }); err == nil {
+		t.Fatal("the failed apply returned nil")
+	}
+	px.fail = nil
+	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 1 {
+		t.Fatalf("%v %d", err, px.n())
+	}
+	if err := r.RetryFailedPorts(bg); err != nil || px.n() != 1 { // nothing changed, nothing failed
+		t.Fatalf("%v %d", err, px.n())
+	}
+}
+
 func TestCrashLoopWithAFailedPortStillCausesNoReload(t *testing.T) {
 	r, px, svc, d := failedPortRig(t)
 	n := px.n()
