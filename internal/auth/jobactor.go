@@ -29,6 +29,13 @@ func minScope(a, b actions.Scope) actions.Scope {
 	return b
 }
 
+// refreshFailed logs a database failure and returns a fixed message: the text
+// ends up in the job's error column, which users can read.
+func (s *Store) refreshFailed(err error) error {
+	s.log.Error("job actor refresh failed", "err", err.Error())
+	return errors.New("could not check the job's actor")
+}
+
 func jobDenied(reason string) error { return &actions.DeniedError{Reason: reason} }
 
 // RefreshJobActor re-checks, at run time, the actor that queued a job (rebuilt
@@ -67,7 +74,7 @@ func (s *Store) RefreshJobActor(ctx context.Context, a actions.Actor, enqueuedAt
 			return actions.Actor{}, jobDenied("the API token that queued this job no longer exists")
 		}
 		if err != nil {
-			return actions.Actor{}, err
+			return actions.Actor{}, s.refreshFailed(err)
 		}
 		if revoked.Valid || s.now().Unix() >= expires || !admin {
 			return actions.Actor{}, jobDenied("the API token that queued this job was revoked or has expired")
@@ -89,7 +96,7 @@ func (s *Store) RefreshJobActor(ctx context.Context, a actions.Actor, enqueuedAt
 			return actions.Actor{}, jobDenied("the user that queued this job no longer exists")
 		}
 		if err != nil {
-			return actions.Actor{}, err
+			return actions.Actor{}, s.refreshFailed(err)
 		}
 		if !admin {
 			return actions.Actor{}, jobDenied("the user that queued this job is no longer an administrator")
@@ -107,9 +114,11 @@ func (s *Store) RefreshJobActor(ctx context.Context, a actions.Actor, enqueuedAt
 	return actions.Actor{}, jobDenied("this kind of caller cannot own a job")
 }
 
-// JobCanceller cancels the jobs that revoked sessions queued (the jobs scheduler).
+// JobCanceller cancels the jobs that revoked sessions queued, inside the revoke's
+// own write transaction. The returned function runs after the commit (it closes
+// the in-memory cancel of running jobs). *jobs.Scheduler implements it.
 type JobCanceller interface {
-	CancelSessionJobs(ctx context.Context, sessions []string, reason string) (int, error)
+	CancelSessionJobsTx(ctx context.Context, tx *sql.Tx, sessions []string, reason string) (afterCommit func(), err error)
 }
 
 // SessionRevokedJobReason is the cancel reason of a job whose session was revoked.

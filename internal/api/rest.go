@@ -253,6 +253,9 @@ func (s *Server) actionError(w http.ResponseWriter, reqID string, err error) {
 		send(http.StatusConflict, "enrollment_expired", "This enrolment expired or ran out of tries; start again.", nil)
 	case errors.Is(err, auth.ErrNoSuchToken), errors.Is(err, auth.ErrNoSuchSession):
 		send(http.StatusNotFound, "not_found", "no such item", nil)
+	case errors.Is(err, auth.ErrRevokeNotApplied):
+		s.log.Error("session revoke not applied", "request_id", reqID)
+		send(http.StatusInternalServerError, "revoke_not_applied", "The session was not signed out, because the jobs it queued could not be cancelled. Nothing changed; try again.", nil)
 	case errors.Is(err, auth.ErrKeyMismatch):
 		send(http.StatusInternalServerError, "key_mismatch", err.Error(), nil)
 	default:

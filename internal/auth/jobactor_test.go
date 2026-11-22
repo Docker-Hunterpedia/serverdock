@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,8 +39,8 @@ func newJobRig(t *testing.T) *jobRig {
 	defer func() { r.a.clk.Add(10 * time.Second) }() // the setup's own credential time must be before any job
 	r.a = newAEnvJobs(t, func(e *env) JobCanceller {
 		r.js = jobs.NewStore(e.st, e.clk.Now)
-		return jobCancellerFunc(func(ctx context.Context, sessions []string, reason string) (int, error) {
-			return r.sched.CancelSessionJobs(ctx, sessions, reason)
+		return jobCancellerFunc(func(ctx context.Context, tx *sql.Tx, sessions []string, reason string) (func(), error) {
+			return r.sched.CancelSessionJobsTx(ctx, tx, sessions, reason)
 		})
 	})
 	reg := r.a.reg
@@ -65,10 +66,10 @@ func newJobRig(t *testing.T) *jobRig {
 	return r
 }
 
-type jobCancellerFunc func(context.Context, []string, string) (int, error)
+type jobCancellerFunc func(context.Context, *sql.Tx, []string, string) (func(), error)
 
-func (f jobCancellerFunc) CancelSessionJobs(ctx context.Context, s []string, reason string) (int, error) {
-	return f(ctx, s, reason)
+func (f jobCancellerFunc) CancelSessionJobsTx(ctx context.Context, tx *sql.Tx, s []string, reason string) (func(), error) {
+	return f(ctx, tx, s, reason)
 }
 
 func (r *jobRig) run(ctx context.Context, j jobs.Job) (err error) {
@@ -426,17 +427,40 @@ func TestExplicitSessionRevokeCancelsThatSessionsJobs(t *testing.T) {
 	})
 }
 
-func TestSessionRevokeReportsAJobCancelFailure(t *testing.T) {
+// The session delete and the jobs cancel are one transaction: when the cancel
+// fails, the session is still there and the caller gets the typed error with no
+// internal detail.
+func TestSessionRevokeIsRolledBackWhenTheJobCancelFails(t *testing.T) {
 	a := newAEnvJobs(t, func(*env) JobCanceller {
-		return jobCancellerFunc(func(context.Context, []string, string) (int, error) { return 0, errors.New("db is down") })
+		return jobCancellerFunc(func(context.Context, *sql.Tx, []string, string) (func(), error) {
+			return nil, errors.New("db is down")
+		})
 	})
 	_, p := a.newSessionFor(a.uid)
 	_, err := a.inv(a.user(), "auth.sessions_revoke", fmt.Sprintf(`{"public_id":%q}`, p))
-	if err == nil || !strings.Contains(err.Error(), "cancelling the jobs") || strings.Contains(err.Error(), "db is down") {
+	if !errors.Is(err, ErrRevokeNotApplied) || strings.Contains(err.Error(), "db is down") {
 		t.Fatalf("got %v", err)
 	}
-	if _, lerr := a.s.LookupSession(ctx, a.secret); lerr != nil {
-		t.Errorf("the caller's session was revoked: %v", lerr)
+	if _, err := a.inv(a.user(), "auth.sessions_revoke", `{"all_others":true}`); !errors.Is(err, ErrRevokeNotApplied) {
+		t.Fatalf("all_others: %v", err)
+	}
+	var n int
+	a.st.R.QueryRow(`SELECT count(*) FROM sessions WHERE public_id = ?`, p).Scan(&n)
+	if n != 1 {
+		t.Error("the session was revoked although its jobs were not cancelled")
+	}
+}
+
+// Revoke between authorisation and enqueue: the enqueue is refused, so no job can
+// be left behind by a session that has just been revoked.
+func TestJobQueuedByARevokedSessionIsRefusedAtEnqueue(t *testing.T) {
+	r := newJobRig(t)
+	_, p := r.a.newSessionFor(r.a.uid)
+	actor := actions.UserSessionActor(strconv.FormatInt(r.a.uid, 10), p, actions.ScopeAdmin, r.a.clk.Now().Add(time.Minute))
+	r.a.mustInv(r.a.user(), "auth.sessions_revoke", fmt.Sprintf(`{"public_id":%q}`, p)) // revoked after the caller was authorised
+	_, err := r.js.Enqueue(ctx, jobs.NewJob{Kind: jobs.KindRestart, LockKey: jobs.LockKey(1), Actor: jobs.ActorOf(actor), Payload: json.RawMessage(`{}`), TimeoutS: 60})
+	if !errors.Is(err, jobs.ErrActorSessionGone) {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -446,6 +470,20 @@ func TestRefreshJobActorRefusesKindsThatCannotOwnAJob(t *testing.T) {
 		"mcp": actions.MCPActor("1"), "webhook": actions.WebhookActor("1", "x"), "empty": {},
 	} {
 		if _, err := a.s.RefreshJobActor(ctx, actor, a.clk.Now()); !errors.Is(err, actions.ErrDenied) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A database failure while refreshing returns a fixed message (it lands in the
+// job's error column), not the driver's text.
+func TestRefreshJobActorDatabaseErrorIsFixedText(t *testing.T) {
+	a := newAEnv(t)
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+	for name, actor := range map[string]actions.Actor{"user": a.user(), "token": actions.TokenActor("1", actions.ScopeWrite)} {
+		_, err := a.s.RefreshJobActor(dead, actor, a.clk.Now())
+		if err == nil || err.Error() != "could not check the job's actor" {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

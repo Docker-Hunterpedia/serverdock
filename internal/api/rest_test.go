@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -708,5 +709,36 @@ func TestRESTBusyHasherIs503(t *testing.T) {
 	// The session was not revoked by the failed change.
 	if g := f.rest("GET", "/api/v1/auth/session", ``, restCred{session: s}); g.Code == 401 {
 		t.Error("a busy hasher ended the session")
+	}
+}
+
+type failingJobs struct{}
+
+func (failingJobs) CancelSessionJobsTx(context.Context, *sql.Tx, []string, string) (func(), error) {
+	return nil, errors.New("jobs table is on fire")
+}
+
+// When the jobs of a session cannot be cancelled, the revoke is rolled back and
+// the user is told so in plain words (a 500 with its own code), never a false
+// success and never the internal cause.
+func TestRESTRevokeThatCannotCancelJobsIsReportedAndRolledBack(t *testing.T) {
+	f := newFixture(t, true)
+	reg := actions.New(f.sink, slogDiscard(), actions.WithClock(f.clk.Now))
+	auth.RegisterAuthActions(reg, f.as, auth.ActionDeps{Jobs: failingJobs{}})
+	f.srv = New(Config{SPA: fstest.MapFS{"index.html": {Data: []byte("x")}}, Sessions: f.as, Actions: reg})
+	f.h = f.srv.Handler()
+	own, other := f.freshSession(), f.freshSession()
+	var otherID string
+	f.st.R.QueryRow(`SELECT public_id FROM sessions WHERE id_hash = ?`, sha(other)).Scan(&otherID)
+	for name, in := range map[string]string{"one session": fmt.Sprintf(`{"public_id":%q}`, otherID), "all others": `{"all_others":true}`} {
+		x := f.rest("POST", actionPath("auth.sessions_revoke"), in, restCred{session: own})
+		if x.Code != 500 || x.errCode() != "revoke_not_applied" || strings.Contains(x.Raw, "on fire") || !strings.Contains(x.Raw, "not signed out") {
+			t.Errorf("%s: %d %s", name, x.Code, x.Raw)
+		}
+		var n int
+		f.st.R.QueryRow(`SELECT count(*) FROM sessions WHERE public_id = ?`, otherID).Scan(&n)
+		if n != 1 {
+			t.Errorf("%s: the session was revoked although its jobs were not cancelled", name)
+		}
 	}
 }

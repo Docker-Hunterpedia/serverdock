@@ -1,10 +1,8 @@
 package actions
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -59,40 +57,37 @@ func (a Actor) JobBlob() string {
 // against the database (auth.Store.RefreshJobActor) before running anything.
 func (s *SystemInvoker) ActorFromJob(blob string) (Actor, error) {
 	if len(blob) == 0 || len(blob) > maxJobBlob {
-		return Actor{}, fmt.Errorf("%w: size", ErrBadJobActor)
+		return Actor{}, ErrBadJobActor
 	}
-	dec := json.NewDecoder(bytes.NewReader([]byte(blob)))
-	dec.DisallowUnknownFields()
 	var b jobBlobV1
-	if err := dec.Decode(&b); err != nil {
-		return Actor{}, fmt.Errorf("%w: %v", ErrBadJobActor, err)
-	}
-	if dec.More() {
-		return Actor{}, fmt.Errorf("%w: trailing data", ErrBadJobActor)
+	if err := decodeStrict([]byte(blob), &b); err != nil {
+		// The decoder's text stays in the log: the caller's error ends up in a job row.
+		s.r.log.Warn("job actor blob refused", "err", err.Error())
+		return Actor{}, ErrBadJobActor
 	}
 	if b.V != 1 {
-		return Actor{}, fmt.Errorf("%w: version", ErrBadJobActor)
+		return Actor{}, ErrBadJobActor
 	}
 	kind := ActorKind(b.Kind)
 	if kind == KindSystem {
 		return Actor{}, ErrSystemJobActor
 	}
 	if b.ID == "" || len(b.ID) > 128 || len(b.Sess) > 64 || len(b.Host) > 16 || len(b.Target) > 256 {
-		return Actor{}, fmt.Errorf("%w: field", ErrBadJobActor)
+		return Actor{}, ErrBadJobActor
 	}
 	scope := Scope(b.Scope)
 	var a Actor
 	switch kind {
 	case KindUser, KindToken:
 		if scope < ScopeRead || scope > ScopeAdmin {
-			return Actor{}, fmt.Errorf("%w: scope", ErrBadJobActor)
+			return Actor{}, ErrBadJobActor
 		}
 	case KindMCP:
 		scope = ScopeRead
 	case KindWebhook:
 		scope = 0
 	default:
-		return Actor{}, fmt.Errorf("%w: kind", ErrBadJobActor)
+		return Actor{}, ErrBadJobActor
 	}
 	a = Actor{kind: kind, id: b.ID, scope: scope, session: b.Sess, hostKind: b.Host, boundTarget: b.Target}
 	if kind == KindUser && b.MFA > 0 {

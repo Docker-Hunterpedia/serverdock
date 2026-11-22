@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -60,7 +61,7 @@ type Scheduler struct {
 	stopping bool
 	running  map[int64]context.CancelCauseFunc
 	active   int              // workers started and not finished (running is removed earlier, before the result is recorded)
-	pending  map[int64]string // cancels that arrived between Pick and registration
+	pending  map[int64]string // cancels that arrived between Pick and registration; bounded (at most the picked jobs, terminal-only) and ids are never reused
 	wake     time.Time        // when the timer fires; zero when it is stopped
 	wg       sync.WaitGroup
 }
@@ -197,27 +198,55 @@ func (s *Scheduler) Cancel(ctx context.Context, id int64, reason string) error {
 // MaxSessionsPerCancel bounds one CancelSessionJobs call.
 const MaxSessionsPerCancel = 1000
 
-// CancelSessionJobs cancels the queued and running jobs queued by the given
-// sessions (public ids), for an explicit session revoke. A running job stops at
-// its next cancellable point. It returns how many jobs were cancelled.
+// CancelSessionJobsTx cancels the queued and running jobs queued by the given
+// sessions (public ids) inside the caller's write transaction. The returned
+// function closes the in-memory cancel of the running ones and wakes the
+// scheduler; the caller runs it only after the transaction committed.
+func (s *Scheduler) CancelSessionJobsTx(ctx context.Context, tx *sql.Tx, sessions []string, reason string) (afterCommit func(), err error) {
+	if len(sessions) > MaxSessionsPerCancel {
+		return nil, invalid("too many sessions")
+	}
+	running, n, err := s.cfg.Store.CancelSessionJobsTx(ctx, tx, sessions, reason)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		for _, id := range running {
+			s.cancelRunning(id, reason)
+		}
+		if n > 0 {
+			s.Notify()
+		}
+	}, nil
+}
+
+// CancelSessionJobs is CancelSessionJobsTx in its own transaction. It returns
+// how many jobs were cancelled.
 func (s *Scheduler) CancelSessionJobs(ctx context.Context, sessions []string, reason string) (int, error) {
 	if len(sessions) == 0 {
 		return 0, nil
 	}
-	if len(sessions) > MaxSessionsPerCancel {
-		return 0, invalid("too many sessions")
-	}
-	running, n, err := s.cfg.Store.cancelBySession(ctx, sessions, reason)
+	var after func()
+	var count int
+	err := s.cfg.Store.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		running, n, err := s.cfg.Store.CancelSessionJobsTx(ctx, tx, sessions, reason)
+		if err != nil {
+			return err
+		}
+		count = n
+		after = func() {
+			for _, id := range running {
+				s.cancelRunning(id, reason)
+			}
+			s.Notify()
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	for _, id := range running {
-		s.cancelRunning(id, reason)
-	}
-	if n > 0 {
-		s.Notify()
-	}
-	return n, nil
+	after()
+	return count, nil
 }
 
 func (s *Scheduler) cancelRunning(id int64, reason string) {
@@ -354,8 +383,10 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	cause := context.Cause(ctx)
 	cancel(nil)
 	// Leave the cancel map before the result is recorded: a cancel that arrives
-	// from here on only flags the row (the outcome is already decided by cause)
-	// and cannot leave a pending entry behind for a finished job.
+	// from here on only flags the row (the outcome is already decided by cause).
+	// It may still add a pending entry, which is removed below once the result is
+	// recorded; at worst a store failure leaves one small entry for a job id that
+	// is never reused, so the map stays bounded.
 	s.mu.Lock()
 	delete(s.running, j.ID)
 	s.mu.Unlock()

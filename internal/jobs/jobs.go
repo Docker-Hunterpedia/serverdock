@@ -91,6 +91,17 @@ func (systemActorError) Error() string {
 }
 func (systemActorError) Is(t error) bool { return t == ErrInvalid }
 
+// ErrActorSessionGone is returned at enqueue when the actor's session no longer
+// exists (it was revoked or signed out after the caller was authorised).
+var ErrActorSessionGone error = sessionGoneError{}
+
+type sessionGoneError struct{}
+
+func (sessionGoneError) Error() string {
+	return "jobs: invalid request: the session that is queuing this job no longer exists"
+}
+func (sessionGoneError) Is(t error) bool { return t == ErrInvalid }
+
 // Actor is who queued a job. Blob is actions.Actor.JobBlob(); this package stores
 // it and never interprets it (the runner rebuilds it with ActorFromJob).
 type Actor struct {

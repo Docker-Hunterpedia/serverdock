@@ -29,7 +29,20 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return &env{st: st, js: NewStore(st, nil)}
+	e := &env{st: st, js: NewStore(st, nil)}
+	e.exec(t, `INSERT INTO users(id, username, created_at) VALUES (1, 'admin', 1)`)
+	for _, pub := range []string{"sess1", "s1", "s2", "s3", "pub-7"} {
+		e.session(t, pub)
+	}
+	return e
+}
+
+// session inserts a live sessions row with that public id (enqueue refuses an
+// actor whose session does not exist).
+func (e *env) session(t *testing.T, public string) {
+	t.Helper()
+	e.exec(t, `INSERT INTO sessions(id_hash, public_id, user_id, created_at, last_seen_at, idle_expires_at, abs_expires_at, mfa_fresh_until, ip_key, user_agent)
+		VALUES (?, ?, 1, 1, 1, 9999999999, 9999999999, 0, 'ip', 'ua')`, []byte(public), public)
 }
 
 func (e *env) exec(t *testing.T, q string, args ...any) {

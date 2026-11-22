@@ -122,6 +122,17 @@ func insertJob(ctx context.Context, tx *sql.Tx, n NewJob, now time.Time) (int64,
 	}
 	var session, confirm any
 	if n.Actor.Session != "" {
+		// Closes the revoke/enqueue race: a session revoked between the caller's
+		// authorisation and this write has no row, and its job is refused here, in
+		// the same transaction that would store it. (auth.sessions_revoke deletes
+		// the row and cancels the session's jobs in one transaction.)
+		var live bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE public_id = ?)`, n.Actor.Session).Scan(&live); err != nil {
+			return 0, err
+		}
+		if !live {
+			return 0, ErrActorSessionGone
+		}
 		session = n.Actor.Session
 	}
 	if n.Confirm != "" {
@@ -415,52 +426,51 @@ func (s *Store) cancelTx(ctx context.Context, tx *sql.Tx, id int64, reason strin
 			WHERE job_id = ? AND status IN ('queued', 'running')`, reason, ts, id)
 		return StateCancelled, err
 	case StateRunning:
-		_, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = ? WHERE id = ?`, reason, id)
+		_, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = COALESCE(cancel_reason, ?) WHERE id = ?`, reason, id)
 		return StateRunning, err
 	}
 	return "", ErrNotCancellable
 }
 
-// cancelBySession cancels, in one transaction, every queued or running job that
-// the given sessions queued. It returns the ids of the running ones, whose
-// in-memory cancel the caller closes.
-func (s *Store) cancelBySession(ctx context.Context, sessions []string, reason string) (running []int64, n int, err error) {
+// CancelSessionJobsTx cancels, inside the caller's write transaction, every
+// queued or running job that the given sessions queued. auth.sessions_revoke
+// calls it in the same transaction that deletes the sessions, so a session can
+// never be gone with its jobs still live. It returns the ids of the running jobs,
+// whose in-memory cancel must be closed after the transaction commits
+// (Scheduler.CancelSessionJobsTx does both).
+func (s *Store) CancelSessionJobsTx(ctx context.Context, tx *sql.Tx, sessions []string, reason string) (running []int64, n int, err error) {
 	reason = clip(reason, 128)
-	err = s.st.WriteTx(ctx, func(tx *sql.Tx) error {
-		running, n = nil, 0 // the transaction may be retried
-		for _, sess := range sessions {
-			rows, err := tx.QueryContext(ctx, `SELECT id FROM jobs WHERE actor_session = ? AND state IN ('queued', 'running') ORDER BY id`, sess)
-			if err != nil {
-				return err
-			}
-			var ids []int64
-			for rows.Next() {
-				var id int64
-				if err := rows.Scan(&id); err != nil {
-					rows.Close()
-					return err
-				}
-				ids = append(ids, id)
-			}
-			if err := rows.Err(); err != nil {
+	for _, sess := range sessions {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM jobs WHERE actor_session = ? AND state IN ('queued', 'running') ORDER BY id`, sess)
+		if err != nil {
+			return nil, 0, err
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
 				rows.Close()
-				return err
+				return nil, 0, err
 			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
-			for _, id := range ids {
-				state, err := s.cancelTx(ctx, tx, id, reason)
-				if err != nil {
-					return err
-				}
-				n++
-				if state == StateRunning {
-					running = append(running, id)
-				}
+			return nil, 0, err
+		}
+		rows.Close()
+		for _, id := range ids {
+			state, err := s.cancelTx(ctx, tx, id, reason)
+			if err != nil {
+				return nil, 0, err
+			}
+			n++
+			if state == StateRunning {
+				running = append(running, id)
 			}
 		}
-		return nil
-	})
-	return running, n, err
+	}
+	return running, n, nil
 }
 
 // clip cuts s to at most n bytes without splitting a rune.

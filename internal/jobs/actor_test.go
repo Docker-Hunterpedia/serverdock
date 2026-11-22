@@ -152,8 +152,9 @@ func TestCancelSessionJobsCancelsQueuedAndRunningJobsOfThoseSessionsOnly(t *test
 	}
 }
 
-// A cancel that lands while a job is being recorded must not leave an entry in the
-// scheduler's maps, and the worker count returns to zero.
+// A cancel that lands while a job is being recorded may add a pending entry, but
+// the worker removes it once the result is recorded: the maps stay empty and the
+// worker count returns to zero.
 func TestLateCancelLeavesNoPendingEntry(t *testing.T) {
 	e := newEnv(t)
 	s, _ := start(t, e, func(context.Context, Job) error { return nil }, nil)
@@ -188,4 +189,49 @@ func newInvoker(t *testing.T) *actions.SystemInvoker {
 		t.Fatal(err)
 	}
 	return actions.New(al, log).SystemInvoker()
+}
+
+func TestEnqueueRefusesAJobWhoseSessionNoLongerExists(t *testing.T) {
+	e := newEnv(t)
+	svc := e.service(t, "web")
+	// The session is revoked between the caller's authorisation and the enqueue.
+	e.exec(t, `DELETE FROM sessions WHERE public_id = 'sess1'`)
+	if _, err := e.js.Enqueue(ctx, job(LockKey(svc))); !errors.Is(err, ErrActorSessionGone) || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("restart: %v", err)
+	}
+	if _, err := e.js.EnqueueDeploy(ctx, deploy(svc)); !errors.Is(err, ErrActorSessionGone) {
+		t.Fatalf("deploy: %v", err)
+	}
+	var jobsN, deploysN int
+	e.st.R.QueryRow(`SELECT (SELECT count(*) FROM jobs), (SELECT count(*) FROM deploys)`).Scan(&jobsN, &deploysN)
+	if jobsN != 0 || deploysN != 0 {
+		t.Errorf("rows written: jobs %d deploys %d", jobsN, deploysN)
+	}
+	// An actor with no session (a token) is not subject to the check.
+	n := job(LockKey(svc))
+	n.Actor = Actor{Kind: "token", ID: "3", Blob: `{"v":1}`}
+	if _, err := e.js.Enqueue(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFirstCancelReasonWins(t *testing.T) {
+	e := newEnv(t)
+	svc := e.service(t, "web")
+	id, err := e.js.Enqueue(ctx, job(LockKey(svc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(t, `UPDATE jobs SET state = 'running' WHERE id = ?`, id)
+	if _, err := e.js.cancel(ctx, id, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.js.cancel(ctx, id, "second"); err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	e.st.R.QueryRow(`SELECT cancel_reason FROM jobs WHERE id = ?`, id).Scan(&reason)
+	if reason != "first" {
+		t.Errorf("reason %q", reason)
+	}
 }

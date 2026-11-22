@@ -99,10 +99,11 @@ func TestActorFromJobRefusesSystem(t *testing.T) {
 	for name, blob := range map[string]string{
 		"empty": "", "not json": "{", "unknown kind": `{"v":1,"k":"root","id":"1","s":3}`, "unknown version": `{"v":2,"k":"user","id":"1","s":3}`,
 		"no id": `{"v":1,"k":"user","id":"","s":3}`, "no scope": `{"v":1,"k":"user","id":"1"}`, "scope too high": `{"v":1,"k":"token","id":"1","s":9}`,
-		"unknown field": `{"v":1,"k":"user","id":"1","s":3,"x":1}`, "trailing": `{"v":1,"k":"user","id":"1","s":3} {}`, "huge": strings.Repeat("x", maxJobBlob+1),
+		"unknown field": `{"v":1,"k":"user","id":"1","s":3,"x":1}`, "trailing": `{"v":1,"k":"user","id":"1","s":3} {}`,
+		"stray brace": `{"v":1,"k":"user","id":"1","s":3}}`, "stray bracket": `{"v":1,"k":"user","id":"1","s":3}]`, "huge": strings.Repeat("x", maxJobBlob+1),
 	} {
-		if _, err := inv.ActorFromJob(blob); err == nil {
-			t.Errorf("%s: accepted", name)
+		if _, err := inv.ActorFromJob(blob); err != ErrBadJobActor {
+			t.Errorf("%s: %v (want the fixed ErrBadJobActor, no decoder text)", name, err)
 		}
 	}
 }
