@@ -264,3 +264,32 @@ type HealthResult struct {
 	MS     int    `json:"ms"`
 	Err    string `json:"err,omitempty"`
 }
+
+// Route pages (the static answers of a route with no upstream).
+const (
+	PageNotRunning  = "not_running"
+	PageMaintenance = "maintenance"
+)
+
+// MaxRoutes is the most app routes one proxy_apply carries (the service cap).
+const MaxRoutes = 100
+
+// Route is one exposed app: plain HTTP on Port, proxied to Upstream ("ip:port"
+// on the app network) or answered with a static Page. Exactly one of the two.
+type Route struct {
+	Port     int    `json:"port"`
+	Upstream string `json:"upstream,omitempty"`
+	Page     string `json:"page,omitempty"`
+}
+
+// ApplyArgs is the proxy_apply request: the complete route list.
+type ApplyArgs struct {
+	Routes []Route `json:"routes"`
+}
+
+// ApplyResult is the proxy_apply result. FailedPorts are the ports Caddy could
+// not bind (another program has them); every other route is live.
+type ApplyResult struct {
+	Applied     bool  `json:"applied"`
+	FailedPorts []int `json:"failed_ports"`
+}

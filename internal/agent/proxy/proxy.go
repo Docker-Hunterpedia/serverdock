@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,7 +44,45 @@ type Config struct {
 	// Listen address into a redirect-only HTTP server. The remote agent's proxy
 	// never sets it, so its config stays byte-identical.
 	Panel *Panel
+	// Apps are the exposed apps' routes, one Caddy server per public port (server
+	// mode only: they need Panel). The remote agent never sets it, so its config
+	// and the panel servers stay byte-identical.
+	Apps []AppRoute
 }
+
+// MaxApps bounds Apps (the service cap of plan 0004).
+const MaxApps = 100
+
+// Bodies of the static pages an app route can serve.
+const (
+	BodyNotRunning  = "This app is not running (ServerDock)\n"
+	BodyMaintenance = "Deploying, back in a moment\n"
+)
+
+// AppRoute is one exposed app: plain HTTP on :Port, either proxied to an
+// upstream or answered with a static page. Exactly one of Upstream and Static
+// is set.
+type AppRoute struct {
+	Port int
+	// Upstream is "ip:port": an IPv4 literal, never a name or a socket.
+	Upstream string
+	// Static is the page served when there is no upstream. A static route has no
+	// reverse_proxy handler, so Caddy starts no upstream-health ticker for it.
+	Static *Static
+}
+
+// Static is a fixed response.
+type Static struct {
+	Status     int    // 400..599
+	Body       string // no placeholders ("{")
+	RetryAfter int    // seconds, 0 = no header
+}
+
+// NotRunning is the page for an app with no running container.
+func NotRunning() *Static { return &Static{Status: 503, Body: BodyNotRunning} }
+
+// Maintenance is the page served during a stop-first gap.
+func Maintenance() *Static { return &Static{Status: 503, Body: BodyMaintenance, RetryAfter: 10} }
 
 // Panel is the HTTPS panel part of the config (ADR 0010).
 type Panel struct {
@@ -95,6 +135,9 @@ func (c Config) validate() error {
 			return fmt.Errorf("proxy: the HTTP and HTTPS listen addresses are the same (%q)", c.Listen)
 		}
 	}
+	if err := c.validateApps(); err != nil {
+		return err
+	}
 	if sock, ok := strings.CutPrefix(c.Upstream, "unix/"); ok {
 		if !strings.HasPrefix(sock, "/") {
 			return fmt.Errorf("proxy: Upstream %q: a unix socket path must be absolute", c.Upstream)
@@ -105,6 +148,76 @@ func (c Config) validate() error {
 		return fmt.Errorf("proxy: Upstream %q: %w", c.Upstream, err)
 	}
 	return nil
+}
+
+func (c Config) validateApps() error {
+	if len(c.Apps) == 0 {
+		return nil
+	}
+	if c.Panel == nil {
+		return fmt.Errorf("proxy: app routes need the panel (server mode)")
+	}
+	if len(c.Apps) > MaxApps {
+		return fmt.Errorf("proxy: %d app routes (at most %d)", len(c.Apps), MaxApps)
+	}
+	own := map[int]bool{}
+	for _, addr := range []string{c.Listen, c.Panel.Listen} {
+		_, port, _ := net.SplitHostPort(addr)
+		p, _ := strconv.Atoi(port)
+		own[p] = true
+	}
+	seen := map[int]bool{}
+	for _, a := range c.Apps {
+		switch {
+		case a.Port < 1024 || a.Port > 65535:
+			return fmt.Errorf("proxy: app port %d is outside 1024..65535", a.Port)
+		case own[a.Port]:
+			return fmt.Errorf("proxy: app port %d is one of the panel's listen ports", a.Port)
+		case seen[a.Port]:
+			return fmt.Errorf("proxy: app port %d appears twice", a.Port)
+		}
+		seen[a.Port] = true
+		if (a.Upstream == "") == (a.Static == nil) {
+			return fmt.Errorf("proxy: app port %d needs exactly one of an upstream and a static page", a.Port)
+		}
+		if a.Static != nil {
+			s := a.Static
+			if s.Status < 400 || s.Status > 599 || s.RetryAfter < 0 || s.RetryAfter > 3600 || len(s.Body) > 1024 || strings.Contains(s.Body, "{") {
+				return fmt.Errorf("proxy: app port %d: bad static page", a.Port)
+			}
+			continue
+		}
+		host, port, err := net.SplitHostPort(a.Upstream)
+		if err != nil {
+			return fmt.Errorf("proxy: app port %d: upstream: %w", a.Port, err)
+		}
+		ip, err := netip.ParseAddr(host)
+		if p, perr := strconv.Atoi(port); err != nil || !ip.Is4() || ip.String() != host || perr != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
+			return fmt.Errorf("proxy: app port %d: the upstream must be an IPv4 address and a port", a.Port)
+		}
+	}
+	return nil
+}
+
+// appServer is the Caddy server of one app route: plain HTTP on every
+// interface, HTTP/1.1 only (no h2c, no HTTP/3, so no UDP), the panel's public
+// limits.
+func appServer(a AppRoute, limits func(m) m) m {
+	var handler m
+	if a.Static != nil {
+		handler = m{"handler": "static_response", "status_code": a.Static.Status, "body": a.Static.Body,
+			"headers": m{"Content-Type": []string{"text/plain; charset=utf-8"}, "Cache-Control": []string{"no-store"}}}
+		if a.Static.RetryAfter > 0 {
+			handler["headers"].(m)["Retry-After"] = []string{strconv.Itoa(a.Static.RetryAfter)}
+		}
+	} else {
+		handler = reverseProxy(a.Upstream, nil)
+	}
+	return limits(m{
+		"listen":    []string{":" + strconv.Itoa(a.Port)},
+		"routes":    []m{{"handle": []m{handler}}},
+		"protocols": []string{"h1"},
+	})
 }
 
 type m = map[string]any
@@ -192,6 +305,12 @@ func BuildConfig(c Config) ([]byte, error) {
 					"fallback_sni": SNI, // SNI that matches no loaded certificate
 				}},
 			}),
+		}
+		servers := httpApp["servers"].(m)
+		apps := append([]AppRoute(nil), c.Apps...)
+		sort.Slice(apps, func(i, j int) bool { return apps[i].Port < apps[j].Port })
+		for _, a := range apps {
+			servers["app-"+strconv.Itoa(a.Port)] = appServer(a, limits)
 		}
 		cfg["apps"].(m)["tls"] = m{
 			"certificates":          m{"load_files": []m{{"certificate": c.Panel.CertFile, "key": c.Panel.CertFile, "format": "pem"}}},

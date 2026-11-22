@@ -34,6 +34,7 @@ const (
 	OpNetworkEnsure    = "network_ensure"
 	OpNetworkInspect   = "network_inspect"
 	OpHealthCheck      = "health_check"
+	OpProxyApply       = "proxy_apply"
 	// MinTail and MaxTail bound the log tail.
 	MinTail = 1
 	MaxTail = 5000
@@ -80,9 +81,14 @@ var opSpecs = []OpSpec{
 	{Name: OpNetworkInspect, MaxResult: 64 << 10, Timeout: shortOpTimeout},
 	{Name: OpEvents, MaxProgressLines: 1, Timeout: 0}, // one progress line: "the stream is open"
 	{Name: OpHealthCheck, Timeout: shortOpTimeout},
+	// The agent owns Caddy (ADR 0004). 20 s is longer than Caddy's 10 s reload
+	// grace; the bind-failure retries run inside it.
+	{Name: OpProxyApply, Timeout: ProxyApplyTimeout},
 }
 
 const (
+	// ProxyApplyTimeout bounds proxy_apply.
+	ProxyApplyTimeout = 20 * time.Second
 	// MaxPullProgressLines bounds the progress lines of one image_pull (the
 	// agent sends at most two a second, so this is far above a real pull).
 	MaxPullProgressLines = 20000

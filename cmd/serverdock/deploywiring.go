@@ -11,6 +11,7 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
@@ -40,8 +41,16 @@ func loadInstallID(ctx context.Context, st *store.Store) (string, error) {
 // local agent. The remote agent process never gets them: its handler table holds
 // RemoteOK ops only, whatever Config.Ops says. CheckCreate is policy.CheckCreateAgent:
 // default-deny on the exact bytes sent to Docker.
-func localOps(docker *dockerapi.Client, instance string, allowLoopbackRegistry bool, log *slog.Logger) (map[string]agent.Handler, error) {
-	return agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: allowLoopbackRegistry, Log: log})
+//
+// applier is the embedded proxy's route applier for proxy_apply; nil when the
+// proxy is off (the op then says so). reserved are ServerDock's own listen ports
+// besides --listen and --https-listen, which an app route may not use.
+func localOps(docker *dockerapi.Client, instance string, allowLoopbackRegistry bool, applier *proxy.Applier, reserved []int, log *slog.Logger) (map[string]agent.Handler, error) {
+	d := agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: allowLoopbackRegistry, ReservedPorts: reserved, Log: log}
+	if applier != nil { // never a typed nil in the interface
+		d.Proxy = applier
+	}
+	return agentops.Handlers(d)
 }
 
 // recordAppSubnet picks (first start) or reads (later starts) the app subnet and

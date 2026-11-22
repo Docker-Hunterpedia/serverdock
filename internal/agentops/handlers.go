@@ -37,6 +37,13 @@ type Deps struct {
 	// registry on this machine. Link-local and metadata registries are refused
 	// whatever it says.
 	AllowLoopbackRegistry bool
+	// Proxy applies app routes (proxy_apply). Nil when the embedded proxy is off:
+	// the op then fails with "the proxy is not running".
+	Proxy RouteApplier
+	// ReservedPorts are ServerDock's own listen ports besides --listen and
+	// --https-listen (the proxy knows those two): today --agent-listen's. An app
+	// route may not use them.
+	ReservedPorts []int
 	// Log receives internal errors that are not sent to the control plane.
 	Log *slog.Logger
 
@@ -75,7 +82,7 @@ type handlers struct {
 }
 
 // Handlers builds the agent-side handlers of the local-only ops (everything in
-// the op table that is not RemoteOK, except proxy_apply, which step 6 adds),
+// the op table that is not RemoteOK),
 // keyed by op name, for agent.Config.Ops.
 func Handlers(d Deps) (map[string]agent.Handler, error) {
 	switch {
@@ -116,6 +123,7 @@ func Handlers(d Deps) (map[string]agent.Handler, error) {
 		agent.OpNetworkInspect:   h.networkInspect,
 		agent.OpEvents:           h.events,
 		agent.OpHealthCheck:      h.health,
+		agent.OpProxyApply:       h.proxyApply,
 	}, nil
 }
 

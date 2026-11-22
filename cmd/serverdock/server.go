@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -389,7 +390,25 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
 	logDockerVersion(ctx, docker, log)
-	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, log)
+	// The proxy's route applier: RunLocal starts it (the panel alone), and the
+	// proxy_apply op adds app routes on top of it later.
+	var applier *proxy.Applier
+	var reserved []int
+	if cfg.Proxy {
+		applier = proxy.NewApplier(proxy.Config{
+			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Panel: panelProxy(panel, cfg),
+			// Read by the secret-sentinel test only (not a flag, not in --help).
+			LogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
+		})
+		if cfg.AgentListen != "" {
+			if _, port, err := net.SplitHostPort(cfg.AgentListen); err == nil {
+				if p, err := strconv.Atoi(port); err == nil {
+					reserved = append(reserved, p)
+				}
+			}
+		}
+	}
+	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, applier, reserved, log)
 	if err != nil {
 		return err
 	}
@@ -455,7 +474,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
-			Panel: panelProxy(panel, cfg),
+			Panel: panelProxy(panel, cfg), Applier: applier,
 			// Read by the secret-sentinel test only (not a flag, not in --help).
 			ProxyLogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
 			DataDir:       cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,

@@ -38,6 +38,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    - Allocations are a review rule; only the ADR 0008 gates fail CI.
 3. **Background-work inventory.** `docs/architecture.md` gets a "Background work" table that lists every goroutine that wakes up on a timer, with its interval and why it exists. Any PR that adds a timer adds a row, and `footprint` checks the table.
    - No fixed-interval polling below 15 s.
+   - **Written exception (plan 0004 step 6, `footprint` to sign): Caddy's per-route upstream-health ticker (10 s).** Caddy starts one `metricsUpstreamsHealthyUpdater` goroutine per `reverse_proxy` handler, unconditionally; it is not configurable and only sets an in-memory gauge (the panel's own has run since M1). ServerDock adds **at most 100 of them (the service cap), only for services that have an upstream route** (a static "not running" or maintenance route has no `reverse_proxy` handler and so no ticker), and Caddy tears them down and recreates them on every reload. `TestStaticRouteHasNoReverseProxyTicker` counts them.
    - **All scheduled work (jobs due later, cron schedules, daily housekeeping) shares ONE "next due" timer in the job scheduler** (introduced in M3a, extended with cron in M6). Daily tasks are recurring jobs on it, not separate timers.
 
    | What | Where | Interval | When it runs | Milestone |

@@ -22,18 +22,28 @@ type LocalOptions struct {
 	ProxyLogLevel string
 	// Panel, if set, makes the proxy serve the HTTPS panel and redirect Listen to it.
 	Panel *proxy.Panel
+	// Applier, if set, is the proxy's route applier (the server builds it with the
+	// same settings so the proxy_apply op reaches it). RunLocal starts it, which
+	// loads the panel alone: app routes come later, through proxy_apply, only
+	// after the control plane has seen the containers. When nil, RunLocal builds
+	// its own.
+	Applier *proxy.Applier
 }
 
 // RunLocal runs the local agent until ctx is cancelled. started (optional) is
 // called once the proxy, if enabled, has been loaded.
 func RunLocal(ctx context.Context, opts LocalOptions, log *slog.Logger, started func()) error {
 	if opts.Proxy {
-		if err := proxy.Load(proxy.Config{DataDir: opts.DataDir, Listen: opts.Listen, Upstream: opts.Upstream, Panel: opts.Panel, LogLevel: opts.ProxyLogLevel}); err != nil {
+		ap := opts.Applier
+		if ap == nil {
+			ap = proxy.NewApplier(proxy.Config{DataDir: opts.DataDir, Listen: opts.Listen, Upstream: opts.Upstream, Panel: opts.Panel, LogLevel: opts.ProxyLogLevel})
+		}
+		if err := ap.Start(); err != nil {
 			return fmt.Errorf("local agent: start proxy: %w", err)
 		}
 		log.Info("proxy listening", "listen", opts.Listen, "upstream", opts.Upstream)
 		defer func() {
-			if err := proxy.Stop(); err != nil {
+			if err := ap.Stop(); err != nil {
 				log.Error("proxy stop", "err", err)
 			}
 		}()
