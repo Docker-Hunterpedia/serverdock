@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 )
 
@@ -101,8 +102,8 @@ func TestBootOrderIsNetworkEnsureThenSync(t *testing.T) {
 	if en.name != agentops.NetworkName(bootInstance) || en.sub != "10.250.7.0/24" {
 		t.Errorf("network_ensure(%q, %q)", en.name, en.sub)
 	}
-	if !r.Ready() || b.NetworkProblem() != "" {
-		t.Errorf("ready=%v problem=%q", r.Ready(), b.NetworkProblem())
+	if st := b.NetworkStatus(); !r.Ready() || st.State != NetOK || st.Reason != "" {
+		t.Errorf("ready=%v status=%+v", r.Ready(), st)
 	}
 	// Run again: nothing is repeated once it all succeeded.
 	n := len(s.seq)
@@ -121,32 +122,145 @@ func TestBootWithTheProxyOffEnsuresTheNetworkOnly(t *testing.T) {
 	}
 }
 
-// A failed network_ensure (Docker down, a foreign network of that name) is
-// reported and remembered for deploys, and does not stop Sync: containers that
-// already run keep their routes. A later Run retries only what failed.
-func TestBootNetworkFailureDoesNotStopSyncAndIsRetried(t *testing.T) {
-	b, s, en, _, _, r := newBooter(t, true)
-	en.err = errors.New("dockerapi: a network with this name exists and is not ServerDock's /var/run/x")
-	err := b.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "network_ensure") {
-		t.Fatalf("%v", err)
+// A network_ensure the agent refuses because of the network itself (a foreign
+// network with our name, another subnet, ICC on, another gateway or range) is a
+// PROBLEM with a distinct reason for new deploys, and does not stop Sync:
+// containers that already run keep their routes. A later Run retries only what
+// failed.
+func TestBootNetworkMismatchIsAProblemAndIsRetried(t *testing.T) {
+	cases := []struct {
+		name, msg, code string
+	}{
+		{"foreign", "a network with this name exists and is not ServerDock's", agent.CodeConflict},
+		{"subnet", "the network exists with another subnet (10.9.0.0/24, asked for 10.250.7.0/24)", agent.CodeConflict},
+		{"icc", "the network exists with other settings: inter-container traffic is not disabled", agent.CodeConflict},
+		{"gateway", "the network exists with other settings: gateway is \"10.250.7.5\", not 10.250.7.1", agent.CodeConflict},
+		{"range", "the network exists with other settings: IPRange is \"\", not 10.250.7.192/26", agent.CodeConflict},
 	}
-	if !r.Ready() {
-		t.Error("Sync was skipped because the network failed")
+	seen := map[string]bool{}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, s, en, _, _, r := newBooter(t, true)
+			en.err = &agent.OpError{Code: c.code, Msg: c.msg}
+			err := b.Run(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "network_ensure") {
+				t.Fatalf("%v", err)
+			}
+			if !r.Ready() {
+				t.Error("Sync was skipped because the network failed")
+			}
+			st := b.NetworkStatus()
+			if st.State != NetProblem || !strings.Contains(st.Reason, c.msg) {
+				t.Fatalf("status %+v does not carry %q", st, c.msg)
+			}
+			if seen[st.Reason] {
+				t.Errorf("two cases share the reason %q", st.Reason)
+			}
+			seen[st.Reason] = true
+			en.err = nil
+			s.seq = nil
+			if err := b.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(s.seq, ","); got != "subnet,check,network_ensure" { // the gate is open: no second Sync
+				t.Errorf("retry sequence %s", got)
+			}
+			if st := b.NetworkStatus(); st.State != NetOK || st.Reason != "" {
+				t.Errorf("status %+v after success", st)
+			}
+		})
 	}
-	if p := b.NetworkProblem(); p == "" || strings.Contains(p, "/var/run") {
-		t.Errorf("problem %q (must be worded for the user, not Docker's text)", p)
+}
+
+// Docker down (or any error that is not about the network) is UNKNOWN, never a
+// verdict: the deploy that sees it tries again.
+func TestBootDockerFailureIsNetworkUnknownNotAProblem(t *testing.T) {
+	for _, err := range []error{
+		errors.New("dial unix /var/run/docker.sock: connection refused"),
+		&agent.OpError{Code: agent.CodeDocker, Msg: "the Docker request failed"},
+		&agent.OpError{Code: agent.CodeTimeout, Msg: "timed out"},
+	} {
+		b, _, en, _, _, _ := newBooter(t, true)
+		en.err = err
+		if b.Run(context.Background()) == nil {
+			t.Fatalf("%v: no error", err)
+		}
+		if st := b.NetworkStatus(); st.State != NetUnknown || st.Reason != "" {
+			t.Errorf("%v: status %+v", err, st)
+		}
 	}
-	en.err = nil
-	s.seq = nil
+	// Before any attempt it is unknown too.
+	b, _, _, _, _, _ := newBooter(t, true)
+	if st := b.NetworkStatus(); st.State != NetUnknown {
+		t.Errorf("before the first run: %+v", st)
+	}
+}
+
+// container_create (or the allocator) reporting the network missing, or a prune,
+// makes the next Run ensure it again even though it was ensured before.
+func TestNetworkGoneMakesTheNextRunEnsureAgain(t *testing.T) {
+	b, s, en, _, _, _ := newBooter(t, true)
 	if err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(s.seq, ","); got != "subnet,check,network_ensure" { // the gate is open: no second Sync
-		t.Errorf("retry sequence %s", got)
+	if en.calls.Load() != 1 {
+		t.Fatalf("ensure calls %d", en.calls.Load())
 	}
-	if b.NetworkProblem() != "" {
-		t.Errorf("problem %q after success", b.NetworkProblem())
+	if err := b.Run(context.Background()); err != nil || en.calls.Load() != 1 {
+		t.Fatalf("a second Run ensured again: %v %d", err, en.calls.Load())
+	}
+	b.NetworkGone()
+	if st := b.NetworkStatus(); st.State != NetUnknown {
+		t.Errorf("after NetworkGone: %+v", st)
+	}
+	s.seq = nil
+	if err := b.Run(context.Background()); err != nil || en.calls.Load() != 2 {
+		t.Fatalf("%v ensure calls %d", err, en.calls.Load())
+	}
+	if st := b.NetworkStatus(); st.State != NetOK {
+		t.Errorf("status %+v", st)
+	}
+}
+
+func TestIsNetworkMissingMatchesOnlyTheNetworkError(t *testing.T) {
+	if !agentops.IsNetworkMissing(&agent.OpError{Code: agent.CodeNotFound, Msg: agentops.MsgNetworkMissing}) {
+		t.Error("the network error is not recognised")
+	}
+	for _, err := range []error{
+		&agent.OpError{Code: agent.CodeNotFound, Msg: "not found"}, // an image or container
+		&agent.OpError{Code: agent.CodeConflict, Msg: agentops.MsgNetworkMissing},
+		errors.New(agentops.MsgNetworkMissing), nil,
+	} {
+		if agentops.IsNetworkMissing(err) {
+			t.Errorf("%v recognised as the missing network", err)
+		}
+	}
+}
+
+// OnReady is the interim start gate: it fires only once the first list has
+// filled the state map, and again (harmlessly) after later runs.
+func TestBootOnReadyFiresOnlyAfterTheFirstList(t *testing.T) {
+	s := &bootSeq{}
+	st := openStore(t)
+	r := NewRoutes(st, &fakeProxy{events: &s.seq}, nil)
+	src := &fakeSource{seq: &s.seq, listErr: errors.New("docker down")}
+	var n atomic.Int32
+	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s, subnet: "10.250.7.0/24"}, Net: &fakeEnsurer{s: s},
+		Routes: r, Src: src, SyncRoutes: true, OnReady: func() { n.Add(1) }})
+	if b.Run(context.Background()) == nil || n.Load() != 0 {
+		t.Fatalf("the gate opened with the list failing (%d)", n.Load())
+	}
+	src.listErr = nil
+	if err := b.Run(context.Background()); err != nil || n.Load() != 1 {
+		t.Fatalf("%v opened %d times", err, n.Load())
+	}
+	// With the proxy off there is no list: the network being ensured is the signal.
+	n.Store(0)
+	s2 := &bootSeq{}
+	b2 := NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s2, subnet: "10.250.7.0/24"}, Net: &fakeEnsurer{s: s2},
+		Routes: NewRoutes(openStore(t), &fakeProxy{events: &s2.seq}, nil), Src: &fakeSource{seq: &s2.seq}, SyncRoutes: false, OnReady: func() { n.Add(1) }})
+	if err := b2.Run(context.Background()); err != nil || n.Load() != 1 {
+		t.Fatalf("proxy off: %v opened %d times", err, n.Load())
 	}
 }
 
@@ -163,8 +277,8 @@ func TestBootOverlapRefusesTheNetworkButStillSyncs(t *testing.T) {
 			t.Error("network_ensure ran for an overlapping subnet")
 		}
 	}
-	if p := b.NetworkProblem(); !strings.Contains(p, "10.250.7.0/24") || !strings.Contains(p, "tun0") || strings.Contains(p, "--app-subnet") {
-		t.Errorf("problem %q", p)
+	if st := b.NetworkStatus(); st.State != NetProblem || !strings.Contains(st.Reason, "10.250.7.0/24") || !strings.Contains(st.Reason, "tun0") || strings.Contains(st.Reason, "--app-subnet") {
+		t.Errorf("status %+v", st)
 	}
 	if !r.Ready() {
 		t.Error("Sync was skipped")
@@ -207,7 +321,7 @@ func TestNewBooterNeedsItsDependencies(t *testing.T) {
 
 // Run is single-flight: concurrent callers (every action that finds the gate
 // closed) start one run between them; the others wait for its result, or leave
-// when their own context ends. NetworkProblem never waits behind a run.
+// when their own context ends. NetworkStatus never waits behind a run.
 func TestBootRunIsSingleFlight(t *testing.T) {
 	b, _, en, _, _, r := newBooter(t, true)
 	en.block, en.entered = make(chan struct{}), make(chan struct{}, 8)
@@ -222,13 +336,13 @@ func TestBootRunIsSingleFlight(t *testing.T) {
 	if err := b.Run(ctx); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatalf("a waiter: %v after %v", err, time.Since(start))
 	}
-	// NetworkProblem does not block while the run is in flight.
-	done := make(chan string, 1)
-	go func() { done <- b.NetworkProblem() }()
+	// NetworkStatus does not block while the run is in flight.
+	done := make(chan NetStatus, 1)
+	go func() { done <- b.NetworkStatus() }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("NetworkProblem blocked behind a running boot")
+		t.Fatal("NetworkStatus blocked behind a running boot")
 	}
 	// Waiters that stay get the one run's result.
 	var wg sync.WaitGroup

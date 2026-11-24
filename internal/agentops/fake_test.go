@@ -55,10 +55,13 @@ type fakeDocker struct {
 	netFails     bool // GET /networks/... answers 500 (Docker unhealthy)
 	netLabels    map[string]string
 	netUsed      map[string]string // ip -> container id
-	dataRoot     string
-	pull         func(w http.ResponseWriter, r *http.Request)
-	events       func(w http.ResponseWriter, r *http.Request)
-	listExtra    []map[string]any // raw list entries appended as they are
+	// netICC, netGateway and netRange override the inspected network's settings
+	// ("" keeps the right ones: ICC "false", gateway .1, range 10.250.7.192/26).
+	netICC, netGateway, netRange string
+	dataRoot                     string
+	pull                         func(w http.ResponseWriter, r *http.Request)
+	events                       func(w http.ResponseWriter, r *http.Request)
+	listExtra                    []map[string]any // raw list entries appended as they are
 }
 
 func containerID(name string) string {
@@ -173,10 +176,20 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for ip, id := range f.netUsed {
 			used[id] = map[string]string{"IPv4Address": ip + "/24"}
 		}
+		icc, gw, rng := f.netICC, f.netGateway, f.netRange
+		if icc == "" {
+			icc = "false"
+		}
+		if gw == "" {
+			gw = "10.250.7.1"
+		}
+		if rng == "" {
+			rng = "10.250.7.192/26"
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"Id": "net1", "Name": testNet, "Driver": "bridge", "Labels": f.netLabels,
-			"Options":    map[string]string{"com.docker.network.bridge.enable_icc": "false"},
-			"IPAM":       map[string]any{"Config": []map[string]string{{"Subnet": testSubnet, "IPRange": "10.250.7.192/26", "Gateway": "10.250.7.1"}}},
+			"Options":    map[string]string{"com.docker.network.bridge.enable_icc": icc},
+			"IPAM":       map[string]any{"Config": []map[string]string{{"Subnet": testSubnet, "IPRange": rng, "Gateway": gw}}},
 			"Containers": used,
 		})
 	case path == "/networks/create":

@@ -34,7 +34,10 @@ type Config struct {
 	Log   *slog.Logger
 	// Workers is the most jobs running at once: 1 or 2 (default 2).
 	Workers int
-	// Now replaces the clock in tests.
+	// Now replaces the clock in tests; nil uses the Store's own clock, which is what
+	// production does. A non-nil Now MUST be the same clock as the Store's
+	// (jobs.NewStore's now argument): arm subtracts this one from a time the store
+	// wrote, so two different clocks would make a retry fire early or late.
 	Now func() time.Time
 	// RetryDelay replaces the package RetryDelay in tests.
 	RetryDelay func(failedAttempt int) time.Duration
@@ -82,7 +85,7 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
 	if cfg.Now == nil {
-		cfg.Now = time.Now
+		cfg.Now = cfg.Store.now // one clock: the store's (see Config.Now)
 	}
 	if cfg.RetryDelay == nil {
 		cfg.RetryDelay = RetryDelay
@@ -323,6 +326,8 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed boo
 		}
 		return nil
 	}
+	// at is a store-clock time and Now is the scheduler's clock: the same clock by
+	// contract (see Config.Now and Store), so the difference is the real wait.
 	d := at.Sub(s.cfg.Now())
 	if d < 0 {
 		d = 0

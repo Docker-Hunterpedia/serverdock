@@ -3,6 +3,7 @@ package agentops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -969,6 +970,56 @@ func TestContainerPortsDedupesOrdersAndFlagsTruncation(t *testing.T) {
 		if q.HostIP != "127.0.0.1" {
 			t.Errorf("loopback entry %+v", q)
 		}
+	}
+}
+
+// Each way the app network can be wrong reaches the control plane as its own
+// conflict message (or refused_unowned), so the deploy that is refused can say
+// which one (plan 0004 Revision 10): the Booter turns the message into the reason.
+func TestNetworkEnsureMismatchesCarryDistinctMessages(t *testing.T) {
+	cases := map[string]struct {
+		set  func(*fakeDocker)
+		code string
+		want string
+	}{
+		"foreign": {func(f *fakeDocker) { f.netLabels = map[string]string{LabelInstance: strings.Repeat("f", 32)} }, agent.CodeConflict, "is not ServerDock's"},
+		"subnet":  {func(f *fakeDocker) {}, agent.CodeConflict, "another subnet"},
+		"icc":     {func(f *fakeDocker) { f.netICC = "true" }, agent.CodeConflict, "inter-container traffic is not disabled"},
+		"gateway": {func(f *fakeDocker) { f.netGateway = "10.250.7.9" }, agent.CodeConflict, "gateway is"},
+		"iprange": {func(f *fakeDocker) { f.netRange = "10.250.7.128/25" }, agent.CodeConflict, "IPRange is"},
+	}
+	msgs := map[string]string{}
+	for name, c := range cases {
+		r := newRig(t)
+		c.set(r.fd)
+		subnet := testSubnet
+		if name == "subnet" {
+			subnet = "10.250.9.0/24"
+		}
+		_, err := r.cl.NetworkEnsure(ctx5(t), testNet, subnet)
+		wantCode(t, err, c.code)
+		var oe *agent.OpError
+		if !errors.As(err, &oe) || !strings.Contains(oe.Msg, c.want) {
+			t.Errorf("%s: %v does not say %q", name, err, c.want)
+			continue
+		}
+		if prev, dup := msgs[oe.Msg]; dup {
+			t.Errorf("%s and %s share the message %q", name, prev, oe.Msg)
+		}
+		msgs[oe.Msg] = name
+	}
+	// An op that needs the network says "missing" or "not this install's" apart.
+	r := newRig(t)
+	r.fd.netMissing = true
+	_, err := r.cl.NetworkInspect(ctx5(t))
+	if !IsNetworkMissing(err) {
+		t.Errorf("a missing network is not recognised: %v", err)
+	}
+	r.fd.netMissing, r.fd.netLabels = false, nil
+	_, err = r.cl.NetworkInspect(ctx5(t))
+	wantCode(t, err, agent.CodeRefusedUnowned)
+	if IsNetworkMissing(err) {
+		t.Error("a foreign network is reported as missing")
 	}
 }
 

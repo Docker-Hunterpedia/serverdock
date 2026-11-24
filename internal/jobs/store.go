@@ -15,6 +15,14 @@ import (
 // Store reads and writes the jobs table (and, for EnqueueDeploy, the deploys it
 // supersedes). All writes go through the single writer in BEGIN IMMEDIATE
 // transactions.
+//
+// The clock: now stamps every time the store writes and reads (run_after, due
+// checks, NextDue). The Scheduler also has a clock (Config.Now) and computes the
+// timer's delay as "a store time minus the scheduler's now" (Scheduler.arm). The
+// two MUST be the same clock: in production both are time.Now (NewStore(st, nil)
+// and Config.Now unset), and a test that injects a clock into one injects the same
+// one into the other. If they differed, a retry would fire early or late by the
+// difference.
 type Store struct {
 	st  *store.Store
 	now func() time.Time
@@ -176,6 +184,10 @@ type NewDeploy struct {
 	Settings       Settings // timeout_s is derived from these
 	Actor          Actor
 	Confirm        string
+	// InTx, if set, runs inside the enqueue's write transaction before anything
+	// is inserted; an error from it rolls everything back. services.deploy uses it
+	// to record the new image reference in the same transaction as the deploy.
+	InTx func(ctx context.Context, tx *sql.Tx) error
 }
 
 // Enqueued is the result of EnqueueDeploy.
@@ -222,6 +234,11 @@ func (s *Store) EnqueueDeploy(ctx context.Context, n NewDeploy) (Enqueued, error
 	var out Enqueued
 	err = s.st.WriteTx(ctx, func(tx *sql.Tx) error {
 		out = Enqueued{}
+		if n.InTx != nil {
+			if err := n.InTx(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if err := pruneFinished(ctx, tx, now); err != nil {
 			return err
 		}

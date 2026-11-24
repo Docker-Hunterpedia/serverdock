@@ -63,6 +63,10 @@ type ServiceDeps struct {
 	ReservedPorts []int
 	// Exposure lists the containers that publish host ports (system.exposure).
 	Exposure PortLister
+	// Jobs queues deploys (services.deploy, services.create with deploy:true) and
+	// cancels them (deploys.cancel): *jobs.Scheduler. Nil means deploys are not
+	// available: those actions answer 503.
+	Jobs DeployQueue
 	// PanelAddrs returns the addresses the panel is reachable on, for the
 	// exposure check. It is called only when the cache is refreshed.
 	PanelAddrs func() []netip.Addr
@@ -172,6 +176,9 @@ type ServiceChangeOut struct {
 	Service ServiceOut `json:"service"`
 	Applied bool       `json:"applied" doc:"the proxy's routes reflect this change (nothing route-related is waiting)"`
 	Notice  string     `json:"notice,omitempty"`
+	// Deploy is set when services.create was asked to deploy (deploy:true): the
+	// first deploy, queued.
+	Deploy *DeployOut `json:"deploy,omitempty"`
 }
 
 // ExposedPortOut is one host port a container publishes.
@@ -234,15 +241,12 @@ type ServiceCreateIn struct {
 	Strategy      string    `json:"strategy,omitempty" doc:"blue_green (default) or stop_first"`
 	DrainS        *int      `json:"drain_s,omitempty" doc:"10 to 300, default 10"`
 	StopGraceS    *int      `json:"stop_grace_s,omitempty" doc:"0 to 300, default 10"`
-	Deploy        bool      `json:"deploy,omitempty" doc:"not available yet: create the service, then deploy it"`
+	Deploy        bool      `json:"deploy,omitempty" doc:"true queues the service's first deploy right after it is created"`
 }
 
 // Validate implements actions.Validator. It checks everything that does not
 // need the install's options or the database.
 func (in ServiceCreateIn) Validate() error {
-	if in.Deploy {
-		return errors.New("deploy is not available yet: create the service first")
-	}
 	if err := policy.ValidateName(in.Project); err != nil {
 		return fmt.Errorf("project: %w", err)
 	}
@@ -503,10 +507,10 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 		},
 	})
 	actions.Register(r, actions.Def[ServiceCreateIn, ServiceChangeOut]{
-		Name: "services.create", Summary: "Create a service from an image (creates the project if it is new). It does not deploy yet.",
+		Name: "services.create", Summary: "Create a service from an image (creates the project if it is new). With deploy:true it also queues the first deploy.",
 		Risk: actions.RiskMutate, Scope: actions.ScopeAdmin, Target: ServiceCreateIn.target,
-		Execute: func(ctx context.Context, _ actions.Call, in ServiceCreateIn) (ServiceChangeOut, error) {
-			return d.create(ctx, in)
+		Execute: func(ctx context.Context, c actions.Call, in ServiceCreateIn) (ServiceChangeOut, error) {
+			return d.create(ctx, c, in)
 		},
 	})
 	actions.Register(r, actions.Def[ServiceUpdateIn, ServiceChangeOut]{
@@ -537,6 +541,7 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 			return d.retryPort(ctx, in)
 		},
 	})
+	registerDeployActions(r, d)
 	actions.Register(r, actions.Def[actions.None, ExposureOut]{
 		Name: "system.exposure", Summary: "Containers ServerDock did not create that publish host ports on the panel's address (SEC6). Kept for 30 seconds.",
 		Risk: actions.RiskRead, Scope: actions.ScopeRead,
@@ -734,10 +739,13 @@ func isUnique(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-func (d *svcDeps) create(ctx context.Context, in ServiceCreateIn) (ServiceChangeOut, error) {
+func (d *svcDeps) create(ctx context.Context, c actions.Call, in ServiceCreateIn) (ServiceChangeOut, error) {
 	pull, err := d.checkImage(in.ImageRef)
 	if err != nil {
 		return ServiceChangeOut{}, err
+	}
+	if in.Deploy && d.Jobs == nil {
+		return ServiceChangeOut{}, actions.Unavailable("deploys are not available on this server")
 	}
 	set, err := in.settings()
 	if err != nil {
@@ -815,7 +823,20 @@ func (d *svcDeps) create(ctx context.Context, in ServiceCreateIn) (ServiceChange
 		return ServiceChangeOut{}, err
 	}
 	applied, notice := d.outcome(in.PublicPort != nil, row.publicPort, routeErr)
-	return ServiceChangeOut{Service: d.out(row), Applied: applied, Notice: notice}, nil
+	out := ServiceChangeOut{Service: d.out(row), Applied: applied, Notice: notice}
+	if in.Deploy {
+		q, err := d.queueDeploy(ctx, c, row, row.imageRef)
+		if err != nil {
+			// The service exists; only the deploy was not queued. Say both.
+			var de *actions.DeniedError
+			if errors.As(err, &de) && de.Reason == SessionGoneMessage {
+				return ServiceChangeOut{}, &actions.DeniedError{Reason: SessionGoneMessage + " (the service was created but not deployed)"}
+			}
+			return ServiceChangeOut{}, err
+		}
+		out.Deploy = &q
+	}
+	return out, nil
 }
 
 // needProxy refuses a public port when the embedded proxy is off.

@@ -30,6 +30,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
 	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
@@ -220,6 +221,11 @@ type serverAddrs struct {
 	reg    *actions.Registry
 	routes *deploy.Routes
 	booter *deploy.Booter
+	// sched, jobStore and db are the job scheduler (the real one, wired to the
+	// registry), its store and the database, for the tests of that wiring.
+	sched    *jobs.Scheduler
+	jobStore *jobs.Store
+	db       *store.Store
 }
 
 func (c serverConfig) validateAppSubnet() error {
@@ -454,11 +460,31 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// once the panel is up (below), and lazily again from the actions.
 	opsClient := agentops.NewClient(localCaller{h: h})
 	routes := deploy.NewRoutes(st, opsClient, log)
+	// The job scheduler (plan 0004 step 8a): built here, wired to the registry's
+	// session revoke below (so a revoked session's queued jobs end cancelled) and
+	// started further down. It dispatches nothing until its start gate opens:
+	// the Booter opens it after its first container list (see BootConfig.OnReady).
+	// runner is set below, before the scheduler runs.
+	jobStore := jobs.NewStore(st, nil)
+	var runner *deploy.Runner
+	sched, err := jobs.NewScheduler(jobs.Config{Store: jobStore, Log: log, Run: func(ctx context.Context, j jobs.Job) error { return runner.Run(ctx, j) }})
+	if err != nil {
+		return err
+	}
+	// Settle the jobs a previous process left running (database only, before the
+	// scheduler can start anything), so none holds its service's lock key forever.
+	if n, err := deploy.ResolveInterrupted(ctx, st, sched.BootID(), time.Now()); err != nil {
+		return fmt.Errorf("resolving interrupted jobs: %w", err)
+	} else if n > 0 {
+		log.Warn("jobs interrupted by the last stop were settled", "jobs", n)
+	}
 	// panelUp is closed once the local agent has loaded the panel: the Booter does
 	// not start (or join) a run before that, whether it is the start-up run or a
 	// lazy one from an action that arrives early on the control socket.
 	panelUp := make(chan struct{})
-	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, PanelUp: panelUp, Log: log})
+	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, PanelUp: panelUp,
+		// The interim start gate; step 10's first resync replaces it.
+		OnReady: sched.OpenGate, Log: log})
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -469,11 +495,15 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
 		}
 	}
-	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
+	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword, Jobs: sched})
 	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
 		DB: st, Routes: routes, Boot: booter.Run, NoProxy: !cfg.Proxy, Policy: cfg.policyOptions(), ReservedPorts: reserved,
-		Exposure: opsClient, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
+		Exposure: opsClient, Jobs: sched, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
 	})
+	// The one-time system invoker belongs to the deploy runner: it runs each job as
+	// the actor that queued it (never as the system).
+	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: reg.SystemInvoker(), Refresh: authStore, Locks: &deploy.ServiceLocks{}, Log: log})
+	deploy.RegisterJobActions(reg, runner)
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
 		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
@@ -510,6 +540,14 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
 	addrs.hub, addrs.reg, addrs.routes, addrs.booter = h, reg, routes, booter
+	addrs.sched, addrs.jobStore, addrs.db = sched, jobStore, st
+	// The scheduler runs from here; its gate is closed until the boot succeeds.
+	// It stops BEFORE the local agent (below): a deploy that is cancelled by the
+	// shutdown removes its candidate through that agent.
+	schedCtx, schedCancel := context.WithCancel(context.Background())
+	defer schedCancel()
+	schedDone := make(chan struct{})
+	go func() { sched.Run(schedCtx); close(schedDone) }()
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
@@ -559,6 +597,12 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	case err := <-cpErr:
 		cpRunning--
 		first = err
+	}
+	schedCancel()
+	select {
+	case <-schedDone:
+	case <-time.After(shutdownGrace):
+		log.Error("the job scheduler did not stop in time")
 	}
 	agentCancel()
 	if !agentExited {

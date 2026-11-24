@@ -293,6 +293,44 @@
         ],
         "type": "object"
       },
+      "DeploysCancelInput": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "description": "the deploy's number",
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "number"
+        ],
+        "type": "object"
+      },
+      "DeploysCancelOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "number",
+          "status"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -367,7 +405,7 @@
             ]
           },
           "deploy": {
-            "description": "not available yet: create the service, then deploy it",
+            "description": "true queues the service's first deploy right after it is created",
             "type": "boolean"
           },
           "drain_s": {
@@ -452,6 +490,39 @@
           "applied": {
             "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
+          },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "deploy": {
+                "description": "the deploy's number within the service",
+                "type": "integer"
+              },
+              "job": {
+                "type": "integer"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e",
+                "type": "string"
+              },
+              "status": {
+                "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+                "type": "string"
+              },
+              "superseded": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "service",
+              "deploy",
+              "job",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "notice": {
             "type": "string"
@@ -594,6 +665,56 @@
         "required": [
           "service",
           "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesDeployInput": {
+        "additionalProperties": false,
+        "properties": {
+          "image_ref": {
+            "description": "another tag or digest of the service's current repository (changing the repository needs services.set_source)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesDeployOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "deploy": {
+            "description": "the deploy's number within the service",
+            "type": "integer"
+          },
+          "job": {
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "status": {
+            "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+            "type": "string"
+          },
+          "superseded": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service",
+          "deploy",
+          "job",
+          "status"
         ],
         "type": "object"
       },
@@ -915,6 +1036,39 @@
             "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "deploy": {
+                "description": "the deploy's number within the service",
+                "type": "integer"
+              },
+              "job": {
+                "type": "integer"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e",
+                "type": "string"
+              },
+              "status": {
+                "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+                "type": "string"
+              },
+              "superseded": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "service",
+              "deploy",
+              "job",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "notice": {
             "type": "string"
           },
@@ -1090,6 +1244,39 @@
             "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
           },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "deploy": {
+                "description": "the deploy's number within the service",
+                "type": "integer"
+              },
+              "job": {
+                "type": "integer"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e",
+                "type": "string"
+              },
+              "status": {
+                "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+                "type": "string"
+              },
+              "superseded": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "service",
+              "deploy",
+              "job",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "notice": {
             "type": "string"
           },
@@ -1258,6 +1445,39 @@
           "applied": {
             "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
+          },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "deploy": {
+                "description": "the deploy's number within the service",
+                "type": "integer"
+              },
+              "job": {
+                "type": "integer"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e",
+                "type": "string"
+              },
+              "status": {
+                "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+                "type": "string"
+              },
+              "superseded": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "service",
+              "deploy",
+              "job",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "notice": {
             "type": "string"
@@ -1487,6 +1707,39 @@
           "applied": {
             "description": "the proxy's routes reflect this change (nothing route-related is waiting)",
             "type": "boolean"
+          },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "deploy": {
+                "description": "the deploy's number within the service",
+                "type": "integer"
+              },
+              "job": {
+                "type": "integer"
+              },
+              "service": {
+                "description": "\u003cproject\u003e/\u003cservice\u003e",
+                "type": "string"
+              },
+              "status": {
+                "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+                "type": "string"
+              },
+              "superseded": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "service",
+              "deploy",
+              "job",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "notice": {
             "type": "string"
@@ -3400,6 +3653,188 @@
         "x-sd-session-only": true
       }
     },
+    "/api/v1/actions/deploys.cancel": {
+      "post": {
+        "operationId": "deploys.cancel",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploysCancelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/DeploysCancelOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel a queued deploy, or ask a running one to stop at its next safe point (not while it is switching traffic).",
+        "tags": [
+          "deploys"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
     "/api/v1/actions/projects.list": {
       "post": {
         "operationId": "projects.list",
@@ -3753,13 +4188,195 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Create a service from an image (creates the project if it is new). It does not deploy yet.",
+        "summary": "Create a service from an image (creates the project if it is new). With deploy:true it also queues the first deploy.",
         "tags": [
           "services"
         ],
         "x-sd-removes-access": false,
         "x-sd-risk": "mutate",
         "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.deploy": {
+      "post": {
+        "operationId": "services.deploy",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesDeployInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesDeployOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a deploy of a service, optionally of another tag or digest of its current repository. A newer deploy replaces older queued ones.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
         "x-sd-sensitive": false,
         "x-sd-session-only": false
       }

@@ -250,8 +250,10 @@ func validInput(name string) string {
 	case "tokens.revoke":
 		return `{"id":1}`
 	// The service actions: bodies that validate, against the fixture's service p/x.
-	case "services.get", "services.retry_port":
+	case "services.get", "services.retry_port", "services.deploy":
 		return `{"service":"p/x"}`
+	case "deploys.cancel":
+		return `{"service":"p/x","number":1}`
 	case "services.create":
 		return `{"project":"p","name":"n","image_ref":"nginx"}`
 	case "services.update":

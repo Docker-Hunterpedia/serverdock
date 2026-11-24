@@ -367,8 +367,8 @@ func TestServerBootCreatesTheAppNetworkThenOpensTheRouteGate(t *testing.T) {
 		!strings.Contains(body, `"serverdock.instance":"`+id+`"`) {
 		t.Errorf("the network was created as %s", body)
 	}
-	if addrs.booter.NetworkProblem() != "" {
-		t.Errorf("network problem %q", addrs.booter.NetworkProblem())
+	if st := addrs.booter.NetworkStatus(); st.State != deploy.NetOK {
+		t.Errorf("network status %+v", st)
 	}
 }
 

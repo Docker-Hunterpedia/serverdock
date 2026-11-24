@@ -39,6 +39,18 @@ func IsCode(err error, code string) bool {
 	return errors.As(err, &oe) && oe.Code == code
 }
 
+// MsgNetworkMissing is the message of the not_found error an op that needs the app
+// network returns when it does not exist (a prune removed it, or someone did).
+const MsgNetworkMissing = "the app network does not exist"
+
+// IsNetworkMissing reports whether err is that error: the control plane then
+// ensures the network again (deploy.Booter.NetworkGone) instead of failing the
+// deploy for a reason that a retry fixes.
+func IsNetworkMissing(err error) bool {
+	var oe *agent.OpError
+	return errors.As(err, &oe) && oe.Code == agent.CodeNotFound && oe.Msg == MsgNetworkMissing
+}
+
 func bad(op string, why string) error { return fmt.Errorf("%w: %s: %s", ErrBadReply, op, why) }
 
 // call runs op and decodes its result into dst.

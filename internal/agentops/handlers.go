@@ -377,7 +377,7 @@ func capped(in []string, n int) []string {
 func (h *handlers) ourNetwork(ctx context.Context, op string) (dockerapi.NetworkInfo, error) {
 	n, err := h.Docker.NetworkInspect(ctx, h.network)
 	if errors.Is(err, dockerapi.ErrNotFound) {
-		return dockerapi.NetworkInfo{}, opErr(agent.CodeNotFound, "the app network does not exist")
+		return dockerapi.NetworkInfo{}, opErr(agent.CodeNotFound, MsgNetworkMissing)
 	}
 	if err != nil {
 		return dockerapi.NetworkInfo{}, h.fail(op, err)

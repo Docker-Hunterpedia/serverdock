@@ -557,6 +557,8 @@ func TestServiceActionsRouteMatrix(t *testing.T) {
 		{"services.set_source", `{"service":"p/nosuch","image_ref":"nginx"}`, actions.ScopeAdmin, 404, "not_found"},
 		{"services.set_public_port", `{"service":"p/nosuch","public_port":9000}`, actions.ScopeAdmin, 404, "not_found"},
 		{"services.retry_port", `{"service":"p/nosuch"}`, actions.ScopeAdmin, 404, "not_found"},
+		{"services.deploy", `{"service":"p/nosuch"}`, actions.ScopeWrite, 404, "not_found"},
+		{"deploys.cancel", `{"service":"p/nosuch","number":1}`, actions.ScopeWrite, 404, "not_found"},
 	}
 	before := dumpServices(t, f)
 	for _, a := range acts {

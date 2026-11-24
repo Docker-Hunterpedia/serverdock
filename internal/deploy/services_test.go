@@ -234,22 +234,6 @@ func TestServiceCreateValidationErrors(t *testing.T) {
 	}
 }
 
-// deploy:true is step 8a's: it is refused now, with a message that says so, and
-// nothing is created or queued.
-func TestServiceCreateRefusesDeployTrueForNow(t *testing.T) {
-	g := newSvcRig(t)
-	_, err := callAs[ServiceChangeOut](g, adminActor(), "services.create", m{"project": "p", "name": "n", "image_ref": "nginx", "deploy": true})
-	wantKind(t, err, actions.ErrInvalidInput)
-	if !strings.Contains(err.Error(), "deploy") {
-		t.Errorf("message %q", err)
-	}
-	if countRows(t, g.st, "services") != 0 || countRows(t, g.st, "jobs") != 0 || countRows(t, g.st, "deploys") != 0 {
-		t.Error("rows were written")
-	}
-	// deploy:false is the same as leaving it out.
-	g.create("p", "n", m{"deploy": false})
-}
-
 func countRows(t *testing.T, st *store.Store, table string) int {
 	t.Helper()
 	var n int
@@ -910,6 +894,8 @@ func TestServiceActionRiskAndScopeTable(t *testing.T) {
 		"services.create": {actions.RiskMutate, actions.ScopeAdmin}, "services.update": {actions.RiskMutate, actions.ScopeWrite},
 		"services.set_source": {actions.RiskMutate, actions.ScopeAdmin}, "services.set_public_port": {actions.RiskMutate, actions.ScopeAdmin},
 		"services.retry_port": {actions.RiskMutate, actions.ScopeAdmin},
+		// Step 8a: queuing a deploy and cancelling one (write scope, like update).
+		"services.deploy": {actions.RiskMutate, actions.ScopeWrite}, "deploys.cancel": {actions.RiskMutate, actions.ScopeWrite},
 	}
 	for name, w := range want {
 		info, ok := g.reg.Lookup(name)
