@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -136,5 +138,41 @@ func TestTripwireWarnsButNeverFails(t *testing.T) {
 	r.evaluate()
 	if strings.Contains(markdown(r), "above tripwire") {
 		t.Error("under the tripwire must not be flagged")
+	}
+}
+
+// An S2 run made with the host's Docker socket carries a ".docker" marker: the
+// scenario is labelled, and its gates are the same ones (the default S2 is unchanged).
+func TestScenarioWithDockerSocketIsLabelledAndGatedAsS2(t *testing.T) {
+	dir := t.TempDir()
+	body := tsv(
+		"10.00\t20971520\t25165824\t1\t2\t30000000\t1\t1\t10000000\t1000000",
+		"60.00\t31457280\t31457280\t1\t2\t30000000\t1\t1\t10000000\t1250000",
+		"110.00\t20971520\t31457280\t1\t2\t30000000\t1\t1\t10000000\t1500000",
+	)
+	for _, f := range []string{"s2-r1.tsv", "s4-r1.tsv"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plain, _, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s2-r1.tsv.docker"), []byte("docker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marked, _, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain[0].Name, "Docker socket") || !strings.Contains(marked[0].Name, "S2 with Docker socket") {
+		t.Errorf("names %q / %q", plain[0].Name, marked[0].Name)
+	}
+	if strings.Contains(marked[1].Name, "Docker socket") {
+		t.Errorf("scenario 4 labelled: %q", marked[1].Name)
+	}
+	if len(plain[0].Gates) != len(marked[0].Gates) || plain[0].VmRSSMedian != marked[0].VmRSSMedian {
+		t.Errorf("gates differ: %v / %v", plain[0].Gates, marked[0].Gates)
 	}
 }

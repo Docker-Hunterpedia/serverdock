@@ -334,6 +334,7 @@ func load(dir string) ([]ScenarioResult, string, error) {
 	sort.Ints(ids)
 	mode := "direct"
 	var out []ScenarioResult
+	docker := map[int]bool{} // scenarios whose runs had the host's Docker socket (a ".docker" marker)
 	for _, id := range ids {
 		sort.Strings(byID[id])
 		var runs []RunStats
@@ -352,11 +353,19 @@ func load(dir string) ([]ScenarioResult, string, error) {
 				return nil, "", fmt.Errorf("%s: %w", f, err)
 			}
 			runs = append(runs, rs)
+			if _, err := os.Stat(f + ".docker"); err == nil {
+				docker[id] = true
+			}
 			if m, err := os.ReadFile(f + ".mode"); err == nil && strings.TrimSpace(string(m)) == "helper" {
 				mode = "helper"
 			}
 		}
-		out = append(out, scenario(id, runs))
+		sc := scenario(id, runs)
+		if docker[id] {
+			// Same gates; only the label says the server ran against real Docker.
+			sc.Name += " (S2 with Docker socket)"
+		}
+		out = append(out, sc)
 	}
 	return out, mode, nil
 }

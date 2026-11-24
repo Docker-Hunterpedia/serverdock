@@ -32,6 +32,18 @@
 #   INTERVAL=10   sample interval (s)    RUNS=3     runs per scenario
 #   BURST=500     requests in the burst  SCENARIOS="1 2"
 #   IMAGE=serverdock-bench:local         RESULTS_DIR=bench/results
+#   S2_DOCKER=1   scenario 2 ("S2 with Docker socket", opt-in, default off): the server container
+#                 gets the host's Docker socket (--group-add <socket gid> -v /var/run/docker.sock),
+#                 so its boot runs network_ensure, the first container list and Sync, and the job
+#                 scheduler's start gate opens against REAL Docker, as on a deployed server (plan
+#                 0004 Revision 10, footprint; from step 10 the live watcher). It is the same gated
+#                 scenario 2 (same ceiling and tripwire), labelled "S2 with Docker socket" in the
+#                 report (a ".docker" marker next to each run's samples); without it scenario 2 is
+#                 unchanged. The server creates an app network (label serverdock.instance) on the
+#                 host's Docker, and may create containers (serverdock.managed): the bench removes
+#                 every such network and container that did not exist before the run, after each
+#                 run and in the exit trap, and leaves every other resource alone.
+#                   S2_DOCKER=1 SCENARIOS=2 bench/run.sh
 #
 # Exit status: 1 when a gate fails, unless the measurement ran through the
 # Docker Desktop helper container (informational only).
@@ -66,9 +78,39 @@ SUFFIX=""; [ "$QUICK" = 1 ] && SUFFIX="-quick"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sdbench.XXXXXX")
 NET=sdbench-net
 SOCK_GID=""
+S2_DOCKER=${S2_DOCKER:-0}
+case "$S2_DOCKER" in 0|1) ;; *) echo "S2_DOCKER must be 0 or 1" >&2; exit 2 ;; esac
+
+# What the server of "S2 with Docker socket" creates on the host's Docker: its app network
+# (label serverdock.instance) and containers (serverdock.managed / serverdock.instance). The
+# resources that exist before the run are recorded, and only the new ones are removed, so another
+# ServerDock on this host is never touched.
+host_nets() { docker network ls -q --filter label=serverdock.instance 2>/dev/null || true; }
+host_ctrs() {
+  { docker ps -aq --filter label=serverdock.instance 2>/dev/null || true
+    docker ps -aq --filter label=serverdock.managed 2>/dev/null || true; } | sort -u
+}
+PRE_NETS=""; PRE_CTRS=""; HOST_RECORDED=0
+record_host_docker() {
+  [ "$S2_DOCKER" = 1 ] && [ "$HOST_RECORDED" = 0 ] || return 0
+  PRE_NETS=$(host_nets | tr '\n' ' '); PRE_CTRS=$(host_ctrs | tr '\n' ' '); HOST_RECORDED=1
+}
+clean_host_docker() { # call after the bench's own containers are gone (a network with endpoints cannot be removed)
+  [ "$S2_DOCKER" = 1 ] && [ "$HOST_RECORDED" = 1 ] || return 0
+  for c in $(host_ctrs); do
+    case " $PRE_CTRS " in *" $c "*) continue ;; esac
+    docker rm -f -v "$c" >/dev/null 2>&1 || true
+  done
+  for n in $(host_nets); do
+    case " $PRE_NETS " in *" $n "*) continue ;; esac
+    docker network rm "$n" >/dev/null 2>&1 || true
+  done
+}
+
 cleanup() {
   ids=$(docker ps -aq --filter label=sdbench=1 2>/dev/null || true)
   [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || true
+  clean_host_docker
   docker network rm "$NET" >/dev/null 2>&1 || true
   docker volume rm "$DBG_VOL" >/dev/null 2>&1 || true
   rm -rf "$WORK"
@@ -197,6 +239,8 @@ burst() {
   [ "$ok" -eq "$BURST" ]
 }
 
+case " $SCENARIOS " in *" 2 "*) record_host_docker ;; esac
+
 for id in $SCENARIOS; do
   r=1
   while [ "$r" -le "$RUNS" ]; do
@@ -213,7 +257,13 @@ for id in $SCENARIOS; do
         base="http://127.0.0.1"; BURST_VIA=sock
         wait_ready_sock ;;
       2)
-        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 -p 127.0.0.1::443 "$IMAGE" \
+        sock_args=""
+        if [ "$S2_DOCKER" = 1 ]; then
+          sock_args="--group-add $(socket_gid) -v /var/run/docker.sock:/var/run/docker.sock"
+          log "scenario 2 with the Docker socket (S2 with Docker socket)"
+        fi
+        # shellcheck disable=SC2086 # sock_args is deliberately split into words
+        docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 $sock_args -p 127.0.0.1::443 "$IMAGE" \
           server --data /data --proxy=true --listen :80 >/dev/null
         base="https://$(docker port "$TARGET" 443/tcp | head -n1)"
         wait_ready "$base/healthz" ;;
@@ -240,7 +290,9 @@ for id in $SCENARIOS; do
     case "$id" in 3|4) log_stream ;; esac
     log "idle window ${IDLE}s (sampling every ${INTERVAL}s)"
     bench/measure.sh "$TARGET" "$IDLE" "$INTERVAL" "$WORK/s$id-r$r.tsv"
+    if [ "$id" = 2 ] && [ "$S2_DOCKER" = 1 ]; then echo docker >"$WORK/s$id-r$r.tsv.docker"; fi
     ids=$(docker ps -aq --filter label=sdbench=1); [ -z "$ids" ] || docker rm -f $ids >/dev/null
+    clean_host_docker
     docker network rm "$NET" >/dev/null 2>&1 || true
     docker volume rm "$DBG_VOL" >/dev/null 2>&1 || true
     r=$((r + 1))
