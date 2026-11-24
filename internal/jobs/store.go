@@ -340,13 +340,16 @@ func (s *Store) Pick(ctx context.Context, bootID string) (Job, bool, error) {
 	return j, found, err
 }
 
-// NextDue is the earliest run_after of a queued job that is not yet due, which
-// is when the scheduler's one timer must fire. ok is false when there is none:
+// NextDue is the earliest run_after of a queued job later than since, which is
+// when the scheduler's one timer must fire. since is the clock reading the
+// scheduler took before its last Pick: a job that became due after that reading
+// is returned (its time is already past, so the timer fires at once) instead of
+// being lost between the pick and this query. ok is false when there is none:
 // the timer is then stopped. A job that is due but blocked (its lock key is
 // running) needs no timer: the running job's end wakes the scheduler.
-func (s *Store) NextDue(ctx context.Context) (time.Time, bool, error) {
+func (s *Store) NextDue(ctx context.Context, since time.Time) (time.Time, bool, error) {
 	var v sql.NullString
-	if err := s.st.R.QueryRowContext(ctx, `SELECT MIN(run_after) FROM jobs WHERE state = 'queued' AND run_after > ?`, FormatTime(s.now())).Scan(&v); err != nil {
+	if err := s.st.R.QueryRowContext(ctx, `SELECT MIN(run_after) FROM jobs WHERE state = 'queued' AND run_after > ?`, FormatTime(since)).Scan(&v); err != nil {
 		return time.Time{}, false, err
 	}
 	if !v.Valid {

@@ -998,3 +998,36 @@ func TestStoreErrorDoesNotStrandADueJob(t *testing.T) {
 	e.exec(t, `DROP TRIGGER no_run`)
 	waitFor(t, "the job to run once the store recovers", func() bool { return e.state(t, id) == StateSucceeded })
 }
+
+// A retry that becomes due between the scheduler's last Pick and its next-wake
+// query must still run. The store clock here jumps 40 ms on every reading, so
+// the requeued job (due 60 ms after the requeue) is not due at the Pick's
+// reading and is due at any later one: before the fix the timer query used that
+// later reading, found "no not-yet-due job", stopped the timer, and the job sat
+// queued until some unrelated wake-up (an intermittent 5 s timeout of
+// TestPullRetriesThenSucceeds under -race load).
+func TestRetryDueBetweenPickAndTimerIsNotLost(t *testing.T) {
+	e := newEnv(t)
+	var tick atomic.Int64
+	base := time.Now()
+	e.js = NewStore(e.st, func() time.Time { return base.Add(time.Duration(tick.Add(1)) * 40 * time.Millisecond) })
+	var attempts atomic.Int32
+	s, _ := start(t, e, func(_ context.Context, j Job) error {
+		attempts.Add(1)
+		if j.Attempt < 2 {
+			return Retryable(errors.New("registry 503"))
+		}
+		return nil
+	}, func(c *Config) { c.RetryDelay = func(int) time.Duration { return 60 * time.Millisecond } })
+	s.OpenGate()
+	n := job("service:1")
+	n.MaxAttempts = DeployAttempts
+	id, err := s.Enqueue(context.Background(), n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the retry to run", func() bool { return e.state(t, id) == StateSucceeded })
+	if attempts.Load() != 2 {
+		t.Errorf("%d attempts", attempts.Load())
+	}
+}

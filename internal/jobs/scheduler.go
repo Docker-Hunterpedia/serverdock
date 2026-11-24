@@ -281,8 +281,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		timerC = nil
 		if s.gateOpen() {
-			failed := s.dispatch(ctx)
-			timerC = s.arm(ctx, &timer, failed)
+			failed, since := s.dispatch(ctx)
+			timerC = s.arm(ctx, &timer, failed, since)
 		}
 		select {
 		case <-ctx.Done():
@@ -293,8 +293,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// arm sets the one timer to the earliest not-yet-due job, or stops it.
-func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed bool) <-chan time.Time {
+// arm sets the one timer to the earliest job that was not due when dispatch last
+// looked (since), or stops it. It must not use a later clock reading: a job that
+// became due between dispatch's last pick and this query would be neither picked
+// nor timed, and would sit queued until some unrelated wake-up.
+func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed bool, since time.Time) <-chan time.Time {
 	s.mu.Lock()
 	paused := s.paused || s.stopping
 	s.mu.Unlock()
@@ -302,7 +305,7 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed boo
 	var ok bool
 	if !paused {
 		var err error
-		if at, ok, err = s.cfg.Store.NextDue(ctx); err != nil {
+		if at, ok, err = s.cfg.Store.NextDue(ctx, since); err != nil {
 			s.cfg.Log.Error("jobs: next due", "err", err)
 			storeFailed = true
 		}
@@ -333,16 +336,21 @@ func (s *Scheduler) arm(ctx context.Context, timer **time.Timer, storeFailed boo
 	return (*timer).C
 }
 
-// dispatch starts due jobs while a worker is free.
-func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
+// dispatch starts due jobs while a worker is free. since is the store clock's
+// reading taken before the last look at the queue: every job due at or before it
+// was considered (picked, or blocked and left to the wake-up of the job it waits
+// for), so arm times only the jobs due after it.
+func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool, since time.Time) {
+	since = s.cfg.Store.now()
 	for ctx.Err() == nil {
 		s.mu.Lock()
 		blocked := s.paused || s.stopping || s.active >= s.cfg.Workers
 		s.picking = !blocked
 		s.mu.Unlock()
 		if blocked {
-			return false
+			return false, since
 		}
+		since = s.cfg.Store.now() // before Pick reads its own, never after
 		j, ok, err := s.cfg.Store.Pick(ctx, s.bootID)
 		if err != nil || !ok {
 			s.endPick()
@@ -350,12 +358,12 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 		if err != nil {
 			if ctx.Err() == nil {
 				s.cfg.Log.Error("jobs: pick", "err", err)
-				return true
+				return true, since
 			}
-			return false
+			return false, since
 		}
 		if !ok {
-			return false
+			return false, since
 		}
 		if s.cfg.afterPick != nil {
 			s.cfg.afterPick(j)
@@ -369,7 +377,7 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 			clear(s.pending)
 			s.mu.Unlock()
 			cancel(ErrShutdown)
-			return false
+			return false, since
 		}
 		s.running[j.ID] = cancel
 		s.active++
@@ -386,7 +394,7 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool) {
 		s.mu.Unlock()
 		go s.work(jctx, cancel, j)
 	}
-	return false
+	return false, since
 }
 
 // endPick ends a pick that registered no worker.
