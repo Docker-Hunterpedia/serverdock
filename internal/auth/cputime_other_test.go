@@ -1,8 +1,8 @@
-//go:build !linux
+//go:build !unix
 
 package auth
 
 import "time"
 
-// threadCPU is not available here: the timing test falls back to wall time.
-func threadCPU() (time.Duration, bool) { return 0, false }
+// processCPU is not available here: the timing test falls back to wall time.
+func processCPU() (time.Duration, bool) { return 0, false }

@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -238,10 +237,14 @@ func TestFreeOSMemoryNotOnTheResponsePath(t *testing.T) {
 // the structural one is exact (both paths derive with the same argon2
 // parameters, salt size and key size, and the dummy string is built from the
 // current parameters), and a timing check guards against anything the
-// structure does not show. The timing check measures the CPU time of one OS
-// thread, not wall time: a CI runner that is busy with other processes made
-// wall-clock ratios of the very same code path swing from 0.64 to 1.67, in both
-// directions (measured), which says nothing about the code.
+// structure does not show (the timing check alone is not exact: it can miss a
+// small difference, and the structural one catches any change of a parameter).
+// The timing check measures the CPU time of this process, not wall time: a CI
+// runner that is busy with other processes made wall-clock ratios of the very
+// same code path swing from 0.64 to 1.67, in both directions (measured), which
+// says nothing about the code. It is process CPU time because argon2 runs its
+// passes in goroutines (even with one lane), so the calling thread's own CPU
+// time would miss them.
 func TestDummyVerifyDerivesWithTheSameParametersAsARealOne(t *testing.T) {
 	h := NewHasher()
 	h.freeMem = func() {}
@@ -286,28 +289,39 @@ func TestDummyHashWithin20PercentOfARealOne(t *testing.T) {
 	// measurement; it is not part of what an attacker can time per attempt.
 	h.freeMem = func() {}
 	phc, _ := h.Hash(bg, "some real password")
-	// One OS thread for the whole measurement, so its CPU time is the work of the
-	// hash (argon2 with one lane runs on the caller's goroutine).
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	_, cpu := threadCPU()
-	timeIt := func(f func()) time.Duration {
+	_, cpu := processCPU()
+	// timeIt runs f (one verification) and returns the CPU time it took, or the wall
+	// time where the process CPU time is not available. A wrong password must be a
+	// plain mismatch: ErrBusy or any other error would make the sample meaningless.
+	timeIt := func(f func() error) time.Duration {
+		t0, c0 := time.Now(), time.Duration(0)
 		if cpu {
-			c0, _ := threadCPU()
-			f()
-			c1, _ := threadCPU()
-			return c1 - c0
+			c0, _ = processCPU()
 		}
-		t0 := time.Now()
-		f()
-		return time.Since(t0)
+		err := f()
+		d := time.Since(t0)
+		if cpu {
+			c1, _ := processCPU()
+			d = c1 - c0
+		}
+		if err != nil {
+			t.Fatalf("a wrong password: %v", err)
+		}
+		return d
 	}
+	realVerify := func() error {
+		if ok, err := h.Verify(bg, phc, "wrong password"); ok || err != nil {
+			return errors.New("not a plain mismatch")
+		}
+		return nil
+	}
+	dummyVerify := func() error { return h.VerifyDummy(bg, "wrong password") }
 	// Warm both paths, then interleave the samples.
-	h.Verify(bg, phc, "wrong password")
-	h.VerifyDummy(bg, "wrong password")
-	// The median, not the minimum: a thread's CPU clock is not exact under load,
-	// and a single sample too low (measured: 0.57 ms for a 4 ms hash) would be
-	// kept by a minimum and make the ratio meaningless. Up to three rounds: cache
+	realVerify()
+	dummyVerify()
+	// The median, not the minimum: a CPU clock is not exact under load, and a
+	// single sample too low would be kept by a minimum and make the ratio
+	// meaningless. Up to three rounds: cache
 	// and memory-bandwidth contention from other processes can still move one
 	// round by 20 % (measured 1.22 with the machine saturated), but a real
 	// difference between the paths would show in every round, and the structural
@@ -317,13 +331,13 @@ func TestDummyHashWithin20PercentOfARealOne(t *testing.T) {
 	for round := 0; round < rounds; round++ {
 		var rs, ds [samples]time.Duration
 		for i := range rs {
-			rs[i] = timeIt(func() { h.Verify(bg, phc, "wrong password") })
-			ds[i] = timeIt(func() { h.VerifyDummy(bg, "wrong password") })
+			rs[i] = timeIt(realVerify)
+			ds[i] = timeIt(dummyVerify)
 		}
 		sort.Slice(rs[:], func(i, j int) bool { return rs[i] < rs[j] })
 		sort.Slice(ds[:], func(i, j int) bool { return ds[i] < ds[j] })
 		ratio := float64(ds[samples/2]) / float64(rs[samples/2])
-		t.Logf("round %d: real %v dummy %v ratio %.2f (thread CPU time: %v)", round+1, rs[samples/2], ds[samples/2], ratio, cpu)
+		t.Logf("round %d: real %v dummy %v ratio %.2f (process CPU time: %v)", round+1, rs[samples/2], ds[samples/2], ratio, cpu)
 		ratios = append(ratios, ratio)
 		if ratio >= 0.8 && ratio <= 1.2 {
 			break
