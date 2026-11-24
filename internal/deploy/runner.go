@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
 
@@ -27,6 +30,24 @@ type RunnerConfig struct {
 	Refresh ActorRefresher
 	Locks   *ServiceLocks
 	Log     *slog.Logger
+
+	// The deploy pipeline's dependencies (all required to run a deploy; the actor
+	// hook above works without them).
+	Ops      RunnerOps
+	Alloc    AddressAllocator
+	Tracker  StateTracker
+	Net      NetControl
+	AppNet   SubnetSource
+	Instance string // the install id: it names the app network
+	Policy   policy.Options
+
+	// Tunables (zero means the default; tests shorten them).
+	Now                  func() time.Time
+	HealthInterval       time.Duration // 1 s between health checks
+	StallTimeout         time.Duration // the pull's stall limit (0: the agent's 120 s)
+	PreSwitchBound       time.Duration // pull + check + start: 10 min
+	CleanupBound         time.Duration // candidate removal and the end-of-deploy writes: 30 s
+	ShutdownCleanupBound time.Duration // the same at shutdown: 5 s
 }
 
 // Runner runs the jobs of the scheduler (jobs.RunFunc). Every run, and every
@@ -38,7 +59,43 @@ type Runner struct {
 	cfg RunnerConfig
 	// exec is what jobs.run_deploy does once its policy passed; tests replace it.
 	exec func(ctx context.Context, c actions.Call, job int64) (RunDeployOut, error)
+	// afterHealth takes a candidate that passed its health gate on to the switch.
+	// Step 8a has none (it fails the deploy); step 8b replaces it.
+	afterHealth func(ctx context.Context, rn *run) *failure
+
+	progMu   sync.Mutex
+	progress map[int64]agentops.PullProgress // latest pull progress of each running deploy; bounded (maxProgress), removed when the deploy ends
 }
+
+// maxProgress bounds the progress map: at most two jobs run at once, so it is
+// never close; a deploy that would be the 17th is simply not tracked.
+const maxProgress = 16
+
+func (r *Runner) setProgress(deploy int64, p agentops.PullProgress) {
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
+	if _, ok := r.progress[deploy]; !ok && len(r.progress) >= maxProgress {
+		return
+	}
+	r.progress[deploy] = p
+}
+
+func (r *Runner) progressOf(deploy int64) (agentops.PullProgress, bool) {
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
+	p, ok := r.progress[deploy]
+	return p, ok
+}
+
+func (r *Runner) dropProgress(deploy int64) {
+	r.progMu.Lock()
+	delete(r.progress, deploy)
+	r.progMu.Unlock()
+}
+
+// Progress is the latest pull progress of a running deploy (for deploys.get, step
+// 11); ok is false when the deploy is not pulling.
+func (r *Runner) Progress(deploy int64) (agentops.PullProgress, bool) { return r.progressOf(deploy) }
 
 // NewRunner returns a Runner; it panics on a missing dependency (a wiring bug).
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -48,8 +105,24 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
-	r := &Runner{cfg: cfg}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.HealthInterval == 0 {
+		cfg.HealthInterval = time.Second
+	}
+	if cfg.PreSwitchBound == 0 {
+		cfg.PreSwitchBound = 10 * time.Minute
+	}
+	if cfg.CleanupBound == 0 {
+		cfg.CleanupBound = 30 * time.Second
+	}
+	if cfg.ShutdownCleanupBound == 0 {
+		cfg.ShutdownCleanupBound = 5 * time.Second
+	}
+	r := &Runner{cfg: cfg, progress: map[int64]agentops.PullProgress{}}
 	r.exec = r.runDeploy
+	r.afterHealth = defaultAfterHealth
 	return r
 }
 
@@ -117,8 +190,4 @@ func RegisterJobActions(reg *actions.Registry, r *Runner) {
 			return r.exec(ctx, c, in.Job)
 		},
 	})
-}
-
-func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (RunDeployOut, error) {
-	return RunDeployOut{}, errors.New("deploys are not available yet")
 }

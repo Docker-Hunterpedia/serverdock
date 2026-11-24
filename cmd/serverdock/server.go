@@ -502,7 +502,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	})
 	// The one-time system invoker belongs to the deploy runner: it runs each job as
 	// the actor that queued it (never as the system).
-	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: reg.SystemInvoker(), Refresh: authStore, Locks: &deploy.ServiceLocks{}, Log: log})
+	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: reg.SystemInvoker(), Refresh: authStore, Locks: &deploy.ServiceLocks{}, Log: log,
+		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Net: booter, AppNet: appNet,
+		Instance: installID, Policy: cfg.policyOptions()})
 	deploy.RegisterJobActions(reg, runner)
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,

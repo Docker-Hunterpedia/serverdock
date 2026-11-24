@@ -55,7 +55,9 @@ func Bin(t testing.TB) string {
 		if buildErr = os.Chmod(buildDir, 0o755); buildErr != nil {
 			return
 		}
-		cmd := exec.Command("go", "build", "-trimpath", "-o", filepath.Join(buildDir, "serverdock"), "./cmd/serverdock")
+		// -tags testhooks compiles the deploy runner's pause points (SERVERDOCK_TESTHOOK_*)
+		// into this binary and no other: a shipped build has none (plan 0004 step 8a).
+		cmd := exec.Command("go", "build", "-trimpath", "-tags", "testhooks", "-o", filepath.Join(buildDir, "serverdock"), "./cmd/serverdock")
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {

@@ -644,7 +644,7 @@ func (d *svcDeps) state(r svcRow) string {
 	if !r.activeDeploy.Valid {
 		return "not_deployed"
 	}
-	if !d.Routes.Ready() {
+	if !d.Routes.Ready() || d.Routes.State().Unknown(r.id) {
 		return "unknown"
 	}
 	seen := false

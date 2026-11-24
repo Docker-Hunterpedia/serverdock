@@ -34,6 +34,8 @@ jobs:
       - name: bench trigger script tests
         run: .github/scripts/bench-needed_test.sh
       - run: go test -race ./...
+      - name: test hooks (the tag build that only internal/testbin uses)
+        run: go test -race -tags testhooks -count=1 -run 'TestPausePoint' ./internal/deploy
       - run: go run golang.org/x/vuln/cmd/govulncheck@"${GOVULNCHECK_VERSION}" ./...
 
   # The single-page app (Node is needed here and in `make web` only). Its output,

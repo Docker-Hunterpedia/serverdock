@@ -41,6 +41,7 @@ import (
 // Routes), for tests that switch routes.
 type switchRig struct {
 	ctx       context.Context
+	sess      *hub.Session // the local agent's session (a Caller), for a client that counts ops
 	cl        *agentops.Client
 	applier   *proxy.Applier
 	panelPort int
@@ -155,6 +156,7 @@ func newSwitchRig(t *testing.T) (*switchRig, string) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no hello")
 	}
+	g.sess = sess
 	g.cl = agentops.NewClient(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	t.Cleanup(cancel)

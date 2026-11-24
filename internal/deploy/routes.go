@@ -99,6 +99,36 @@ type StateMap struct {
 	mu    sync.Mutex
 	by    map[string]Container
 	ready bool
+	// unknown holds the services whose last Docker operation ended in a docker or
+	// timeout error: their state is not known until an operation (or, from step 10,
+	// an event) for them succeeds. At most one entry per service (100); no timer.
+	unknown map[int64]struct{}
+}
+
+// MarkUnknown records that an operation for the service ended in a docker or
+// timeout error: its state is unknown until ClearUnknown.
+func (s *StateMap) MarkUnknown(service int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unknown == nil {
+		s.unknown = map[int64]struct{}{}
+	}
+	s.unknown[service] = struct{}{}
+}
+
+// ClearUnknown forgets MarkUnknown after an operation for the service succeeded.
+func (s *StateMap) ClearUnknown(service int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.unknown, service)
+}
+
+// Unknown reports whether the service's state is unknown (see MarkUnknown).
+func (s *StateMap) Unknown(service int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.unknown[service]
+	return ok
 }
 
 // Ready reports whether the first list and inspect has been loaded.
@@ -409,6 +439,16 @@ func (r *Routes) ClearOverride(ctx context.Context, service int64) error {
 func (r *Routes) SetContainer(ctx context.Context, c Container) error {
 	return r.apply(ctx, func() error { r.state.set(c); return nil }, false, false)
 }
+
+// Track records a container in the state map WITHOUT applying routes, and
+// Untrack forgets one the same way. The deploy runner uses them for its candidate
+// (plan 0004 step 8a: it does not wait for the watcher to learn the address). No
+// route refers to a candidate until the switch (step 8b: an override), so nothing
+// changes in the config and nothing may be sent: step 8a never calls proxy_apply.
+func (r *Routes) Track(c Container) { r.state.set(c) }
+
+// Untrack is Track's inverse.
+func (r *Routes) Untrack(id string) { r.state.remove(id) }
 
 // RemoveContainer forgets a container (a destroy event) and applies.
 func (r *Routes) RemoveContainer(ctx context.Context, id string) error {
