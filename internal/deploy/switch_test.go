@@ -140,7 +140,7 @@ func TestCommitOrder(t *testing.T) {
 		}
 		var seq []string
 		for _, e := range l.list() {
-			if e != "commit:begin" && e != "commit:lock" { // markers inside the commit, not phases
+			if e != "commit:begin" && e != "commit:lock" && e != "health:done" { // markers inside the commit, not phases
 				seq = append(seq, e)
 			}
 		}
@@ -1048,53 +1048,6 @@ func TestPanicAfterTheSwitchUnwindsTheRoutesBeforeRemovingTheCandidate(t *testin
 	})
 }
 
-// Clearing an override never depends on winning the route lock: the repair's bound
-// runs out behind another service's in-flight apply, yet no override is left and the
-// next Refresh routes to the old address.
-func TestClearingAnOverrideDoesNotNeedTheRouteLock(t *testing.T) {
-	g := newRRig(t, func(c *RunnerConfig) { c.SwitchBound = 30 * time.Millisecond; c.CleanupBound = 50 * time.Millisecond })
-	old := g.live(g.svc, 1, "10.250.0.2")
-	g.expose(g.svc, 9000)
-	other := g.service("api")
-	od := g.live(other, 1, "10.250.0.4")
-	otherC := g.containerOf(od)
-	g.expose(other, 9001)
-	started, release := make(chan struct{}), make(chan struct{})
-	var once, once2 sync.Once
-	g.px.enter = func() { once.Do(func() { close(started); <-release }) }
-	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
-		once2.Do(func() {
-			go g.routes.SetContainer(context.Background(), Container{ID: otherC.id, Service: other, Deploy: od, State: "exited", IP: "10.250.0.4"})
-			<-started
-		})
-		return agentops.HealthResult{OK: true}, nil
-	}
-	g.start(false)
-	d, job := g.deploy(g.svc)
-	g.wait(job) // the switch and the repair both gave up behind the lock holder
-	r := g.row(d)
-	if r.status != StatusFailed || r.code != CodeSwitchFailed || r.appSafe != AppSafeUnknown || g.containerOf(d) == nil {
-		t.Fatalf("%+v (candidate kept: %v)", r, g.containerOf(d) != nil)
-	}
-	if _, ok := g.routes.overrideOf(g.svc); ok {
-		t.Fatal("the override survived a repair that could not get the lock")
-	}
-	close(release)
-	g.until("the holder to finish", func() bool { return g.px.n() >= 3 })
-	if err := g.routes.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	var mine string
-	for _, rt := range g.lastRoutes() {
-		if rt.Port == 9000 {
-			mine = rt.Upstream
-		}
-	}
-	if mine != "10.250.0.2:8080" || g.activeDeploy(g.svc) != old {
-		t.Errorf("after the next refresh the port routes to %q", mine)
-	}
-}
-
 // A supersede during the drain hides a later shutdown from the job's cancel cause;
 // the scheduler's own stop signal still ends the drain, and the clean-up bound
 // shrinks.
@@ -1219,13 +1172,15 @@ func TestADeadCandidateIsNeverSwitchedTo(t *testing.T) {
 // The watchdog firing between the health gate and the switch still refuses it: it
 // applies up to the switch.
 func TestWatchdogBetweenTheGateAndTheSwitchRefusesTheSwitch(t *testing.T) {
-	g := newRRig(t, func(c *RunnerConfig) { c.Watchdog = 60 * time.Millisecond })
+	g := newRRig(t, func(c *RunnerConfig) { c.Watchdog = 100 * time.Millisecond })
 	g.live(g.svc, 1, "10.250.0.2")
 	g.expose(g.svc, 9000)
 	before := g.px.n()
-	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
-		time.Sleep(120 * time.Millisecond)
-		return agentops.HealthResult{OK: true}, nil
+	// The gate is done and recorded; only then does the watchdog run out.
+	g.runner.trace = func(ev string) {
+		if ev == "health:done" {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	g.start(false)
 	d, job := g.deploy(g.svc)
@@ -1251,5 +1206,88 @@ func TestASwitchedCandidateIsStoppedWithItsGrace(t *testing.T) {
 	defer g.ops.mu.Unlock()
 	if len(graces) != 1 || graces[0] != 7 {
 		t.Errorf("candidate stop graces %v, want [7]", graces)
+	}
+}
+
+// Routes level: an override that IS set is cleared even when the repair cannot get
+// the route lock within its context.
+func TestClearOverrideNeedsNoRouteLock(t *testing.T) {
+	r, st, _ := newRoutes(t)
+	svc := addService(t, st, "web")
+	d := expose(t, st, svc, 9000, 8080, 1, "10.250.1.2")
+	open(t, r, up(svc, d, 1, StateRunning, "10.250.1.2"), up(svc, 50, 2, StateRunning, "10.250.1.9"))
+	if err := r.SetOverride(bg, svc, Override{Kind: OverrideUpstream, Deploy: 50, IP: "10.250.1.9", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.overrideOf(svc); !ok {
+		t.Fatal("the override was not set")
+	}
+	r.lock <- struct{}{} // another apply holds the route lock
+	ctx, cancel := context.WithTimeout(bg, 30*time.Millisecond)
+	defer cancel()
+	err := r.ClearOverride(ctx, svc)
+	var me *MutateError
+	if !errors.As(err, &me) {
+		t.Fatalf("err %v, want the lock wait to fail", err)
+	}
+	if _, ok := r.overrideOf(svc); ok {
+		t.Fatal("the override survived a clear that could not get the lock")
+	}
+	<-r.lock
+	if err := r.Refresh(bg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Runner path: the switch's apply succeeds (the override IS set), then another
+// service's apply takes the route lock just before the commit: the commit's lock
+// wait fails (not committed), and the repair loses its wait too. No override is
+// left, the candidate is kept, and the next Refresh routes to the old address.
+func TestRepairThatLosesTheLockWaitStillClearsTheOverride(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.SwitchBound = 80 * time.Millisecond; c.CleanupBound = 50 * time.Millisecond })
+	old := g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	other := g.service("api")
+	od := g.live(other, 1, "10.250.0.4")
+	otherC := g.containerOf(od)
+	g.expose(other, 9001)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once, once2 sync.Once
+	g.px.enter = func() {
+		if g.px.n() >= 3 { // after the switch's own apply
+			once.Do(func() { close(started); <-release })
+		}
+	}
+	g.runner.trace = func(ev string) {
+		if ev == "commit:lock" {
+			once2.Do(func() {
+				go g.routes.SetContainer(context.Background(), Container{ID: otherC.id, Service: other, Deploy: od, State: "exited", IP: "10.250.0.4"})
+				<-started
+			})
+		}
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	r := g.row(d)
+	if r.status != StatusFailed || r.code != CodeCommitFailed || r.appSafe != AppSafeUnknown || g.containerOf(d) == nil {
+		t.Fatalf("%+v (candidate kept: %v)", r, g.containerOf(d) != nil)
+	}
+	if _, ok := g.routes.overrideOf(g.svc); ok {
+		t.Fatal("the override was left behind")
+	}
+	close(release)
+	g.until("the holder to finish", func() bool { return g.px.n() >= 4 })
+	if err := g.routes.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var mine string
+	for _, rt := range g.lastRoutes() {
+		if rt.Port == 9000 {
+			mine = rt.Upstream
+		}
+	}
+	if mine != "10.250.0.2:8080" || g.activeDeploy(g.svc) != old {
+		t.Errorf("the port routes to %q after the next refresh", mine)
 	}
 }

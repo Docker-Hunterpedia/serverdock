@@ -317,6 +317,7 @@ func (rn *run) execute(ctx context.Context) *failure {
 		return f
 	}
 	pausePoint("health:after")
+	rn.trace("health:done")
 	if pctx.Err() != nil { // the watchdog fired between the gate and the switch: it still applies before the switch
 		f := rn.ctxFailure0(pctx)
 		f.appSafe = rn.appSafe(nil)
@@ -1036,7 +1037,15 @@ func (rn *run) removeCandidate(ctx context.Context) {
 			rn.r.cfg.Tracker.Untrack(id)
 			continue
 		}
-		rmErr := ops.ContainerRemove(ctx, id)
+		// The removal has its own bound: a switched candidate stopped with a long
+		// grace must not be left behind because the clean-up context ran out.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), RemoveBound)
+		if rn.shuttingDown() {
+			rcancel()
+			rctx, rcancel = context.WithTimeout(context.WithoutCancel(ctx), rn.r.cfg.ShutdownCleanupBound)
+		}
+		rmErr := ops.ContainerRemove(rctx, id)
+		rcancel()
 		switch {
 		case rmErr == nil || agentops.IsCode(rmErr, agent.CodeNotFound):
 			if stopErr == nil {
