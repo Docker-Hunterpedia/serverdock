@@ -20,16 +20,22 @@ type fakeRefresh struct {
 	calls []time.Time
 	err   error
 	scope actions.Scope // when set, the refreshed actor's scope (a narrowed one)
+	// errFrom and scopeFrom: the 1-based call from which err and scope apply (0: the first).
+	errFrom, scopeFrom int
 }
 
 func (f *fakeRefresh) RefreshJobActor(_ context.Context, a actions.Actor, enq time.Time) (actions.Actor, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, enq)
-	if f.err != nil {
+	n := len(f.calls)
+	if f.err != nil && n >= max(f.errFrom, 1) {
 		return actions.Actor{}, f.err
 	}
-	if f.scope != 0 {
+	if f.scope != 0 && n >= max(f.scopeFrom, 1) {
+		if a.Kind() == actions.KindToken {
+			return actions.TokenActor(a.ID(), f.scope), nil
+		}
 		return actions.UserSessionActor(a.ID(), a.SessionID(), f.scope, a.MFAFreshUntil()), nil
 	}
 	return a, nil
@@ -238,6 +244,7 @@ func TestResolveInterruptedSettlesJobsOfAnEarlierBoot(t *testing.T) {
 	jobB := mkJob(other, "running", "") // a NULL boot id is an earlier boot too
 	link(committed, jobB)
 	mustExec(t, st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, committed, other)
+	mustExec(t, st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'drain', 'running')`, committed)
 
 	third := addService(t, st, "third")
 	jobNow := mkJob(third, "running", "this-boot") // this boot's own job is left alone
@@ -277,6 +284,11 @@ func TestResolveInterruptedSettlesJobsOfAnEarlierBoot(t *testing.T) {
 		if err := st.R.QueryRow(`SELECT state FROM deploy_stages WHERE deploy_id = ? AND stage = ?`, uncommitted, stage).Scan(&got); err != nil || got != want {
 			t.Errorf("stage %s: %q %v, want %s", stage, got, err, want)
 		}
+	}
+	var cst string
+	st.R.QueryRow(`SELECT state FROM deploy_stages WHERE deploy_id = ? AND stage = 'drain'`, committed).Scan(&cst)
+	if cst != "" && cst != "skipped" {
+		t.Errorf("a committed deploy's running stage is %q, want skipped (finished at start-up)", cst)
 	}
 	if s, _ := get(`SELECT state, error FROM jobs WHERE id = ?`, jobNow); s != "running" {
 		t.Errorf("this boot's job was touched: %s", s)

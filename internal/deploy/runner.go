@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
@@ -46,6 +47,7 @@ type RunnerConfig struct {
 	HealthInterval       time.Duration // 1 s between health checks
 	StallTimeout         time.Duration // the pull's stall limit (0: the agent's 120 s)
 	PreSwitchBound       time.Duration // pull + check + start: 10 min
+	Watchdog             time.Duration // overrides jobs.timeout_s (tests only)
 	CleanupBound         time.Duration // candidate removal and the end-of-deploy writes: 30 s
 	ShutdownCleanupBound time.Duration // the same at shutdown: 5 s
 }
@@ -156,28 +158,30 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 		// Restart and delete are step 9.
 		return fmt.Errorf("deploy: jobs of kind %q are not supported yet", j.Kind)
 	}
-	actor, err := r.actorFor(ctx, j)
-	if err != nil {
-		return err
-	}
 	in, _ := json.Marshal(RunDeployIn{Job: j.ID})
-	_, err = r.cfg.Inv.InvokeAs(ctx, actor, action, in, actions.Options{Confirm: j.Confirm, RequestID: jobs.RequestID(j.ID, j.Attempt)})
-	return err
-}
-
-// actorFor rebuilds and refreshes the job's actor. It is called before EVERY run
-// and every retry attempt; an error from either step is returned and nothing runs.
-func (r *Runner) actorFor(ctx context.Context, j jobs.Job) (actions.Actor, error) {
-	actor, err := j.RebuildActor(r.cfg.Inv)
+	reqID := jobs.RequestID(j.ID, j.Attempt)
+	rebuilt, err := j.RebuildActor(r.cfg.Inv)
 	if err != nil {
 		r.cfg.Log.Warn("a job's actor could not be rebuilt; the job does not run", "job", j.ID, "err", err.Error())
-		return actions.Actor{}, fmt.Errorf("denied: the job's actor could not be rebuilt")
+		return errors.New("denied: the job's actor could not be rebuilt")
 	}
-	actor, err = r.cfg.Refresh.RefreshJobActor(ctx, actor, j.EnqueuedAt)
+	actor, err := r.cfg.Refresh.RefreshJobActor(ctx, rebuilt, j.EnqueuedAt)
 	if err != nil {
-		return actions.Actor{}, err
+		// The actor that queued the job may no longer run it (token revoked or
+		// expired, credentials changed, no longer an administrator). Nothing runs. The
+		// refusal is audited like any denial (the job's actor, executor system) and
+		// logged; the job fails "denied" and the queue ends the deploy row with it
+		// (jobs.Store.Finish), on this attempt and on a retry attempt alike.
+		if errors.Is(err, actions.ErrDenied) {
+			r.cfg.Log.Warn("a queued job was refused at run time: its actor may no longer run it", "job", j.ID, "attempt", j.Attempt, "actor_kind", j.Actor.Kind)
+			if aerr := r.cfg.Inv.RecordDenied(ctx, rebuilt, action, in, agent.CleanText(err.Error(), 240), reqID); aerr != nil {
+				r.cfg.Log.Error("the refusal could not be audited", "job", j.ID, "err", aerr.Error())
+			}
+		}
+		return err
 	}
-	return actor, nil
+	_, err = r.cfg.Inv.InvokeAs(ctx, actor, action, in, actions.Options{Confirm: j.Confirm, RequestID: reqID})
+	return err
 }
 
 // RegisterJobActions registers the JobOnly actions the runner invokes.

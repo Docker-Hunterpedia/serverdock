@@ -827,12 +827,16 @@ func (d *svcDeps) create(ctx context.Context, c actions.Call, in ServiceCreateIn
 	if in.Deploy {
 		q, err := d.queueDeploy(ctx, c, row, row.imageRef)
 		if err != nil {
-			// The service exists; only the deploy was not queued. Say both.
+			// The service exists; only the deploy was not queued. Say both, whatever the reason.
 			var de *actions.DeniedError
-			if errors.As(err, &de) && de.Reason == SessionGoneMessage {
+			var ue *actions.UserError
+			switch {
+			case errors.As(err, &de) && de.Reason == SessionGoneMessage:
 				return ServiceChangeOut{}, &actions.DeniedError{Reason: SessionGoneMessage + " (the service was created but not deployed)"}
+			case errors.As(err, &ue):
+				return ServiceChangeOut{}, &actions.UserError{Kind: ue.Kind, Msg: ue.Msg + " (the service was created but not deployed)"}
 			}
-			return ServiceChangeOut{}, err
+			return ServiceChangeOut{}, fmt.Errorf("the service was created but not deployed: %w", err)
 		}
 		out.Deploy = &q
 	}

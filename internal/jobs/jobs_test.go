@@ -518,11 +518,14 @@ func TestSupersedeFlagsARunningJob(t *testing.T) {
 	if flag != 1 || reason != "superseded" {
 		t.Errorf("cancel flag %d reason %q", flag, reason)
 	}
-	// The running deploy is not marked superseded here: it may still finish.
+	// While it runs the deploy is not marked superseded (it may still finish); when
+	// the job ends cancelled and the runner (here: a stub that ends no row) left it
+	// live, the queue's backstop ends it, naming the deploy that replaced it.
 	var by sql.NullInt64
-	e.st.R.QueryRow(`SELECT superseded_by FROM deploys WHERE id = ?`, first.DeployID).Scan(&by)
-	if by.Valid {
-		t.Errorf("a running deploy got superseded_by %d before its runner decided", by.Int64)
+	var status, code, safe string
+	e.st.R.QueryRow(`SELECT superseded_by, status, reason_code, COALESCE(app_safe, '') FROM deploys WHERE id = ?`, first.DeployID).Scan(&by, &status, &code, &safe)
+	if status != "superseded" || code != "superseded" || !by.Valid || by.Int64 != second.DeployID || safe != "unknown" {
+		t.Errorf("deploy after its job ended: %s %s by %v app_safe %q", status, code, by, safe)
 	}
 }
 
@@ -1029,5 +1032,130 @@ func TestRetryDueBetweenPickAndTimerIsNotLost(t *testing.T) {
 	waitFor(t, "the retry to run", func() bool { return e.state(t, id) == StateSucceeded })
 	if attempts.Load() != 2 {
 		t.Errorf("%d attempts", attempts.Load())
+	}
+}
+
+// The queue's backstop: whatever the runner did or did not do, a deploy job's end
+// (failed or cancelled) ends its deploy row in the same transaction, frees its
+// address and tidies its stages; a row the runner ended is not rewritten.
+func TestFinishEndsTheDeployRowTheRunnerLeftLive(t *testing.T) {
+	type tc struct {
+		name, state, errText string
+		status, code, reason string
+		keepsRunnerEnd       bool
+		wantReason           func(string) bool
+	}
+	cases := []tc{
+		{name: "denied", state: StateFailed, errText: "actions: denied: the API token that queued this job was revoked", status: "failed", code: "denied", reason: DeniedReason},
+		{name: "failed", state: StateFailed, errText: "the job panicked", status: "failed", code: "job_failed", reason: "the job panicked"},
+		{name: "cancelled", state: StateCancelled, errText: "cancelled by the user", status: "cancelled", code: "cancelled", reason: "cancelled by the user"},
+		{name: "superseded", state: StateCancelled, errText: "superseded", status: "superseded", code: "superseded", reason: "superseded by a newer deploy"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			svc := e.service(t, "web")
+			enq, err := e.js.EnqueueDeploy(ctx, deploy(svc))
+			if err != nil {
+				t.Fatal(err)
+			}
+			newer, err := e.js.EnqueueDeploy(ctx, deploy(svc)) // the deploy that replaced it (for "superseded")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Make the first one a running deploy that holds an address, mid-stage.
+			e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
+			e.exec(t, `UPDATE deploys SET status = 'running', ip = '10.250.0.7', stage = 'health' WHERE id = ?`, enq.DeployID)
+			e.exec(t, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'pull', 'ok'), (?, 'health', 'running'), (?, 'switch', 'pending')`, enq.DeployID, enq.DeployID, enq.DeployID)
+			if err := e.js.Finish(ctx, enq.JobID, c.state, c.errText); err != nil {
+				t.Fatal(err)
+			}
+			var status, code, reason, safe string
+			var by sql.NullInt64
+			if err := e.st.R.QueryRow(`SELECT status, reason_code, reason, COALESCE(app_safe, ''), superseded_by FROM deploys WHERE id = ?`, enq.DeployID).Scan(&status, &code, &reason, &safe, &by); err != nil {
+				t.Fatal(err)
+			}
+			if status != c.status || code != c.code || reason != c.reason || safe != "unknown" {
+				t.Errorf("deploy: %s %s %q app_safe %q", status, code, reason, safe)
+			}
+			if c.name == "superseded" && (!by.Valid || by.Int64 != newer.DeployID) {
+				t.Errorf("superseded_by %v, want %d", by, newer.DeployID)
+			}
+			stages := map[string]string{}
+			rs, _ := e.st.R.Query(`SELECT stage, state FROM deploy_stages WHERE deploy_id = ?`, enq.DeployID)
+			for rs.Next() {
+				var a, b string
+				rs.Scan(&a, &b)
+				stages[a] = b
+			}
+			rs.Close()
+			if stages["pull"] != "ok" || stages["health"] != "failed" || stages["switch"] != "skipped" {
+				t.Errorf("stages %v", stages)
+			}
+			// The address is free again: the live-deploy unique index takes the same one.
+			e.exec(t, `INSERT INTO deploys(service_id, number, kind, snapshot_json, ip, status, actor_kind, actor_id, created_at) VALUES (?, 99, 'deploy', '{}', '10.250.0.7', 'running', 'user', '1', 'x')`, svc)
+		})
+	}
+
+	t.Run("a row the runner ended is not rewritten, and a succeeded job touches nothing", func(t *testing.T) {
+		e := newEnv(t)
+		svc := e.service(t, "web")
+		enq, _ := e.js.EnqueueDeploy(ctx, deploy(svc))
+		e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
+		e.exec(t, `UPDATE deploys SET status = 'failed', reason_code = 'health_timeout', reason = 'precise', app_safe = 'yes' WHERE id = ?`, enq.DeployID)
+		if err := e.js.Finish(ctx, enq.JobID, StateFailed, "the runner's own error"); err != nil {
+			t.Fatal(err)
+		}
+		var code, reason, safe string
+		e.st.R.QueryRow(`SELECT reason_code, reason, app_safe FROM deploys WHERE id = ?`, enq.DeployID).Scan(&code, &reason, &safe)
+		if code != "health_timeout" || reason != "precise" || safe != "yes" {
+			t.Errorf("rewritten: %s %q %s", code, reason, safe)
+		}
+		enq2, _ := e.js.EnqueueDeploy(ctx, deploy(svc))
+		e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq2.JobID)
+		e.exec(t, `UPDATE deploys SET status = 'running' WHERE id = ?`, enq2.DeployID)
+		if err := e.js.Finish(ctx, enq2.JobID, StateSucceeded, ""); err != nil {
+			t.Fatal(err)
+		}
+		var st string
+		e.st.R.QueryRow(`SELECT status FROM deploys WHERE id = ?`, enq2.DeployID).Scan(&st)
+		if st != "running" {
+			t.Errorf("a succeeded job ended its deploy as %s: only the runner decides success", st)
+		}
+	})
+}
+
+// The cancel and the stage check are one transaction: a deploy in switch (or any
+// later stage) cannot be cancelled, one before it can, and nothing is flagged when
+// the cancel is refused.
+func TestCancelDeployChecksTheStageAtomicallyWithTheFlag(t *testing.T) {
+	e := newEnv(t)
+	svc := e.service(t, "web")
+	enq, _ := e.js.EnqueueDeploy(ctx, deploy(svc))
+	e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
+	e.exec(t, `UPDATE deploys SET status = 'running', stage = 'switch' WHERE id = ?`, enq.DeployID)
+	forbidden := []string{"switch", "commit", "drain", "stop_old"}
+	s, _ := start(t, e, func(ctx context.Context, j Job) error { return nil }, nil)
+	if _, err := s.CancelDeploy(ctx, enq.JobID, "cancelled", forbidden); !errors.Is(err, ErrStageNotCancellable) {
+		t.Fatalf("a cancel in switch: %v", err)
+	}
+	var flag int
+	e.st.R.QueryRow(`SELECT cancel_requested FROM jobs WHERE id = ?`, enq.JobID).Scan(&flag)
+	if flag != 0 {
+		t.Error("a refused cancel still set the flag")
+	}
+	e.exec(t, `UPDATE deploys SET stage = 'health' WHERE id = ?`, enq.DeployID)
+	state, err := s.CancelDeploy(ctx, enq.JobID, "cancelled", forbidden)
+	if err != nil || state != StateRunning {
+		t.Fatalf("%s %v", state, err)
+	}
+	e.st.R.QueryRow(`SELECT cancel_requested FROM jobs WHERE id = ?`, enq.JobID).Scan(&flag)
+	if flag != 1 {
+		t.Error("the cancel did not flag the job")
+	}
+	// A queued deploy is cancelled at once and reports it.
+	q, _ := e.js.EnqueueDeploy(ctx, deploy(e.service(t, "api")))
+	if state, err := s.CancelDeploy(ctx, q.JobID, "cancelled", forbidden); err != nil || state != StateCancelled {
+		t.Fatalf("%s %v", state, err)
 	}
 }

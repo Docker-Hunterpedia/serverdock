@@ -76,9 +76,15 @@ func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now
 						reason = 'interrupted by restart', app_safe = COALESCE(app_safe, 'unknown') WHERE id = ? AND status IN ('queued', 'running')`, ts, dep); err != nil {
 						return err
 					}
-					// Its unfinished stages did not run.
-					if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = 'interrupted by restart'
-						WHERE deploy_id = ? AND state = 'running'`, ts, dep); err != nil {
+					// Its unfinished stages: for an uncommitted deploy a running one failed with it;
+					// for a committed one (finished at start-up) the stages did not fail, they
+					// were left behind by the restart.
+					stageState, detail := "failed", "interrupted by restart"
+					if committed {
+						stageState, detail = "skipped", "finished at start-up"
+					}
+					if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = ?, finished_at = ?, detail = ?
+						WHERE deploy_id = ? AND state = 'running'`, stageState, ts, detail, dep); err != nil {
 						return err
 					}
 					if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE deploy_id = ? AND state = 'pending'`, dep); err != nil {

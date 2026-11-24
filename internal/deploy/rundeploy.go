@@ -17,6 +17,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
+	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
 	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
@@ -51,6 +52,7 @@ const (
 	CodeDenied            = "denied"
 	CodeSwitchUnavailable = "switch_unavailable" // the 8b seam: the candidate is healthy but cannot be switched in yet
 	CodeBadSnapshot       = "bad_snapshot"
+	CodeInternal          = "internal"
 )
 
 // app_safe values (deploys.app_safe).
@@ -81,6 +83,7 @@ type failure struct {
 	status    string // "" means failed
 	retry     bool   // transient: the scheduler may try again while attempts remain
 	by        int64  // superseded_by
+	noRecord  bool   // the deploy had already ended: write nothing (the end state is the store's)
 }
 
 func (f *failure) Error() string { return f.msg }
@@ -155,15 +158,27 @@ type run struct {
 	create     agentops.CreateArgs
 }
 
-func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (RunDeployOut, error) {
+func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (out RunDeployOut, err error) {
 	if r.cfg.Ops == nil || r.cfg.Alloc == nil || r.cfg.Net == nil || r.cfg.Tracker == nil || r.cfg.AppNet == nil || r.cfg.Instance == "" {
 		return RunDeployOut{}, errors.New("deploys are not wired on this server")
 	}
+	// An error that ends the run before the deploy is known (the job or the deploy
+	// cannot be read) leaves the deploy row to the queue's backstop: when the job
+	// ends failed, jobs.Store.Finish ends its deploy too.
 	j, err := r.cfg.Jobs.Get(ctx, jobID)
 	if err != nil {
 		return RunDeployOut{}, errors.New("the job could not be read")
 	}
 	rn := &run{r: r, job: j, attempt: j.Attempt, jobCtx: ctx}
+	// A panic in a stage must not leave the candidate running or the row live: the
+	// clean-up runs on a fresh context, the row ends, and the job fails.
+	defer func() {
+		if p := recover(); p != nil {
+			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
+			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: StatusFailed}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
+				msg: "ServerDock hit an internal error while deploying; the new version was removed"})
+		}
+	}()
 	if err := rn.load(ctx); err != nil {
 		return RunDeployOut{}, err
 	}
@@ -216,10 +231,25 @@ func (rn *run) appSafe(f *failure) string {
 	if f != nil && f.appSafe != "" {
 		return f.appSafe
 	}
-	if rn.svc.hasActive {
+	if rn.activeServing() {
 		return AppSafeYes
 	}
 	return AppSafeUnknown
+}
+
+// activeServing: the state map shows the service's live deploy running (or
+// restarting at its address). Without it app_safe is unknown, not yes: ServerDock
+// does not claim the old version kept serving when it cannot see it.
+func (rn *run) activeServing() bool {
+	if !rn.svc.hasActive {
+		return false
+	}
+	for _, c := range rn.r.cfg.Tracker.State().snapshot() {
+		if c.Service == rn.svc.id && c.Deploy == rn.svc.activeDeploy && (c.State == StateRunning || c.State == StateRestarting) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rn *run) statusOf(f *failure) string {
@@ -244,7 +274,11 @@ func (rn *run) execute(ctx context.Context) *failure {
 	// The watchdog (jobs.timeout_s) is enforced only before the switch: all of
 	// 8a is before it. If it fires the deploy ends like a supersede: candidate
 	// removed, old version kept.
-	pctx, cancelW := context.WithTimeoutCause(ctx, time.Duration(rn.job.TimeoutS)*time.Second, errWatchdog)
+	watchdog := time.Duration(rn.job.TimeoutS) * time.Second
+	if rn.r.cfg.Watchdog > 0 {
+		watchdog = rn.r.cfg.Watchdog // tests
+	}
+	pctx, cancelW := context.WithTimeoutCause(ctx, watchdog, errWatchdog)
 	defer cancelW()
 	// Pull, check and start share one 10-minute bound.
 	sctx, cancelS := context.WithTimeoutCause(pctx, rn.r.cfg.PreSwitchBound, errPreSwitch)
@@ -271,15 +305,23 @@ func (rn *run) execute(ctx context.Context) *failure {
 		return f
 	}
 	pausePoint("health:after")
-	return rn.r.afterHealth(pctx, rn)
+	// Switch, commit, drain and stop_old run on a context cut off from the job's
+	// cancellation and watchdog (plan 0004, "Deadlines and contexts"): the job
+	// context stays in rn.jobCtx only so the seam can read why it was cancelled.
+	return rn.r.afterHealth(context.WithoutCancel(rn.jobCtx), rn)
 }
 
 // afterHealth is the seam of step 8b: it takes a candidate that passed its health
 // gate through switch, commit, drain and stop_old. Step 8a has no switch, so it
 // fails the deploy; finish removes the candidate and nothing was routed.
 func defaultAfterHealth(_ context.Context, rn *run) *failure {
-	return &failure{code: CodeSwitchUnavailable, appSafe: rn.appSafe(nil),
-		msg: "the new version is healthy, but this build of ServerDock cannot switch traffic to it yet; the previous version keeps serving"}
+	msg := "the new version is healthy, but this build of ServerDock cannot switch traffic to it yet"
+	if rn.svc.hasActive {
+		msg += "; the previous version keeps serving"
+	} else {
+		msg += "; there is no previous version, so nothing is being served"
+	}
+	return &failure{code: CodeSwitchUnavailable, appSafe: rn.appSafe(nil), msg: msg}
 }
 
 // ---- stage bookkeeping ----
@@ -290,7 +332,7 @@ func (rn *run) now() string { return jobs.FormatTime(rn.r.cfg.Now()) }
 // attempt starts the list over).
 func (rn *run) begin(ctx context.Context) *failure {
 	if rn.svc.status != "queued" && rn.svc.status != StatusRunning {
-		return &failure{code: CodeCancelled, status: StatusCancelled, msg: "the deploy had already ended"}
+		return &failure{code: CodeCancelled, status: StatusCancelled, msg: "the deploy had already ended", noRecord: true}
 	}
 	err := rn.r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'running', started_at = COALESCE(started_at, ?), stage = NULL, ip = NULL,
@@ -386,7 +428,10 @@ func (rn *run) newerDeploy() int64 {
 
 // op records the outcome of one agent operation for the service's state: a docker
 // or timeout failure makes it unknown (until an operation succeeds); success clears it.
-func (rn *run) op(err error) {
+func (rn *run) op(ctx context.Context, err error) {
+	if ctx.Err() != nil {
+		return // the stage's own context ended (a cancel, a deadline, a shutdown): the op says nothing about Docker
+	}
 	st := rn.r.cfg.Tracker.State()
 	switch {
 	case err == nil:
@@ -396,17 +441,23 @@ func (rn *run) op(err error) {
 	}
 }
 
-// isDockerTrouble: the op ended in a docker or timeout error, or could not reach
-// the agent at all (not a refusal, not the caller's own cancel).
+// ErrAgentDown is what a caller returns when the local agent is not connected.
+var ErrAgentDown = errors.New("the local agent is not connected")
+
+// isDockerTrouble: the op ended in a docker or timeout error from the agent, or
+// could not reach the agent at all (the op's own timeout, the local agent down).
+// A refusal, a cancelled or expired job context and database errors are NOT
+// trouble: they say nothing about Docker, and a state marked unknown stays so until
+// an op succeeds.
 func isDockerTrouble(err error) bool {
-	if errors.Is(err, context.Canceled) {
-		return false
-	}
 	var oe *agent.OpError
-	if errors.As(err, &oe) {
+	switch {
+	case errors.As(err, &oe):
 		return oe.Code == agent.CodeDocker || oe.Code == agent.CodeTimeout
+	case errors.Is(err, hub.ErrOpTimeout), errors.Is(err, ErrAgentDown):
+		return true
 	}
-	return true
+	return false
 }
 
 var transientRe = sync.OnceValue(func() *regexp.Regexp {
@@ -455,7 +506,7 @@ func (rn *run) pull(ctx context.Context) *failure {
 	}
 	if rn.snap.ImageID != "" { // redeploy or rollback: the pinned image, if it is still here
 		info, err := rn.r.cfg.Ops.ImageInspect(ctx, rn.snap.ImageID, true)
-		rn.op(err)
+		rn.op(ctx, err)
 		if err == nil {
 			rn.imageID, rn.digest = info.ID, rn.snap.RepoDigest
 			return rn.recordImage(ctx, "image present, not pulled")
@@ -470,10 +521,13 @@ func (rn *run) pull(ctx context.Context) *failure {
 		if rn.snap.RepoDigest == "" {
 			return &failure{code: "image_gone", msg: "the image of that deploy is no longer on this server"}
 		}
-		pullRef = rn.snap.RepoDigest
+		// By digest: the same registry rules as for the tag, now.
+		if pullRef, err = policy.ValidateImageRef(rn.snap.RepoDigest, rn.r.cfg.Policy); err != nil {
+			return &failure{code: CodePolicy, msg: "the image reference is not allowed: " + agent.CleanText(err.Error(), 200)}
+		}
 	}
 	res, err := rn.r.cfg.Ops.ImagePull(ctx, pullRef, rn.r.cfg.StallTimeout, func(p agentops.PullProgress) { rn.r.setProgress(rn.deploy, p) })
-	rn.op(err)
+	rn.op(ctx, err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return rn.ctxFailure(ctx)
@@ -535,7 +589,7 @@ func (rn *run) check(ctx context.Context) *failure {
 		return f
 	}
 	info, err := rn.r.cfg.Ops.ImageInspect(ctx, rn.imageID, true)
-	rn.op(err)
+	rn.op(ctx, err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return rn.ctxFailure(ctx)
@@ -577,11 +631,13 @@ func (rn *run) check(ctx context.Context) *failure {
 	return rn.leave(ctx, StageCheck, detail)
 }
 
-// networkReady refuses the deploy when the app network has a problem, and
-// ensures it once when its state is unknown.
+// networkReady refuses the deploy when the app network has a problem. Whenever the
+// state is not ok (unknown, or a problem the user may have fixed since: a foreign
+// network removed, a VPN overlap gone) it ensures the network again, once per
+// deploy: one network_ensure, no timer, so a fixed problem never needs a restart.
 func (rn *run) networkReady(ctx context.Context) *failure {
 	st := rn.r.cfg.Net.NetworkStatus()
-	if st.State == NetUnknown {
+	if st.State != NetOK {
 		_ = rn.r.cfg.Net.Run(ctx)
 		st = rn.r.cfg.Net.NetworkStatus()
 	}
@@ -603,7 +659,7 @@ func (rn *run) allocate(ctx context.Context) (netip.Addr, *failure) {
 	for try := 0; ; try++ {
 		addr, err := rn.r.cfg.Alloc.Allocate(ctx, rn.deploy)
 		if err == nil {
-			rn.op(nil)
+			rn.op(ctx, nil)
 			return addr, nil
 		}
 		if ctx.Err() != nil {
@@ -622,11 +678,11 @@ func (rn *run) allocate(ctx context.Context) (netip.Addr, *failure) {
 			case CodeAppSubnet:
 				return netip.Addr{}, &failure{code: CodeNetwork, msg: agent.CleanText(de.Msg, 400)}
 			case CodeDocker:
-				rn.op(de.Err)
+				rn.op(ctx, de.Err)
 				return netip.Addr{}, &failure{code: CodeDocker, msg: de.Msg, retry: rn.canRetry()}
 			}
 		}
-		rn.op(err)
+		rn.op(ctx, err)
 		if isDockerTrouble(err) {
 			return netip.Addr{}, &failure{code: CodeDocker, msg: "Docker could not allocate an address: " + opText(err, "no answer"), retry: rn.canRetry()}
 		}
@@ -646,7 +702,7 @@ func (rn *run) start(ctx context.Context) *failure {
 	for try := 0; ; try++ {
 		rn.createSent = true
 		res, err = ops.ContainerCreate(ctx, rn.create.Name, rn.create.Spec, rn.create.IP, rn.create.ImageID)
-		rn.op(err)
+		rn.op(ctx, err)
 		if err == nil {
 			break
 		}
@@ -660,13 +716,13 @@ func (rn *run) start(ctx context.Context) *failure {
 	}
 	rn.cid = res.ID
 	if err := ops.ContainerStart(ctx, rn.cid); err != nil {
-		rn.op(err)
+		rn.op(ctx, err)
 		if ctx.Err() != nil {
 			return rn.ctxFailure(ctx)
 		}
 		return &failure{code: CodeStartFailed, msg: "the new version could not be started: " + opText(err, "Docker did not answer")}
 	}
-	rn.op(nil)
+	rn.op(ctx, nil)
 	if f := rn.confirm(ctx); f != nil {
 		return f
 	}
@@ -707,7 +763,7 @@ func (rn *run) createFailure(ctx context.Context, err error) *failure {
 // map itself (it does not wait for the watcher).
 func (rn *run) confirm(ctx context.Context) *failure {
 	st, err := rn.r.cfg.Ops.ContainerInspect(ctx, rn.cid)
-	rn.op(err)
+	rn.op(ctx, err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return rn.ctxFailure(ctx)
@@ -715,6 +771,7 @@ func (rn *run) confirm(ctx context.Context) *failure {
 		return &failure{code: CodeStartFailed, msg: "the new version could not be inspected: " + opText(err, "Docker did not answer")}
 	}
 	if !rn.ours(st) {
+		rn.cid = "" // not trusted: the clean-up goes by labels, never by this id
 		return &failure{code: CodeStartFailed, msg: "the container that was started is not the one this deploy created"}
 	}
 	if st.ConfiguredIP != rn.ip || (st.IP != "" && st.IP != rn.ip) {
@@ -722,6 +779,7 @@ func (rn *run) confirm(ctx context.Context) *failure {
 	}
 	c, ok := ContainerFromInspect(st)
 	if !ok || c.Service != rn.svc.id || c.Deploy != rn.deploy {
+		rn.cid = ""
 		return &failure{code: CodeStartFailed, msg: "the container that was started is not the one this deploy created"}
 	}
 	rn.r.cfg.Tracker.Track(c)
@@ -760,12 +818,18 @@ func (rn *run) health(ctx context.Context) *failure {
 	target := net.JoinHostPort(rn.ip, strconv.Itoa(rn.snap.ContainerPort))
 	passes, lastErr := 0, ""
 	for {
-		if f := rn.unhealthy(hctx, ctx); f != nil {
-			return f
-		}
-		ok, f := rn.probe(hctx, ctx, target, &lastErr)
+		f, inspected := rn.unhealthy(hctx, ctx)
 		if f != nil {
 			return f
+		}
+		ok := false
+		if inspected {
+			var f *failure
+			if ok, f = rn.probe(hctx, ctx, target, &lastErr); f != nil {
+				return f
+			}
+		} else {
+			lastErr = "Docker did not answer the inspect"
 		}
 		if ok {
 			passes++
@@ -803,33 +867,33 @@ func (rn *run) unhealthyBy(f *failure) *failure {
 
 // unhealthy is the fail-fast check of the candidate: an inspect showing it exited,
 // is restarting or was killed for memory fails the gate at once.
-func (rn *run) unhealthy(hctx, ctx context.Context) *failure {
+func (rn *run) unhealthy(hctx, ctx context.Context) (f *failure, inspected bool) {
 	if ctx.Err() != nil {
-		return rn.unhealthyBy(rn.ctxFailure(ctx))
+		return rn.unhealthyBy(rn.ctxFailure(ctx)), false
 	}
 	st, err := rn.r.cfg.Ops.ContainerInspect(hctx, rn.cid)
-	rn.op(err)
+	rn.op(hctx, err)
 	if err != nil {
 		if ctx.Err() != nil {
-			return rn.unhealthyBy(rn.ctxFailure(ctx))
+			return rn.unhealthyBy(rn.ctxFailure(ctx)), false
 		}
-		if hctx.Err() != nil {
-			return nil // the loop's select reports the timeout
-		}
-		return &failure{code: CodeDocker, msg: "Docker could not inspect the new version: " + opText(err, "no answer")}
+		// One failed inspect is one failed check, not the end of the gate: Docker
+		// may answer the next one. Only the deadline ends it.
+		return nil, false
 	}
 	if !rn.ours(st) {
-		return &failure{code: CodeStartFailed, msg: "the container is not the one this deploy created"}
+		rn.cid = ""
+		return &failure{code: CodeStartFailed, msg: "the container is not the one this deploy created"}, true
 	}
 	switch {
 	case st.OOMKilled:
-		return &failure{code: CodeOOM, msg: "the new version was killed for using too much memory"}
+		return &failure{code: CodeOOM, msg: "the new version was killed for using too much memory"}, true
 	case st.Restarting:
-		return &failure{code: CodeExited, msg: fmt.Sprintf("the new version keeps crashing (it restarted after exit code %d)", st.ExitCode)}
+		return &failure{code: CodeExited, msg: fmt.Sprintf("the new version keeps crashing (it restarted after exit code %d)", st.ExitCode)}, true
 	case !st.Running:
-		return &failure{code: CodeExited, msg: fmt.Sprintf("the new version exited with code %d", st.ExitCode)}
+		return &failure{code: CodeExited, msg: fmt.Sprintf("the new version exited with code %d", st.ExitCode)}, true
 	}
-	return nil
+	return nil, true
 }
 
 func (rn *run) probe(hctx, ctx context.Context, target string, lastErr *string) (bool, *failure) {
@@ -842,7 +906,7 @@ func (rn *run) probe(hctx, ctx context.Context, target string, lastErr *string) 
 		kind = agentops.KindHTTP
 	}
 	res, err := rn.r.cfg.Ops.HealthCheck(hctx, agentops.HealthArgs{Target: target, Kind: kind, Path: h.Path, TimeoutMS: agentops.MaxHealthMS})
-	rn.op(err)
+	rn.op(ctx, err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, rn.unhealthyBy(rn.ctxFailure(ctx))
@@ -871,31 +935,44 @@ func (rn *run) probe(hctx, ctx context.Context, target string, lastErr *string) 
 // finish ends the attempt: it removes the candidate (on a FRESH context, so a
 // cancelled job context cannot stop the clean-up), records the outcome and returns
 // the job's error. A transient failure with attempts left returns a Retryable error
-// and leaves the deploy running ("waiting to retry"); anything else is final.
+// and leaves the deploy running ("waiting to retry"); anything else is final. A
+// job whose context was cancelled (a cancel, a supersede, a session revoke, a
+// shutdown) never retries: the scheduler would refuse the requeue and end the job
+// cancelled, and the row must not be left "waiting".
 func (rn *run) finish(f *failure) error {
 	if f == nil {
 		f = &failure{code: CodeStartFailed, msg: "the deploy ended without a result"}
 	}
 	bound := rn.r.cfg.CleanupBound
-	if f.code == CodeShutdown {
+	if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
 		bound = rn.r.cfg.ShutdownCleanupBound // the process is going away: 5 s
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
 	defer cancel()
 	rn.removeCandidate(fctx)
+	if f.noRecord {
+		return errors.New(f.msg)
+	}
+	// The end of the row gets its own fresh, short budget: a removal that used up
+	// its own must not stop the deploy from being recorded as ended.
+	rbound := min(bound, 10*time.Second)
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rbound)
+	defer rcancel()
 
-	retry := f.retry && rn.canRetry()
-	if retry {
-		rn.recordRetry(fctx, f)
+	if f.retry && rn.canRetry() && rn.jobCtx.Err() == nil {
+		rn.recordRetry(rctx, f)
 		return jobs.Retryable(errors.New(f.msg))
 	}
-	rn.recordFinal(fctx, f)
+	rn.recordFinal(rctx, f)
 	return errors.New(f.msg)
 }
 
 // removeCandidate stops and removes this attempt's container: the one it knows by
-// id, and, when a create was sent whose answer never arrived (a timeout), every
-// container of this install carrying this service, deploy and attempt in its labels.
+// id, and, when a create was sent whose answer never arrived (a timeout) or the
+// inspect of the container was not trusted, every container of this install
+// carrying this service, deploy and attempt in its labels. The candidate never
+// served traffic, so it is stopped with no grace. It is forgotten (Untrack) only
+// after its removal succeeded.
 func (rn *run) removeCandidate(ctx context.Context) {
 	ops := rn.r.cfg.Ops
 	ids := map[string]bool{}
@@ -904,6 +981,7 @@ func (rn *run) removeCandidate(ctx context.Context) {
 	}
 	if rn.createSent && rn.cid == "" {
 		if list, err := ops.ContainerList(ctx); err == nil {
+			rn.op(ctx, nil)
 			for _, c := range list.Containers {
 				if !c.Unowned && c.Labels.Service == strconv.FormatInt(rn.svc.id, 10) && c.Labels.Deploy == strconv.FormatInt(rn.deploy, 10) &&
 					c.Labels.Attempt == strconv.Itoa(rn.attempt) {
@@ -911,21 +989,32 @@ func (rn *run) removeCandidate(ctx context.Context) {
 				}
 			}
 		} else {
-			rn.op(err)
+			rn.op(ctx, err)
 			rn.r.cfg.Log.Warn("could not look for a candidate by its labels; the next resync removes it", "deploy", rn.deploy)
 		}
 	}
-	grace := min(rn.snap.StopGraceS, 10)
 	for id := range ids {
-		if err := ops.ContainerStop(ctx, id, grace); err != nil && !agentops.IsCode(err, agent.CodeNotFound) {
-			rn.op(err)
+		stopErr := ops.ContainerStop(ctx, id, 0)
+		gone := agentops.IsCode(stopErr, agent.CodeNotFound)
+		if stopErr != nil && !gone {
+			rn.op(ctx, stopErr)
 			rn.r.cfg.Log.Warn("the candidate could not be stopped; the next resync removes it", "deploy", rn.deploy)
 		}
-		if err := ops.ContainerRemove(ctx, id); err != nil && !agentops.IsCode(err, agent.CodeNotFound) {
-			rn.op(err)
+		if gone {
+			rn.r.cfg.Tracker.Untrack(id)
+			continue
+		}
+		rmErr := ops.ContainerRemove(ctx, id)
+		switch {
+		case rmErr == nil || agentops.IsCode(rmErr, agent.CodeNotFound):
+			if stopErr == nil {
+				rn.op(ctx, nil) // both succeeded: Docker answers
+			}
+			rn.r.cfg.Tracker.Untrack(id)
+		default:
+			rn.op(ctx, rmErr)
 			rn.r.cfg.Log.Warn("the candidate could not be removed; the next resync removes it", "deploy", rn.deploy)
 		}
-		rn.r.cfg.Tracker.Untrack(id)
 	}
 }
 
@@ -956,9 +1045,15 @@ func (rn *run) recordFinal(ctx context.Context, f *failure) {
 		if f.by > 0 {
 			by = f.by
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE deploys SET status = ?, reason_code = ?, reason = ?, app_safe = ?, superseded_by = COALESCE(?, superseded_by),
-			finished_at = ? WHERE id = ?`, status, f.code, agent.CleanText(f.msg, agent.MaxReasonText), safe, by, rn.now(), rn.deploy); err != nil {
+		// Only a row that is still live: an end state the queue wrote (a cancel, a
+		// supersede of a queued deploy) is not rewritten.
+		res, err := tx.ExecContext(ctx, `UPDATE deploys SET status = ?, reason_code = ?, reason = ?, app_safe = ?, superseded_by = COALESCE(?, superseded_by),
+			finished_at = ? WHERE id = ? AND status IN ('queued', 'running')`, status, f.code, agent.CleanText(f.msg, agent.MaxReasonText), safe, by, rn.now(), rn.deploy)
+		if err != nil {
 			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
 		}
 		if rn.stage != "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ? AND state = 'running'`,
@@ -966,7 +1061,7 @@ func (rn *run) recordFinal(ctx context.Context, f *failure) {
 				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE deploy_id = ? AND state = 'pending'`, rn.deploy)
+		_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE deploy_id = ? AND state = 'pending'`, rn.deploy)
 		return err
 	})
 	if err != nil {

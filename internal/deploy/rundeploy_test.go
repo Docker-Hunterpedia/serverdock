@@ -77,6 +77,15 @@ func (f *fakeOps) rec(ctx context.Context, op, what string) {
 	f.mu.Unlock()
 }
 
+// dead is what the real hub returns for an op whose context has ended: the
+// context's CAUSE (jobs.CancelCause, jobs.ErrShutdown, a watchdog, DeadlineExceeded).
+func dead(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
 func (f *fakeOps) count(op string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,6 +107,9 @@ func (f *fakeOps) names() []string {
 func (f *fakeOps) ImagePull(ctx context.Context, ref string, _ time.Duration, on func(agentops.PullProgress)) (agentops.PullResult, error) {
 	f.rec(ctx, "pull", ref)
 	f.pullN.Add(1)
+	if err := dead(ctx); err != nil {
+		return agentops.PullResult{}, err
+	}
 	if f.pullFn != nil {
 		return f.pullFn(ctx, ref, on)
 	}
@@ -112,6 +124,9 @@ func (f *fakeOps) ImageInspect(ctx context.Context, ref string, _ bool) (agentop
 
 func (f *fakeOps) ContainerCreate(ctx context.Context, name string, spec dockerapi.CreateSpec, ip, _ string) (agentops.CreateResult, error) {
 	f.rec(ctx, "create", name)
+	if err := dead(ctx); err != nil {
+		return agentops.CreateResult{}, err
+	}
 	if f.netMissing.Load() {
 		return agentops.CreateResult{}, &agent.OpError{Code: agent.CodeNotFound, Msg: agentops.MsgNetworkMissing}
 	}
@@ -152,6 +167,9 @@ func (f *fakeOps) find(id string) *fcont {
 
 func (f *fakeOps) ContainerStart(ctx context.Context, id string) error {
 	f.rec(ctx, "start", id[:8])
+	if err := dead(ctx); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	c := f.cs[id]
 	f.mu.Unlock()
@@ -195,6 +213,9 @@ func (f *fakeOps) ContainerRemove(ctx context.Context, id string) error {
 
 func (f *fakeOps) ContainerInspect(ctx context.Context, id string) (agentops.ContainerState, error) {
 	f.rec(ctx, "inspect", id[:8])
+	if err := dead(ctx); err != nil {
+		return agentops.ContainerState{}, err
+	}
 	if f.inspectFn != nil {
 		if st, err, handled := f.inspectFn(ctx, id); handled {
 			return st, err
@@ -227,6 +248,9 @@ func (f *fakeOps) ContainerInspect(ctx context.Context, id string) (agentops.Con
 
 func (f *fakeOps) ContainerList(ctx context.Context) (agentops.ListResult, error) {
 	f.rec(ctx, "list", "")
+	if err := dead(ctx); err != nil {
+		return agentops.ListResult{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listErr != nil {
@@ -247,6 +271,9 @@ func (f *fakeOps) ContainerList(ctx context.Context) (agentops.ListResult, error
 
 func (f *fakeOps) NetworkInspect(ctx context.Context) (agentops.UsedAddrs, error) {
 	f.rec(ctx, "network_inspect", "")
+	if err := dead(ctx); err != nil {
+		return agentops.UsedAddrs{}, err
+	}
 	if f.netMissing.Load() {
 		return agentops.UsedAddrs{}, &agent.OpError{Code: agent.CodeNotFound, Msg: agentops.MsgNetworkMissing}
 	}
@@ -266,6 +293,9 @@ func (f *fakeOps) NetworkInspect(ctx context.Context) (agentops.UsedAddrs, error
 
 func (f *fakeOps) HealthCheck(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error) {
 	f.rec(ctx, "health", a.Target)
+	if err := dead(ctx); err != nil {
+		return agentops.HealthResult{}, err
+	}
 	f.mu.Lock()
 	fn := f.healthFn
 	f.mu.Unlock()
@@ -314,19 +344,20 @@ func (n *fakeNet) NetworkGone() {
 // ---- the rig ----
 
 type rrig struct {
-	t      *testing.T
-	st     *store.Store
-	ops    *fakeOps
-	net    *fakeNet
-	routes *Routes
-	px     *fakeProxy
-	runner *Runner
-	reg    *actions.Registry
-	js     *jobs.Store
-	sched  *jobs.Scheduler
-	stop   func()
-	svc    int64
-	svcs   map[string]int64
+	t       *testing.T
+	st      *store.Store
+	ops     *fakeOps
+	net     *fakeNet
+	routes  *Routes
+	px      *fakeProxy
+	runner  *Runner
+	reg     *actions.Registry
+	js      *jobs.Store
+	sched   *jobs.Scheduler
+	stop    func()
+	refresh *fakeRefresh
+	svc     int64
+	svcs    map[string]int64
 }
 
 type rigOpt func(*RunnerConfig)
@@ -342,7 +373,8 @@ func newRRig(t *testing.T, opts ...rigOpt) *rrig {
 	g := &rrig{t: t, st: st, ops: newFakeOps(), net: &fakeNet{status: NetStatus{State: NetOK}}, px: &fakeProxy{}, reg: actions.New(al, log), svcs: map[string]int64{}}
 	g.routes = NewRoutes(st, g.px, log)
 	g.js = jobs.NewStore(st, nil)
-	cfg := RunnerConfig{DB: st, Jobs: g.js, Inv: g.reg.SystemInvoker(), Refresh: &fakeRefresh{}, Locks: &ServiceLocks{}, Log: log,
+	g.refresh = &fakeRefresh{}
+	cfg := RunnerConfig{DB: st, Jobs: g.js, Inv: g.reg.SystemInvoker(), Refresh: g.refresh, Locks: &ServiceLocks{}, Log: log,
 		Ops: g.ops, Alloc: NewAllocator(st, g.ops, fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}), Tracker: g.routes, Net: g.net,
 		AppNet: fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}, Instance: instance,
 		HealthInterval: 3 * time.Millisecond, CleanupBound: 5 * time.Second, ShutdownCleanupBound: 5 * time.Second}
@@ -485,6 +517,7 @@ func (g *rrig) live(svc int64, number int, ip string) int64 {
 	g.t.Helper()
 	d := addDeploy(g.t, g.st, svc, number, "succeeded", ip)
 	mustExec(g.t, g.st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, d, svc)
+	g.routes.Track(Container{ID: fmt.Sprintf("live-%d", d), Service: svc, Deploy: d, State: StateRunning, IP: ip})
 	return d
 }
 
@@ -1013,7 +1046,7 @@ func TestCancelDuringPullEndsTheDeployCancelled(t *testing.T) {
 		on(agentops.PullProgress{Layers: 4, LayersDone: 1, Bytes: 10, BytesTotal: 100, Status: "Downloading"})
 		close(inPull)
 		<-ctx.Done()
-		return agentops.PullResult{}, ctx.Err()
+		return agentops.PullResult{}, context.Cause(ctx)
 	}
 	g.start(false)
 	d, job := g.deploy(g.svc)
@@ -1134,6 +1167,10 @@ func TestDockerTimeoutSetsServiceUnknown(t *testing.T) {
 		t.Fatalf("before: %s", s)
 	}
 	g.ops.createFn = func(context.Context, string, dockerapi.CreateSpec, string) (agentops.CreateResult, error, bool) {
+		// Docker hangs from here on: the create times out and so does the clean-up's look-up.
+		g.ops.mu.Lock()
+		g.ops.listErr = opErr(agent.CodeTimeout, "timed out")
+		g.ops.mu.Unlock()
 		return agentops.CreateResult{}, opErr(agent.CodeTimeout, "timed out"), true
 	}
 	g.start(false)
@@ -1146,6 +1183,9 @@ func TestDockerTimeoutSetsServiceUnknown(t *testing.T) {
 		t.Errorf("%+v", r)
 	}
 	// Until an operation for it succeeds.
+	g.ops.mu.Lock()
+	g.ops.listErr = nil
+	g.ops.mu.Unlock()
 	g.ops.createFn = nil
 	_, job2 := g.deploy(g.svc)
 	g.wait(job2)
@@ -1266,7 +1306,7 @@ func TestPreSwitchDeadlineEndsTheDeploy(t *testing.T) {
 	g := newRRig(t, func(c *RunnerConfig) { c.PreSwitchBound = 80 * time.Millisecond })
 	g.ops.pullFn = func(ctx context.Context, _ string, _ func(agentops.PullProgress)) (agentops.PullResult, error) {
 		<-ctx.Done()
-		return agentops.PullResult{}, ctx.Err()
+		return agentops.PullResult{}, context.Cause(ctx)
 	}
 	g.start(false)
 	d, job := g.deploy(g.svc)
@@ -1281,6 +1321,7 @@ func TestNetworkProblemRefusesTheDeployWithItsReason(t *testing.T) {
 	g.live(g.svc, 1, "10.250.0.2")
 	reason := "the app network can't be used: the network exists with another subnet. New deploys are refused until it is fixed; running apps are not affected"
 	g.net.status = NetStatus{State: NetProblem, Reason: reason}
+	g.net.runFn = func() NetStatus { return NetStatus{State: NetProblem, Reason: reason} } // still wrong when ensured again
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	g.wait(job)
@@ -1290,6 +1331,19 @@ func TestNetworkProblemRefusesTheDeployWithItsReason(t *testing.T) {
 	}
 	if g.ops.count("create") != 0 || g.ops.count("list") != 0 {
 		t.Errorf("the deploy went on: %v", g.ops.names())
+	}
+	if g.net.runs != 1 {
+		t.Errorf("a problem is ensured again once per deploy, not %d times", g.net.runs)
+	}
+	// The user fixes it (removes the foreign network, the VPN overlap goes away): the
+	// next deploy re-checks, finds it ok and goes on to the switch seam: no restart needed.
+	g.net.mu.Lock()
+	g.net.runFn = nil
+	g.net.mu.Unlock()
+	d1, job1 := g.deploy(g.svc)
+	g.wait(job1)
+	if r := g.row(d1); r.code != CodeSwitchUnavailable || g.net.runs != 2 {
+		t.Fatalf("after the problem was fixed: %+v (ensured %d times)", r, g.net.runs)
 	}
 	// An unknown status is ensured once; Docker still silent: transient, retried.
 	g2 := newRRig(t)

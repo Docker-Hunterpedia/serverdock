@@ -97,11 +97,22 @@ func (s Snapshot) Validate() error {
 	if err := s.Settings().Validate(); err != nil {
 		return err
 	}
-	if (s.ImageID == "") != (s.RepoDigest == "") && s.ImageID == "" {
+	if s.RepoDigest != "" && s.ImageID == "" {
 		return errors.New("a pinned repo digest needs its image id")
 	}
 	if s.ImageID != "" && !imageIDShape(s.ImageID) {
 		return errors.New("image_id is not a sha256 image id")
+	}
+	if s.RepoDigest != "" {
+		// A digest the deploy may pull by must name a digest of the SAME repository
+		// as the snapshot's reference, never another image.
+		r, err := policy.ParseRef(s.RepoDigest)
+		if err != nil || r.Digest == "" {
+			return errors.New("repo_digest is not a repository with a sha256 digest")
+		}
+		if !policy.SameRepository(s.ImageRef, s.RepoDigest) {
+			return errors.New("repo_digest is not a digest of the image's repository")
+		}
 	}
 	return nil
 }

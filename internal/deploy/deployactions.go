@@ -22,7 +22,7 @@ const SessionGoneMessage = "your session was signed out; sign in again"
 // DeployQueue is the scheduler's queuing side: *jobs.Scheduler.
 type DeployQueue interface {
 	EnqueueDeploy(ctx context.Context, n jobs.NewDeploy) (jobs.Enqueued, error)
-	Cancel(ctx context.Context, id int64, reason string) error
+	CancelDeploy(ctx context.Context, id int64, reason string, forbidden []string) (string, error)
 }
 
 // DeployOut is the output of services.deploy (and the "deploy" part of
@@ -109,11 +109,24 @@ func (d *svcDeps) queueDeploy(ctx context.Context, c actions.Call, r svcRow, ima
 	if err != nil {
 		return DeployOut{}, err
 	}
+	// In the enqueue's transaction: the service must still have the image this
+	// request read (an admin's services.set_source in between wins: a write token
+	// cannot undo it), and a new tag becomes the service's desired image.
 	setImage := func(ctx context.Context, tx *sql.Tx) error {
+		var cur string
+		if err := tx.QueryRowContext(ctx, `SELECT image_ref FROM services WHERE id = ?`, r.id).Scan(&cur); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return actions.NotFound("the service no longer exists")
+			}
+			return err
+		}
+		if cur != r.imageRef {
+			return actions.Conflict("the service's image was changed while this deploy was being queued; try again")
+		}
 		if image == r.imageRef {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE services SET image_ref = ?, updated_at = ? WHERE id = ?`, image, d.stamp(), r.id)
+		_, err := tx.ExecContext(ctx, `UPDATE services SET image_ref = ?, updated_at = ? WHERE id = ? AND image_ref = ?`, image, d.stamp(), r.id, r.imageRef)
 		return err
 	}
 	out, err := d.Jobs.EnqueueDeploy(ctx, jobs.NewDeploy{
@@ -166,10 +179,9 @@ func (d *svcDeps) cancel(ctx context.Context, in CancelIn) (CancelOut, error) {
 	var (
 		jobID  sql.NullInt64
 		status string
-		stage  sql.NullString
 	)
-	err = d.DB.R.QueryRowContext(ctx, `SELECT d.job_id, d.status, d.stage FROM deploys d JOIN services s ON s.id = d.service_id
-		JOIN projects p ON p.id = s.project_id WHERE p.name = ? AND s.name = ? AND d.number = ?`, project, name, in.Number).Scan(&jobID, &status, &stage)
+	err = d.DB.R.QueryRowContext(ctx, `SELECT d.job_id, d.status FROM deploys d JOIN services s ON s.id = d.service_id
+		JOIN projects p ON p.id = s.project_id WHERE p.name = ? AND s.name = ? AND d.number = ?`, project, name, in.Number).Scan(&jobID, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CancelOut{}, actions.NotFound("no deploy #%d of %s/%s", in.Number, project, name)
 	}
@@ -182,24 +194,28 @@ func (d *svcDeps) cancel(ctx context.Context, in CancelIn) (CancelOut, error) {
 	if !jobID.Valid {
 		return CancelOut{}, actions.Conflict("deploy #%d has no job to cancel", in.Number)
 	}
-	if status == "running" && stage.Valid && !CancellableStage(stage.String) {
-		return CancelOut{}, actions.Conflict("deploy #%d is switching traffic and cannot be cancelled now (not_cancellable)", in.Number)
-	}
 	if d.Jobs == nil {
 		return CancelOut{}, actions.Unavailable("deploys are not available on this server")
 	}
-	if err := d.Jobs.Cancel(ctx, jobID.Int64, "cancelled"); err != nil {
-		if errors.Is(err, jobs.ErrNotCancellable) {
-			return CancelOut{}, actions.Conflict("deploy #%d has already finished", in.Number)
-		}
+	// The stage check is made again, atomically with the flag, by the store.
+	state, err := d.Jobs.CancelDeploy(ctx, jobID.Int64, "cancelled", nonCancellableStages)
+	switch {
+	case errors.Is(err, jobs.ErrStageNotCancellable):
+		return CancelOut{}, actions.Conflict("deploy #%d is switching traffic and cannot be cancelled now (not_cancellable)", in.Number)
+	case errors.Is(err, jobs.ErrNotCancellable):
+		return CancelOut{}, actions.Conflict("deploy #%d has already finished", in.Number)
+	case err != nil:
 		return CancelOut{}, err
 	}
 	out := CancelOut{Service: in.Service, Number: in.Number, Status: "cancelling"}
-	if status == "queued" {
+	if state == jobs.StateCancelled { // the state the store reports, not the one read before
 		out.Status = "cancelled"
 	}
 	return out, nil
 }
+
+// nonCancellableStages are the stages a cancel cannot reach.
+var nonCancellableStages = []string{StageSwitch, StageCommit, StageDrain, StageStopOld}
 
 func registerDeployActions(r *actions.Registry, d *svcDeps) {
 	actions.Register(r, actions.Def[ServiceDeployIn, DeployOut]{

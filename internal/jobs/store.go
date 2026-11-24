@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -388,10 +389,63 @@ func (s *Store) Finish(ctx context.Context, id int64, state, errText string) err
 	if errText != "" {
 		e = clip(errText, MaxErrorText)
 	}
+	now := s.now()
 	return s.st.WriteTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, finished_at = ?, error = ? WHERE id = ? AND state = 'running'`, state, FormatTime(s.now()), e, id)
-		return err
+		res, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, finished_at = ?, error = ? WHERE id = ? AND state = 'running'`, state, FormatTime(now), e, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 1 && (state == StateFailed || state == StateCancelled) {
+			return endDeployTx(ctx, tx, id, state, errText, now)
+		}
+		return nil
 	})
+}
+
+// DeniedReason is the fixed reason of a deploy whose queuing actor could no longer
+// run it (the job failed "denied").
+const DeniedReason = "the user or token that queued this deploy can no longer run it"
+
+// endDeployTx is the backstop of the queue: when a deploy job reaches a failed or
+// cancelled end, the same transaction ends its deploy row if the runner has not.
+// A deploy left queued or running after its job is over would hold its static
+// address (index deploys_ip_live) and show "running" forever; this makes that
+// impossible whatever went wrong in the runner (a refusal before it started, a
+// panic, a failed write of its own, a retry that lost the race against a cancel).
+// The runner normally ends the row itself first, with a precise reason; this only
+// touches rows still queued or running (the cancelTx pattern).
+func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText string, now time.Time) error {
+	ts := FormatTime(now)
+	status, code, reason := "failed", "job_failed", clip(errText, 512)
+	switch {
+	case state == StateCancelled && errText == "superseded":
+		status, code, reason = "superseded", "superseded", "superseded by a newer deploy"
+	case state == StateCancelled:
+		status, code = "cancelled", "cancelled"
+		if reason == "" {
+			reason = "cancelled"
+		}
+	case strings.HasPrefix(errText, "actions: denied"):
+		code, reason = "denied", DeniedReason
+	case reason == "":
+		reason = "the deploy's job failed"
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE deploys SET status = ?, reason_code = ?, reason = ?, finished_at = ?,
+		app_safe = COALESCE(app_safe, CASE WHEN EXISTS (SELECT 1 FROM services s WHERE s.id = deploys.service_id AND s.active_deploy_id IS NOT NULL) THEN 'yes' ELSE 'unknown' END),
+		superseded_by = CASE WHEN ? = 'superseded' THEN (SELECT MAX(d2.id) FROM deploys d2 WHERE d2.service_id = deploys.service_id AND d2.id > deploys.id) ELSE superseded_by END
+		WHERE job_id = ? AND status IN ('queued', 'running')`, status, code, reason, ts, status, job)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = 'ended with its job'
+		WHERE state = 'running' AND deploy_id IN (SELECT id FROM deploys WHERE job_id = ?)`, ts, job); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE state = 'pending' AND deploy_id IN (SELECT id FROM deploys WHERE job_id = ?)`, job)
+	return err
 }
 
 // Requeue puts a running job back to queued for another attempt after delay. It
@@ -450,6 +504,39 @@ func (s *Store) cancelTx(ctx context.Context, tx *sql.Tx, id int64, reason strin
 		return StateRunning, err
 	}
 	return "", ErrNotCancellable
+}
+
+// ErrStageNotCancellable is returned by CancelDeploy for a deploy whose runner is
+// in a stage that a cancel cannot reach (switch, commit, drain, stop_old).
+var ErrStageNotCancellable = errors.New("jobs: the deploy is in a stage that cannot be cancelled")
+
+// cancelDeploy is cancel for a deploy job with a guard that is atomic with the
+// flag: in the same write transaction it reads the deploy's stage, refuses when
+// the stage is one of forbidden, and otherwise sets the cancel flag. The runner
+// moves its deploy into a stage with a write of its own, and writes are
+// serialised, so a cancel either lands before that write (the runner then sees the
+// flag) or after it (the cancel sees the stage and is refused): it can never pass
+// the check and then be applied inside the switch.
+func (s *Store) cancelDeploy(ctx context.Context, id int64, reason string, forbidden []string) (string, error) {
+	reason = clip(reason, 128)
+	var state string
+	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		var stage sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT stage FROM deploys WHERE job_id = ? AND status = 'running'`, id).Scan(&stage)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if stage.Valid {
+			for _, f := range forbidden {
+				if stage.String == f {
+					return ErrStageNotCancellable
+				}
+			}
+		}
+		state, err = s.cancelTx(ctx, tx, id, reason)
+		return err
+	})
+	return state, err
 }
 
 // CancelSessionJobsTx cancels, inside the caller's write transaction, every

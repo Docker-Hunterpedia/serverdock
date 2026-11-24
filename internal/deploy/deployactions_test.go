@@ -260,3 +260,77 @@ func TestSnapshotRoundTripAndValidation(t *testing.T) {
 		t.Error("a duplicate key was accepted")
 	}
 }
+
+// A write token's deploy cannot undo an admin's set_source: the enqueue transaction
+// finds the service's image changed since this request read it and refuses.
+func TestDeployCannotUndoAConcurrentSetSource(t *testing.T) {
+	g := newDeployRig(t)
+	g.create("p", "web", nil)
+	d := &svcDeps{ServiceDeps: ServiceDeps{DB: g.st, Now: time.Now}}
+	if sched, err := jobs.NewScheduler(jobs.Config{Store: jobs.NewStore(g.st, nil), Run: func(context.Context, jobs.Job) error { return nil }}); err == nil {
+		d.Jobs = sched
+	}
+	row, err := d.load(context.Background(), g.st.R, "p/web") // what the deploy request read
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The admin changes the repository in between.
+	must[ServiceChangeOut](g, "services.set_source", m{"service": "p/web", "image_ref": "ghcr.io/x/app:2"})
+	_, err = d.queueDeploy(context.Background(), actions.Call{Actor: writeTok}, row, row.imageRef)
+	wantKind(t, err, actions.ErrConflict)
+	if !strings.HasSuffix(g.get("p/web").ImageRef, "ghcr.io/x/app:2") {
+		t.Errorf("the admin's image was undone: %s", g.get("p/web").ImageRef)
+	}
+	if countRows(t, g.st, "deploys") != 0 || countRows(t, g.st, "jobs") != 0 {
+		t.Error("a refused deploy left rows")
+	}
+}
+
+// Any failure to queue after the service was created says so.
+func TestServiceCreateDeployFailureSaysTheServiceWasCreated(t *testing.T) {
+	g := newSvcRig(t, func(d *ServiceDeps) { d.Jobs = failingQueue{} })
+	_, err := callAs[ServiceChangeOut](g, adminActor(), "services.create", m{"project": "p", "name": "web", "image_ref": "nginx", "deploy": true})
+	if err == nil || !strings.Contains(err.Error(), "the service was created but not deployed") {
+		t.Fatalf("%v", err)
+	}
+	if countRows(t, g.st, "services") != 1 {
+		t.Error("the service is not there")
+	}
+}
+
+type failingQueue struct{}
+
+func (failingQueue) EnqueueDeploy(context.Context, jobs.NewDeploy) (jobs.Enqueued, error) {
+	return jobs.Enqueued{}, errors.New("disk full")
+}
+func (failingQueue) CancelDeploy(context.Context, int64, string, []string) (string, error) {
+	return "", errors.New("x")
+}
+
+func TestSnapshotRepoDigestMustBeADigestOfTheSameRepository(t *testing.T) {
+	base := Snapshot{V: 1, ImageRef: "nginx:1", Health: SnapHealth{Kind: "running", TimeoutS: 60, Passes: 1}, Strategy: "blue_green", DrainS: 10,
+		ImageID: "sha256:" + strings.Repeat("a", 64)}
+	digest := "@sha256:" + strings.Repeat("b", 64)
+	for name, tc := range map[string]struct {
+		ref  string
+		good bool
+	}{
+		"same repository":     {"nginx" + digest, true},
+		"the docker.io form":  {"docker.io/library/nginx" + digest, true},
+		"another repository":  {"redis" + digest, false},
+		"another registry":    {"ghcr.io/x/nginx" + digest, false},
+		"a tag, not a digest": {"nginx:1", false},
+		"not a reference":     {"A B", false},
+	} {
+		s := base
+		s.RepoDigest = tc.ref
+		if err := s.Validate(); (err == nil) != tc.good {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	s := base
+	s.ImageID, s.RepoDigest = "", "nginx"+digest
+	if s.Validate() == nil {
+		t.Error("a digest without its image id was accepted")
+	}
+}

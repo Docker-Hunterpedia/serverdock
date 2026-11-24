@@ -199,6 +199,23 @@ func (s *Scheduler) Cancel(ctx context.Context, id int64, reason string) error {
 	return nil
 }
 
+// CancelDeploy is Cancel for a deploy job, refused with ErrStageNotCancellable when
+// the deploy is in one of the forbidden stages. The check and the flag are one
+// transaction (Store.cancelDeploy). It returns the job's state after the cancel:
+// "cancelled" (a queued job, ended now) or "running" (flagged; the runner stops at
+// its next cancellable point).
+func (s *Scheduler) CancelDeploy(ctx context.Context, id int64, reason string, forbidden []string) (string, error) {
+	state, err := s.cfg.Store.cancelDeploy(ctx, id, reason, forbidden)
+	if err != nil {
+		return "", err
+	}
+	if state == StateRunning {
+		s.cancelRunning(id, reason)
+	}
+	s.Notify()
+	return state, nil
+}
+
 // MaxSessionsPerCancel bounds one CancelSessionJobs call.
 const MaxSessionsPerCancel = 1000
 

@@ -89,7 +89,7 @@ func recordAppSubnet(ctx context.Context, st *store.Store, docker *dockerapi.Cli
 // before it fails; nothing polls otherwise.
 type localCaller struct{ h *hub.Hub }
 
-var errLocalAgentDown = errors.New("the local agent is not connected")
+var errLocalAgentDown = deploy.ErrAgentDown
 
 func (l localCaller) Call(ctx context.Context, op string, args any, onLine func(agent.Line)) (json.RawMessage, error) {
 	for i := 0; ; i++ {
