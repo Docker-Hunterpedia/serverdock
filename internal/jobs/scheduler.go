@@ -64,6 +64,8 @@ type Scheduler struct {
 	mu       sync.Mutex
 	paused   bool
 	stopping bool
+	stopped  chan struct{} // closed by stop(): a shutdown signal that does not depend on a job's cancel cause
+	stopOne  sync.Once
 	running  map[int64]context.CancelCauseFunc
 	active   int              // workers started and not finished (running is removed earlier, before the result is recorded)
 	pending  map[int64]string // cancels that arrived during a pick (picking), before the picked job was registered; emptied when that pick ends
@@ -101,10 +103,16 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 	}
 	return &Scheduler{
 		cfg: cfg, bootID: hex.EncodeToString(b[:]),
-		notify: make(chan struct{}, 1), gate: make(chan struct{}),
+		notify: make(chan struct{}, 1), gate: make(chan struct{}), stopped: make(chan struct{}),
 		running: map[int64]context.CancelCauseFunc{}, pending: map[int64]string{},
 	}, nil
 }
+
+// Stopping is closed when the scheduler stops (a shutdown). A running job's
+// context carries only the FIRST cancel cause (a supersede that came earlier hides
+// ErrShutdown), so a job that must react to a shutdown whatever else cancelled it
+// (the drain, the clean-up bound) selects on this instead.
+func (s *Scheduler) Stopping() <-chan struct{} { return s.stopped }
 
 // BootID identifies this scheduler's run; it is stored on every job it starts.
 func (s *Scheduler) BootID() string { return s.bootID }
@@ -508,6 +516,7 @@ func (s *Scheduler) record(ctx context.Context, j Job, runErr, cause error) {
 
 // stop pauses dispatching and cancels every running job's context.
 func (s *Scheduler) stop() {
+	s.stopOne.Do(func() { close(s.stopped) })
 	s.mu.Lock()
 	s.stopping = true
 	cancels := make([]context.CancelCauseFunc, 0, len(s.running))

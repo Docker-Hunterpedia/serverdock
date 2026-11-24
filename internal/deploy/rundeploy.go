@@ -155,6 +155,8 @@ type run struct {
 	createSent   bool   // a create was sent: the candidate may exist even if cid is ""
 	started      bool
 	failedDB     bool // a database write failed (logged once)
+	switched     bool // the switch was started: the routes may point at the candidate
+	reverted     bool // the routes were put back (revert ran)
 	committed    bool // the commit transaction succeeded: from here the candidate is the live version and is never removed
 	warnings     []string
 	switchDetail string // the switch stage's detail, written in the commit transaction
@@ -315,6 +317,11 @@ func (rn *run) execute(ctx context.Context) *failure {
 		return f
 	}
 	pausePoint("health:after")
+	if pctx.Err() != nil { // the watchdog fired between the gate and the switch: it still applies before the switch
+		f := rn.ctxFailure0(pctx)
+		f.appSafe = rn.appSafe(nil)
+		return f
+	}
 	// Switch, commit, drain and stop_old run on a context cut off from the job's
 	// cancellation and watchdog (plan 0004, "Deadlines and contexts"), each with
 	// its own bound (switch.go); the job context stays in rn.jobCtx only so they
@@ -957,9 +964,12 @@ func (rn *run) finish(f *failure) error {
 	if f == nil {
 		f = &failure{code: CodeStartFailed, msg: "the deploy ended without a result"}
 	}
-	bound := rn.r.cfg.CleanupBound
-	if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
-		bound = rn.r.cfg.ShutdownCleanupBound // the process is going away: 5 s
+	bound := rn.cleanupBound() // 30 s, or 5 s when the process is going away
+	if !f.noRecord && rn.switched {
+		// The routes may point at the candidate (a panic, or any early return, after
+		// the switch): put them back BEFORE it is removed, so no route names a
+		// container that is gone and whose address may be handed out again.
+		f = rn.unwindSwitch(f)
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
 	defer cancel()
@@ -991,8 +1001,9 @@ func (rn *run) finish(f *failure) error {
 // removeCandidate stops and removes this attempt's container: the one it knows by
 // id, and, when a create was sent whose answer never arrived (a timeout) or the
 // inspect of the container was not trusted, every container of this install
-// carrying this service, deploy and attempt in its labels. The candidate never
-// served traffic, so it is stopped with no grace. It is forgotten (Untrack) only
+// carrying this service, deploy and attempt in its labels. A candidate the
+// switch never reached never served traffic and is stopped with no grace; one the
+// routes pointed at (rn.switched) may have, and gets stop_grace_s. It is forgotten (Untrack) only
 // after its removal succeeded.
 func (rn *run) removeCandidate(ctx context.Context) {
 	ops := rn.r.cfg.Ops
@@ -1015,7 +1026,7 @@ func (rn *run) removeCandidate(ctx context.Context) {
 		}
 	}
 	for id := range ids {
-		stopErr := ops.ContainerStop(ctx, id, 0)
+		stopErr := rn.stopCandidate(ctx, id)
 		gone := agentops.IsCode(stopErr, agent.CodeNotFound)
 		if stopErr != nil && !gone {
 			rn.op(ctx, stopErr)

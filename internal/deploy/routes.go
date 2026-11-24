@@ -245,6 +245,7 @@ type Routes struct {
 	state StateMap
 
 	lock      chan struct{} // the global route lock: a token in it means held (capacity 1)
+	ovMu      sync.Mutex    // guards overrides; never held across anything else, so clearing needs no route lock
 	overrides map[int64]Override
 	lastHash  string
 	failed    map[int]bool // ports of the last apply that could not be bound
@@ -348,7 +349,7 @@ func (r *Routes) CommitRoutes(ctx context.Context, service int64, commit func() 
 		if err := commit(); err != nil {
 			return err
 		}
-		delete(r.overrides, service)
+		r.delOverride(service)
 		return nil
 	})
 }
@@ -385,6 +386,15 @@ func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach b
 		return &MutateError{Err: fmt.Errorf("waiting for the route lock: %w", err)}
 	}
 	defer r.release()
+	// A panic past this point (in mutate, the build or the send) leaves the outcome
+	// unknown: forget the hash so the next apply always sends, then let it go on.
+	defer func() {
+		if p := recover(); p != nil {
+			r.lastHash = ""
+			r.setStale(true)
+			panic(p)
+		}
+	}()
 	committed := false
 	if mutate != nil {
 		if err := mutate(); err != nil {
@@ -470,12 +480,37 @@ func (r *Routes) Refresh(ctx context.Context) error { return r.apply(ctx, nil, t
 
 // SetOverride sets the service's override and applies.
 func (r *Routes) SetOverride(ctx context.Context, service int64, o Override) error {
-	return r.apply(ctx, func() error { r.overrides[service] = o; return nil }, false, false)
+	return r.apply(ctx, func() error { r.setOverride(service, o); return nil }, false, false)
 }
 
-// ClearOverride removes the service's override and applies.
+// ClearOverride removes the service's override and applies. The removal does not
+// wait for the route lock: it happens first, under its own short mutex, so a
+// repair whose bound runs out while another apply holds the lock still leaves no
+// override behind (an override that outlived its deploy would keep routing the
+// port to a container that is about to be removed). Only the apply that follows
+// waits for the lock, within ctx.
 func (r *Routes) ClearOverride(ctx context.Context, service int64) error {
-	return r.apply(ctx, func() error { delete(r.overrides, service); return nil }, false, false)
+	r.delOverride(service)
+	return r.apply(ctx, nil, false, false)
+}
+
+func (r *Routes) setOverride(service int64, o Override) {
+	r.ovMu.Lock()
+	r.overrides[service] = o
+	r.ovMu.Unlock()
+}
+
+func (r *Routes) delOverride(service int64) {
+	r.ovMu.Lock()
+	delete(r.overrides, service)
+	r.ovMu.Unlock()
+}
+
+func (r *Routes) overrideOf(service int64) (Override, bool) {
+	r.ovMu.Lock()
+	defer r.ovMu.Unlock()
+	o, ok := r.overrides[service]
+	return o, ok
 }
 
 // SetContainer records a container (from an inspect) and applies. A change that
@@ -579,7 +614,7 @@ func (r *Routes) build(ctx context.Context) ([]agentops.Route, error) {
 	out := make([]agentops.Route, 0, len(rows))
 	for _, x := range rows {
 		deploy, ip, port := x.deploy, x.ip, x.containerPort
-		if o, ok := r.overrides[x.service]; ok {
+		if o, ok := r.overrideOf(x.service); ok {
 			switch o.Kind {
 			case OverrideMaintenance:
 				out = append(out, agentops.Route{Port: x.port, Page: agentops.PageMaintenance})

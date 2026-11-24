@@ -43,7 +43,7 @@ const (
 	// CommitBound bounds the wait for the route lock and the commit transaction. The
 	// apply that follows a committed change has Routes' own bound (ApplyBound): it
 	// normally sends nothing, because the commit does not change the routes.
-	CommitBound = 10 * time.Second
+	CommitBound = 10 * time.Second // the commit transaction; the lock wait before it has SwitchBound
 	// StopExtra is added to stop_grace_s for the stop of the previous container.
 	StopExtra = 15 * time.Second
 	// RemoveBound bounds the removal of the previous container, and the list that
@@ -161,10 +161,58 @@ func (rn *run) cancelFailureFor(reason string) *failure {
 // cleanupBound is the bound of a re-apply or a removal on a fresh context: 30 s,
 // or 5 s when the process is shutting down.
 func (rn *run) cleanupBound() time.Duration {
-	if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
+	if rn.shuttingDown() {
 		return rn.r.cfg.ShutdownCleanupBound
 	}
 	return rn.r.cfg.CleanupBound
+}
+
+// shuttingDown: the process is stopping. The job context's cancel cause is only
+// the FIRST cause (a supersede or revoke earlier hides a later ErrShutdown), so the
+// scheduler's own stop signal is checked as well.
+func (rn *run) shuttingDown() bool {
+	if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
+		return true
+	}
+	if st := rn.stopChan(); st != nil {
+		select {
+		case <-st:
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+func (rn *run) stopChan() <-chan struct{} {
+	if rn.r.cfg.Stopping == nil {
+		return nil
+	}
+	return rn.r.cfg.Stopping()
+}
+
+// unwindSwitch is finish's hook for a deploy that ends before its commit after the
+// switch was applied (a panic, an early return): the routes are put back first (once;
+// revert records that it ran), and the candidate is removed only if the proxy
+// confirmed it.
+func (rn *run) unwindSwitch(f *failure) *failure {
+	if rn.reverted {
+		return f
+	}
+	return rn.revert(f)
+}
+
+// stopCandidate stops the candidate: with no grace if the routes never pointed at
+// it, with stop_grace_s (its own bound) if they did, since it may have served
+// requests. At shutdown the grace is dropped.
+func (rn *run) stopCandidate(ctx context.Context, id string) error {
+	if !rn.switched || rn.shuttingDown() {
+		return rn.r.cfg.Ops.ContainerStop(ctx, id, 0)
+	}
+	grace := rn.snap.StopGraceS
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(grace)*time.Second+StopExtra)
+	defer cancel()
+	return rn.r.cfg.Ops.ContainerStop(sctx, id, grace)
 }
 
 // routeErrText is what the user is told about a route failure: never the proxy's
@@ -189,6 +237,7 @@ func (rn *run) switchTraffic(ctx context.Context) *failure {
 		return f
 	}
 	rn.trace("switch")
+	rn.switched = true // from here the routes may name the candidate: finish unwinds them on any exit
 	err := rn.r.cfg.Routes.SetOverride(sctx, rn.svc.id, Override{Kind: OverrideUpstream, Deploy: rn.deploy, IP: rn.ip, Port: rn.snap.ContainerPort})
 	switch {
 	case err == nil:
@@ -205,19 +254,22 @@ func (rn *run) switchTraffic(ctx context.Context) *failure {
 	return nil
 }
 
-// ensureTracked makes sure the state map shows the candidate running at its
-// address before it is routed to (an upstream override for a container the map
+// ensureTracked inspects the candidate once more and makes sure the state map
+// shows it running at its address before it is routed to (an upstream override for a container the map
 // does not hold would serve the "not running" page instead of the new version).
 // The runner recorded it at start; a map that was replaced since (a resync) is
 // refreshed here from the runner's own inspect. Nothing is routed yet, so a
 // failure here ends the deploy like any pre-switch failure.
 func (rn *run) ensureTracked(ctx context.Context) *failure {
-	if c, ok := rn.r.cfg.Tracker.State().Get(rn.cid); ok && c.Service == rn.svc.id && c.Deploy == rn.deploy && c.IP == rn.ip && c.State == StateRunning {
-		return nil
-	}
+	// Always a fresh inspect (one call): the candidate is checked running right
+	// before it is routed to and committed, not trusted from the map.
 	if f := rn.confirm(ctx); f != nil {
 		f.msg = "before switching traffic: " + f.msg
 		return f
+	}
+	if c, ok := rn.r.cfg.Tracker.State().Get(rn.cid); !ok || c.State != StateRunning {
+		// Never switch to (and commit) a candidate that is not running.
+		return &failure{code: CodeExited, appSafe: rn.appSafe(nil), msg: "the new version stopped before traffic was switched to it"}
 	}
 	return nil
 }
@@ -235,6 +287,7 @@ func (rn *run) revert(f *failure) *failure {
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rn.cleanupBound())
 	defer cancel()
 	rn.trace("revert")
+	rn.reverted = true
 	err := rn.r.cfg.Routes.ClearOverride(fctx, rn.svc.id)
 	if err != nil && !errors.Is(err, ErrRoutesNotReady) {
 		rn.r.cfg.Log.Warn("the previous routes could not be re-applied; the new container is kept", "deploy", rn.deploy, "err", err.Error())
@@ -314,9 +367,16 @@ func (rn *run) commitTx(ctx context.Context) error {
 // no reload) on its own bound. A deploy that is committed stays committed
 // whatever else fails here.
 func (rn *run) commit(ctx context.Context) *failure {
-	cctx, cancel := context.WithTimeout(ctx, rn.r.cfg.CommitBound)
+	// The wait for the route lock (one in-flight apply of any service) has the
+	// switch's allowance; the transaction itself keeps the commit bound.
+	cctx, cancel := context.WithTimeout(ctx, rn.r.cfg.SwitchBound)
 	defer cancel()
-	err := rn.r.cfg.Routes.CommitRoutes(cctx, rn.svc.id, func() error { return rn.commitTx(cctx) })
+	rn.trace("commit:lock")
+	err := rn.r.cfg.Routes.CommitRoutes(cctx, rn.svc.id, func() error {
+		tctx, tcancel := context.WithTimeout(cctx, rn.r.cfg.CommitBound)
+		defer tcancel()
+		return rn.commitTx(tctx)
+	})
 	if rn.committed {
 		if err != nil && !errors.Is(err, ErrRoutesNotReady) {
 			// Committed, but the send after it failed (the routes are marked stale: the
@@ -361,6 +421,7 @@ func orNilText(err error) string {
 
 // clearOverride clears the service's override and re-applies, on a fresh context.
 func (rn *run) clearOverride() error {
+	rn.reverted = true
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rn.cleanupBound())
 	defer cancel()
 	return rn.r.cfg.Routes.ClearOverride(fctx, rn.svc.id)
@@ -462,10 +523,13 @@ func (rn *run) drain() (shutdown bool) {
 	t := time.NewTimer(time.Duration(rn.snap.DrainS) * rn.r.cfg.DrainUnit)
 	defer t.Stop()
 	done := rn.jobCtx.Done()
+	stop := rn.stopChan() // a shutdown even when an earlier cancel hid ErrShutdown
 	for {
 		select {
 		case <-t.C:
 			return false
+		case <-stop:
+			return true
 		case <-done:
 			if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
 				return true
@@ -576,6 +640,11 @@ func (rn *run) finishCommitted(f *failure) error {
 	}
 	if f != nil {
 		rn.warn("ServerDock hit an internal error after switching traffic; the new version is live and the previous container may still need removing")
+		if rn.switched { // a panic inside the commit's mutate leaves the override behind
+			if err := rn.clearOverride(); err != nil {
+				rn.r.cfg.Log.Warn("the override could not be cleared after an internal error", "deploy", rn.deploy, "err", err.Error())
+			}
+		}
 	}
 	rn.recordSucceeded()
 	return nil

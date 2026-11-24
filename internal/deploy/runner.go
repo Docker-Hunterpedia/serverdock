@@ -60,7 +60,11 @@ type RunnerConfig struct {
 	// container's id before that container is stopped, to keep the tail of its
 	// output in its deploy's log. Nil until step 11. A failure never fails the
 	// deploy: the stage detail says "log not kept: <reason>".
-	KeepLog func(ctx context.Context, deploy int64, container string) error
+	// Stopping, if set, returns a channel closed when the process is shutting down
+	// (*jobs.Scheduler.Stopping). It is independent of the job's cancel cause, which
+	// keeps only the first cause (a supersede hides a later shutdown).
+	Stopping func() <-chan struct{}
+	KeepLog  func(ctx context.Context, deploy int64, container string) error
 }
 
 // Runner runs the jobs of the scheduler (jobs.RunFunc). Every run, and every

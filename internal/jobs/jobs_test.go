@@ -1163,6 +1163,36 @@ func TestSucceededJobSettlesACommittedDeployRow(t *testing.T) {
 	}
 	// The address is free again.
 	e.exec(t, `INSERT INTO deploys(service_id, number, kind, snapshot_json, ip, status, actor_kind, actor_id, created_at) VALUES (?, 99, 'deploy', '{}', '10.250.0.7', 'running', 'user', '1', 'x')`, svc)
+
+	// The other half: a row that never committed is left alone by a succeeded job.
+	svc2 := e.service(t, "api")
+	enq2, _ := e.js.EnqueueDeploy(ctx, deploy(svc2))
+	e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq2.JobID)
+	e.exec(t, `UPDATE deploys SET status = 'running' WHERE id = ?`, enq2.DeployID)
+	if err := e.js.Finish(ctx, enq2.JobID, StateSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	var st2 string
+	e.st.R.QueryRow(`SELECT status FROM deploys WHERE id = ?`, enq2.DeployID).Scan(&st2)
+	if st2 != "running" {
+		t.Errorf("a row that never committed became %s", st2)
+	}
+
+	// And a cancelled or failed job never records a committed deploy as such.
+	for _, state := range []string{StateCancelled, StateFailed} {
+		svc3 := e.service(t, "w"+state)
+		enq3, _ := e.js.EnqueueDeploy(ctx, deploy(svc3))
+		e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq3.JobID)
+		e.exec(t, `UPDATE deploys SET status = 'running', stage = 'drain', committed_at = 'x' WHERE id = ?`, enq3.DeployID)
+		if err := e.js.Finish(ctx, enq3.JobID, state, "superseded"); err != nil {
+			t.Fatal(err)
+		}
+		var st3 string
+		e.st.R.QueryRow(`SELECT status FROM deploys WHERE id = ?`, enq3.DeployID).Scan(&st3)
+		if st3 != "succeeded" {
+			t.Errorf("job %s: a committed deploy was recorded %s", state, st3)
+		}
+	}
 }
 
 // The cancel and the stage check are one transaction: a deploy in switch (or any
@@ -1197,5 +1227,22 @@ func TestCancelDeployChecksTheStageAtomicallyWithTheFlag(t *testing.T) {
 	q, _ := e.js.EnqueueDeploy(ctx, deploy(e.service(t, "api")))
 	if state, err := s.CancelDeploy(ctx, q.JobID, "cancelled", forbidden); err != nil || state != StateCancelled {
 		t.Fatalf("%s %v", state, err)
+	}
+}
+
+// A deploy that has already ended (its job is about to) is never "cancelling".
+func TestCancelDeployRefusesAnEndedDeploy(t *testing.T) {
+	e := newEnv(t)
+	svc := e.service(t, "web")
+	enq, _ := e.js.EnqueueDeploy(ctx, deploy(svc))
+	e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
+	e.exec(t, `UPDATE deploys SET status = 'succeeded', stage = 'done' WHERE id = ?`, enq.DeployID)
+	if _, err := e.js.cancelDeploy(ctx, enq.JobID, "cancelled", []string{"switch"}); !errors.Is(err, ErrNotCancellable) {
+		t.Fatalf("err %v, want ErrNotCancellable", err)
+	}
+	var flag int
+	e.st.R.QueryRow(`SELECT cancel_requested FROM jobs WHERE id = ?`, enq.JobID).Scan(&flag)
+	if flag != 0 {
+		t.Error("the cancel flag was set")
 	}
 }

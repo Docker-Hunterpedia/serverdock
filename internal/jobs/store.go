@@ -425,6 +425,12 @@ const DeniedReason = "the user or token that queued this deploy can no longer ru
 // The runner normally ends the row itself first, with a precise reason; this only
 // touches rows still queued or running (the cancelTx pattern).
 func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText string, denied bool, now time.Time) error {
+	// A deploy that has committed is the service's live version: whatever ended its
+	// job (a cancel or supersede that reached the drain, a shutdown), it is never
+	// recorded failed, cancelled or superseded.
+	if err := settleCommittedDeployTx(ctx, tx, job, now); err != nil {
+		return err
+	}
 	ts := FormatTime(now)
 	status, code, reason := "failed", "job_failed", clip(errText, 512)
 	switch {
@@ -562,9 +568,13 @@ func (s *Store) cancelDeploy(ctx context.Context, id int64, reason string, forbi
 	var state string
 	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
 		var stage sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT stage FROM deploys WHERE job_id = ? AND status = 'running'`, id).Scan(&stage)
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT stage, status FROM deploys WHERE job_id = ?`, id).Scan(&stage, &status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if err == nil && status != "queued" && status != "running" {
+			return ErrNotCancellable // the deploy has ended (its job is about to): never "cancelling"
 		}
 		if stage.Valid {
 			for _, f := range forbidden {

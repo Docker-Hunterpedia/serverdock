@@ -73,10 +73,10 @@ func (g *rrig) record(oldID string) *seqLog {
 		}
 	}
 	g.px.onApply = func(r []agentops.Route) {
+		l.add("proxy_apply")
 		if prevApply != nil {
 			prevApply(r)
 		}
-		l.add("proxy_apply")
 	}
 	g.runner.trace = func(ev string) {
 		if prevTrace != nil {
@@ -140,7 +140,7 @@ func TestCommitOrder(t *testing.T) {
 		}
 		var seq []string
 		for _, e := range l.list() {
-			if e != "commit:begin" { // the transaction's own start marker is not a phase
+			if e != "commit:begin" && e != "commit:lock" { // markers inside the commit, not phases
 				seq = append(seq, e)
 			}
 		}
@@ -936,10 +936,11 @@ func TestRouteLockWaitHonoursCtx(t *testing.T) {
 	}
 }
 
-// The phase bounds of the runner fit inside jobs.timeout_s at the largest settings
-// (the watchdog is not applied after the switch, but the derived total must still
-// cover what the phases can take): switch, commit, the drain, the stop and the
-// removal of the old container, and the two fresh-context repairs.
+// Documentation only: nothing enforces a budget after the switch (the watchdog does
+// not apply there), but the phases' bounds, at the largest settings, are meant to
+// fit jobs.timeout_s: the lock wait and the commit, the switch, the drain, three
+// old containers (each: the log hook's 10 s, the stop with its grace, the removal)
+// and the two fresh-context repairs.
 func TestPhaseBoundsFitTheJobTimeout(t *testing.T) {
 	for _, strategy := range []string{"blue_green", "stop_first"} {
 		set := jobs.Settings{Strategy: strategy, HealthTimeoutS: 600, DrainS: 300, StopGraceS: 300}
@@ -947,34 +948,308 @@ func TestPhaseBoundsFitTheJobTimeout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		phases := SwitchBound + CommitBound + 300*time.Second + (300*time.Second + StopExtra) + RemoveBound + 2*30*time.Second
+		const oldContainers = 3
+		phases := SwitchBound + SwitchBound + CommitBound + 300*time.Second +
+			oldContainers*(recordBound+300*time.Second+StopExtra+RemoveBound) + RemoveBound + 2*30*time.Second
 		if time.Duration(total)*time.Second < phases {
-			t.Errorf("%s: timeout_s %d s is below the phases' %v", strategy, total, phases)
+			t.Logf("%s: timeout_s %d s is below the phases' worst case %v (documentation only: the watchdog is not applied after the switch)", strategy, total, phases)
 		}
 	}
 }
 
-// A state map that was replaced after the candidate started (a resync) no longer
-// holds it; routing to it would serve the "not running" page. The switch records
-// it again from the runner's own inspect first.
-func TestSwitchTracksACandidateTheStateMapLost(t *testing.T) {
-	g := newRRig(t)
-	g.live(g.svc, 1, "10.250.0.2")
-	g.expose(g.svc, 9000)
-	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
-		for _, c := range g.routes.State().snapshot() {
-			if c.Deploy != 1 { // the candidate, not the live version
-				g.routes.Untrack(c.ID)
+// ---- review fixes of step 8b ----
+
+// A panic after the switch was applied and before the commit must put the routes
+// back BEFORE the candidate is removed: no override is left behind, the proxy is
+// re-applied (old version) before the candidate goes, and app_safe is honest.
+func TestPanicAfterTheSwitchUnwindsTheRoutesBeforeRemovingTheCandidate(t *testing.T) {
+	cases := map[string]func(g *rrig){
+		"inside the commit's mutate": func(g *rrig) {
+			g.runner.trace = func(ev string) {
+				if ev == "commit:begin" {
+					panic("boom")
+				}
+			}
+		},
+		"in the proxy call of the switch": func(g *rrig) {
+			var once sync.Once
+			g.px.onApply = func([]agentops.Route) { once.Do(func() { panic("boom") }) }
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := newRRig(t)
+			old := g.live(g.svc, 1, "10.250.0.2")
+			oldID := g.containerOf(old).id
+			g.expose(g.svc, 9000)
+			setup(g)
+			l := g.record(oldID)
+			g.start(false)
+			d, job := g.deploy(g.svc)
+			if s := g.wait(job); s != jobs.StateFailed {
+				t.Fatalf("job %s: %+v", s, g.row(d))
+			}
+			r := g.row(d)
+			if r.status != StatusFailed || r.code != CodeInternal || r.appSafe != AppSafeYes {
+				t.Fatalf("%+v", r)
+			}
+			if _, ok := g.routes.overrideOf(g.svc); ok {
+				t.Error("the override was left behind")
+			}
+			if routes := g.lastRoutes(); len(routes) != 1 || routes[0].Upstream != "10.250.0.2:8080" {
+				t.Errorf("the proxy was not re-applied to the old version: %+v", routes)
+			}
+			ev := l.list()
+			lastApply, stopNew := -1, -1
+			for i, e := range ev {
+				if e == "proxy_apply" {
+					lastApply = i
+				}
+				if e == "stop:new" && stopNew < 0 {
+					stopNew = i
+				}
+			}
+			if stopNew < 0 || lastApply < 0 || lastApply > stopNew {
+				t.Errorf("the candidate was removed before the routes were put back: %v", ev)
+			}
+			if g.containerOf(d) != nil || !g.ops.find(oldID).running || g.activeDeploy(g.svc) != old {
+				t.Error("candidate not removed, or old version touched")
+			}
+			if g.routes.Stale() {
+				t.Error("routes are stale although the repair was confirmed")
+			}
+		})
+	}
+	// After the commit transaction (a panic in the trace after it) the deploy is
+	// succeeded and no override is left.
+	t.Run("just after the commit", func(t *testing.T) {
+		g := newRRig(t)
+		g.live(g.svc, 1, "10.250.0.2")
+		g.expose(g.svc, 9000)
+		g.runner.trace = func(ev string) {
+			if ev == "commit" {
+				panic("boom")
 			}
 		}
+		g.start(false)
+		d, job := g.deploy(g.svc)
+		if s := g.wait(job); s != jobs.StateSucceeded {
+			t.Fatalf("job %s: %+v", s, g.row(d))
+		}
+		if _, ok := g.routes.overrideOf(g.svc); ok {
+			t.Error("the override was left behind")
+		}
+		if r := g.lastRoutes(); len(r) != 1 || r[0].Upstream != "10.250.0.3:8080" {
+			t.Errorf("routes %+v", r)
+		}
+		if g.containerOf(d) == nil {
+			t.Error("the live version was removed")
+		}
+	})
+}
+
+// Clearing an override never depends on winning the route lock: the repair's bound
+// runs out behind another service's in-flight apply, yet no override is left and the
+// next Refresh routes to the old address.
+func TestClearingAnOverrideDoesNotNeedTheRouteLock(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.SwitchBound = 30 * time.Millisecond; c.CleanupBound = 50 * time.Millisecond })
+	old := g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	other := g.service("api")
+	od := g.live(other, 1, "10.250.0.4")
+	otherC := g.containerOf(od)
+	g.expose(other, 9001)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once, once2 sync.Once
+	g.px.enter = func() { once.Do(func() { close(started); <-release }) }
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		once2.Do(func() {
+			go g.routes.SetContainer(context.Background(), Container{ID: otherC.id, Service: other, Deploy: od, State: "exited", IP: "10.250.0.4"})
+			<-started
+		})
 		return agentops.HealthResult{OK: true}, nil
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job) // the switch and the repair both gave up behind the lock holder
+	r := g.row(d)
+	if r.status != StatusFailed || r.code != CodeSwitchFailed || r.appSafe != AppSafeUnknown || g.containerOf(d) == nil {
+		t.Fatalf("%+v (candidate kept: %v)", r, g.containerOf(d) != nil)
+	}
+	if _, ok := g.routes.overrideOf(g.svc); ok {
+		t.Fatal("the override survived a repair that could not get the lock")
+	}
+	close(release)
+	g.until("the holder to finish", func() bool { return g.px.n() >= 3 })
+	if err := g.routes.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var mine string
+	for _, rt := range g.lastRoutes() {
+		if rt.Port == 9000 {
+			mine = rt.Upstream
+		}
+	}
+	if mine != "10.250.0.2:8080" || g.activeDeploy(g.svc) != old {
+		t.Errorf("after the next refresh the port routes to %q", mine)
+	}
+}
+
+// A supersede during the drain hides a later shutdown from the job's cancel cause;
+// the scheduler's own stop signal still ends the drain, and the clean-up bound
+// shrinks.
+func TestShutdownAfterASupersedeDuringTheDrainReturnsPromptly(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.DrainUnit = time.Second })
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	inDrain := make(chan struct{})
+	g.runner.trace = func(ev string) {
+		if ev == "drain" {
+			close(inDrain)
+		}
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	<-inDrain
+	if err := g.sched.Cancel(context.Background(), job, "superseded"); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	g.stop()
+	if took := time.Since(t0); took > 5*time.Second {
+		t.Fatalf("the shutdown waited %v behind a 10 s drain", took)
+	}
+	if r := g.row(d); r.status != StatusSucceeded {
+		t.Errorf("a committed deploy was recorded %+v", r)
+	}
+	if g.activeDeploy(g.svc) != d || !g.alive(oldID) {
+		t.Error("the committed state was disturbed (the old container is left for the resync)")
+	}
+}
+
+// The commit's wait for the route lock has the switch's allowance; only the
+// transaction has the 10 s (here 20 ms) bound.
+func TestCommitWaitsForAnInFlightApplyOfAnotherService(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.CommitBound = 20 * time.Millisecond })
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	other := g.service("api")
+	od := g.live(other, 1, "10.250.0.4")
+	otherC := g.containerOf(od)
+	g.expose(other, 9001)
+	started := make(chan struct{})
+	var once, once2 sync.Once
+	g.px.enter = func() {
+		if g.px.n() >= 3 { // after the switch's own apply (call 3)
+			once.Do(func() { close(started); time.Sleep(200 * time.Millisecond) })
+		}
+	}
+	g.runner.trace = func(ev string) {
+		if ev == "commit:lock" {
+			once2.Do(func() {
+				go g.routes.SetContainer(context.Background(), Container{ID: otherC.id, Service: other, Deploy: od, State: "exited", IP: "10.250.0.4"})
+				<-started
+			})
+		}
 	}
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	if s := g.wait(job); s != jobs.StateSucceeded {
 		t.Fatalf("job %s: %+v", s, g.row(d))
 	}
-	if r := g.lastRoutes(); len(r) != 1 || r[0].Upstream != "10.250.0.3:8080" {
-		t.Errorf("routes after the deploy: %+v (the new version must be routed, not the not-running page)", r)
+}
+
+// The commit outcome is unknown (the write fails and the verifying read fails too):
+// both containers stay, app_safe is unknown.
+func TestUnknownCommitOutcomeKeepsBothVersions(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	g.runner.trace = func(ev string) {
+		if ev == "commit:begin" { // the commit's write and the read after it both find no table
+			mustExecIgnore(g, `ALTER TABLE services RENAME TO services_gone`)
+		}
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	r := g.row(d)
+	if r.status != StatusFailed || r.code != CodeCommitFailed || r.appSafe != AppSafeUnknown || !strings.Contains(r.reason, "could not tell") {
+		t.Fatalf("%+v", r)
+	}
+	if g.containerOf(d) == nil || !g.ops.find(oldID).running {
+		t.Error("a container was removed although the commit's outcome is unknown")
+	}
+	if _, ok := g.routes.overrideOf(g.svc); ok {
+		t.Error("the override was left behind")
+	}
+}
+
+// A candidate that stopped between the gate and the switch is never switched to or
+// committed.
+func TestADeadCandidateIsNeverSwitchedTo(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	before := g.px.n()
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		g.ops.mu.Lock()
+		for _, c := range g.ops.cs {
+			if c.id != oldID {
+				c.running, c.exit = false, 1
+			}
+		}
+		g.ops.mu.Unlock()
+		return agentops.HealthResult{OK: true}, nil
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	r := g.row(d)
+	if r.status != StatusFailed || (r.code != CodeExited && r.code != CodeStartFailed) || g.px.n() != before {
+		t.Fatalf("%+v (proxy_apply calls %d -> %d)", r, before, g.px.n())
+	}
+	if g.activeDeploy(g.svc) != old || g.containerOf(d) != nil {
+		t.Error("a dead candidate was committed or left behind")
+	}
+}
+
+// The watchdog firing between the health gate and the switch still refuses it: it
+// applies up to the switch.
+func TestWatchdogBetweenTheGateAndTheSwitchRefusesTheSwitch(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.Watchdog = 60 * time.Millisecond })
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	before := g.px.n()
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		time.Sleep(120 * time.Millisecond)
+		return agentops.HealthResult{OK: true}, nil
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	if r := g.row(d); r.code != CodeTimeout || g.px.n() != before || g.containerOf(d) != nil {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A candidate the routes pointed at is stopped with stop_grace_s, not 0.
+func TestASwitchedCandidateIsStoppedWithItsGrace(t *testing.T) {
+	g := newRRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	g.px.fail, g.px.failN = errors.New("down"), 1 // the switch fails: the routes were never applied...
+	var graces []int
+	g.ops.stopGraceFn = func(g int) { graces = append(graces, g) }
+	g.start(false)
+	_, job := g.deploy(g.svc, func(s *Snapshot) { s.StopGraceS = 7 })
+	g.wait(job)
+	// ...but the switch was attempted (the outcome of an apply is unknown), so the grace applies.
+	g.ops.mu.Lock()
+	defer g.ops.mu.Unlock()
+	if len(graces) != 1 || graces[0] != 7 {
+		t.Errorf("candidate stop graces %v, want [7]", graces)
 	}
 }

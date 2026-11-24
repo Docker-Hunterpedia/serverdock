@@ -57,16 +57,17 @@ type fakeOps struct {
 	pullN      atomic.Int32
 	proxyCalls atomic.Int32
 
-	pullFn     func(ctx context.Context, ref string, on func(agentops.PullProgress)) (agentops.PullResult, error)
-	createFn   func(ctx context.Context, name string, spec dockerapi.CreateSpec, ip string) (agentops.CreateResult, error, bool) // handled
-	startFn    func(c *fcont)                                                                                                    // after start: change the state (crash, ...)
-	healthFn   func(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error)
-	inspectFn  func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
-	listErr    error
-	removeErr  error
-	stopErrFn  func(id string) error // an error for a stop of this container id
-	netMissing atomic.Bool           // the app network is "pruned": create and network_inspect say so
-	labelsSeen []map[string]string
+	pullFn      func(ctx context.Context, ref string, on func(agentops.PullProgress)) (agentops.PullResult, error)
+	createFn    func(ctx context.Context, name string, spec dockerapi.CreateSpec, ip string) (agentops.CreateResult, error, bool) // handled
+	startFn     func(c *fcont)                                                                                                    // after start: change the state (crash, ...)
+	healthFn    func(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error)
+	inspectFn   func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
+	listErr     error
+	removeErr   error
+	stopGraceFn func(grace int)
+	stopErrFn   func(id string) error // an error for a stop of this container id
+	netMissing  atomic.Bool           // the app network is "pruned": create and network_inspect say so
+	labelsSeen  []map[string]string
 	// afterNetInspect, if set, runs after a successful network_inspect.
 	afterNetInspect func()
 	// removeHook, if set, runs at the start of every container_remove.
@@ -202,8 +203,11 @@ func (f *fakeOps) ContainerStart(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeOps) ContainerStop(ctx context.Context, id string, _ int) error {
+func (f *fakeOps) ContainerStop(ctx context.Context, id string, grace int) error {
 	f.rec(ctx, "stop", id[:8])
+	if fn := f.stopGraceFn; fn != nil {
+		fn(grace)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.stopErrFn != nil {
@@ -404,7 +408,13 @@ func newRRig(t *testing.T, opts ...rigOpt) *rrig {
 	cfg := RunnerConfig{DB: st, Jobs: g.js, Inv: g.reg.SystemInvoker(), Refresh: g.refresh, Locks: &ServiceLocks{}, Log: log,
 		Ops: g.ops, Alloc: NewAllocator(st, g.ops, fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}), Tracker: g.routes, Net: g.net,
 		AppNet: fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}, Instance: instance, Routes: g.routes,
-		HealthInterval: 3 * time.Millisecond, CleanupBound: 5 * time.Second, ShutdownCleanupBound: 5 * time.Second, DrainUnit: time.Millisecond}
+		HealthInterval: 3 * time.Millisecond, CleanupBound: 5 * time.Second, ShutdownCleanupBound: 5 * time.Second, DrainUnit: time.Millisecond,
+		Stopping: func() <-chan struct{} {
+			if g.sched == nil {
+				return nil
+			}
+			return g.sched.Stopping()
+		}}
 	for _, o := range opts {
 		o(&cfg)
 	}
