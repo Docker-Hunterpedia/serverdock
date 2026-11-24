@@ -26,33 +26,33 @@ import (
 // start and the health gate, with the per-service lock, the address allocation,
 // supersede and cancel, transient retries, the pre-switch deadline and the
 // failure clean-up. It NEVER calls proxy_apply and never touches a route: the
-// switch, commit, drain and stop of the old version are step 8b, behind the
-// afterHealth seam. A candidate that passes its health gate is therefore removed
-// again and the deploy fails with code switch_unavailable, the old version
-// untouched (app_safe yes, or unknown for a first deploy).
+// switch, commit, drain and stop of the old version are step 8b (switch.go),
+// entered through afterHealth, which this file only calls. The source-scan test
+// keeps the route calls out of this file and out of runner.go.
 
 // Failure codes a deploy ends with (deploys.reason_code), besides the allocator's
 // (docker, ip_pool_exhausted, app_subnet).
 const (
-	CodePullFailed        = "pull_failed"
-	CodePullStalled       = "pull_stalled"
-	CodeDiskFull          = "disk_full"
-	CodePolicy            = "policy"
-	CodeNetwork           = "network"
-	CodeNameConflict      = "name_conflict"
-	CodeStartFailed       = "start_failed"
-	CodeHealthTimeout     = "health_timeout"
-	CodeExited            = "exited"
-	CodeOOM               = "oom"
-	CodeSuperseded        = "superseded"
-	CodeCancelled         = "cancelled"
-	CodeShutdown          = "shutdown"
-	CodeTimeout           = "timeout"
-	CodeDB                = "db"
-	CodeDenied            = "denied"
-	CodeSwitchUnavailable = "switch_unavailable" // the 8b seam: the candidate is healthy but cannot be switched in yet
-	CodeBadSnapshot       = "bad_snapshot"
-	CodeInternal          = "internal"
+	CodePullFailed    = "pull_failed"
+	CodePullStalled   = "pull_stalled"
+	CodeDiskFull      = "disk_full"
+	CodePolicy        = "policy"
+	CodeNetwork       = "network"
+	CodeNameConflict  = "name_conflict"
+	CodeStartFailed   = "start_failed"
+	CodeHealthTimeout = "health_timeout"
+	CodeExited        = "exited"
+	CodeOOM           = "oom"
+	CodeSuperseded    = "superseded"
+	CodeCancelled     = "cancelled"
+	CodeShutdown      = "shutdown"
+	CodeTimeout       = "timeout"
+	CodeDB            = "db"
+	CodeDenied        = "denied"
+	CodeSwitchFailed  = "switch_failed" // the proxy could not switch traffic to the candidate (the old routes were put back)
+	CodeCommitFailed  = "commit_failed" // the commit transaction failed (the old routes were put back)
+	CodeBadSnapshot   = "bad_snapshot"
+	CodeInternal      = "internal"
 )
 
 // app_safe values (deploys.app_safe).
@@ -65,6 +65,7 @@ const (
 // Deploy statuses the runner sets (the queue sets queued and superseded-while-queued).
 const (
 	StatusRunning    = "running"
+	StatusSucceeded  = "succeeded"
 	StatusFailed     = "failed"
 	StatusCancelled  = "cancelled"
 	StatusSuperseded = "superseded"
@@ -84,6 +85,7 @@ type failure struct {
 	retry     bool   // transient: the scheduler may try again while attempts remain
 	by        int64  // superseded_by
 	noRecord  bool   // the deploy had already ended: write nothing (the end state is the store's)
+	keep      bool   // do not remove the candidate: the routes may still point at it (a failed re-apply), or the commit's outcome is unknown
 }
 
 func (f *failure) Error() string { return f.msg }
@@ -144,22 +146,26 @@ type run struct {
 	snap    Snapshot
 	attempt int
 
-	stage      string // the stage in progress ("" before the first)
-	ip         string
-	imageID    string
-	digest     string
-	subnet     string
-	cid        string // the candidate's container id, once known
-	createSent bool   // a create was sent: the candidate may exist even if cid is ""
-	started    bool
-	failedDB   bool // a database write failed (logged once)
-	jobCtx     context.Context
-	snapErr    error
-	create     agentops.CreateArgs
+	stage        string // the stage in progress ("" before the first)
+	ip           string
+	imageID      string
+	digest       string
+	subnet       string
+	cid          string // the candidate's container id, once known
+	createSent   bool   // a create was sent: the candidate may exist even if cid is ""
+	started      bool
+	failedDB     bool // a database write failed (logged once)
+	committed    bool // the commit transaction succeeded: from here the candidate is the live version and is never removed
+	warnings     []string
+	switchDetail string // the switch stage's detail, written in the commit transaction
+	incomplete   bool   // a write after the commit failed ("record incomplete")
+	jobCtx       context.Context
+	snapErr      error
+	create       agentops.CreateArgs
 }
 
 func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (out RunDeployOut, err error) {
-	if r.cfg.Ops == nil || r.cfg.Alloc == nil || r.cfg.Net == nil || r.cfg.Tracker == nil || r.cfg.AppNet == nil || r.cfg.Instance == "" {
+	if r.cfg.Ops == nil || r.cfg.Alloc == nil || r.cfg.Net == nil || r.cfg.Tracker == nil || r.cfg.Routes == nil || r.cfg.AppNet == nil || r.cfg.Instance == "" {
 		return RunDeployOut{}, errors.New("deploys are not wired on this server")
 	}
 	// An error that ends the run before the deploy is known (the job or the deploy
@@ -185,7 +191,7 @@ func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (ou
 	defer func() {
 		if p := recover(); p != nil {
 			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
-			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: StatusFailed}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
+			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: rn.statusOf(&failure{})}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
 				msg: "ServerDock hit an internal error while deploying; the new version was removed"})
 		}
 	}()
@@ -254,6 +260,9 @@ func (rn *run) activeServing() bool {
 }
 
 func (rn *run) statusOf(f *failure) string {
+	if rn.committed {
+		return StatusSucceeded // the commit is the point of no return: the deploy is succeeded whatever came after
+	}
 	if f == nil {
 		return StatusFailed
 	}
@@ -263,8 +272,8 @@ func (rn *run) statusOf(f *failure) string {
 	return StatusFailed
 }
 
-// execute runs stages 1 to 4 and returns why the deploy ended. Under step 8a it
-// always returns a failure: the afterHealth seam fails a healthy candidate.
+// execute runs the stages and returns why the deploy ended: a failure, or nil
+// when it was committed (rn.committed) and ran through drain and stop_old.
 func (rn *run) execute(ctx context.Context) *failure {
 	if rn.snapErr != nil {
 		return &failure{code: CodeBadSnapshot, msg: "the deploy's settings could not be read: " + agent.CleanText(rn.snapErr.Error(), 200)}
@@ -307,22 +316,10 @@ func (rn *run) execute(ctx context.Context) *failure {
 	}
 	pausePoint("health:after")
 	// Switch, commit, drain and stop_old run on a context cut off from the job's
-	// cancellation and watchdog (plan 0004, "Deadlines and contexts"): the job
-	// context stays in rn.jobCtx only so the seam can read why it was cancelled.
-	return rn.r.afterHealth(context.WithoutCancel(rn.jobCtx), rn)
-}
-
-// afterHealth is the seam of step 8b: it takes a candidate that passed its health
-// gate through switch, commit, drain and stop_old. Step 8a has no switch, so it
-// fails the deploy; finish removes the candidate and nothing was routed.
-func defaultAfterHealth(_ context.Context, rn *run) *failure {
-	msg := "the new version is healthy, but this build of ServerDock cannot switch traffic to it yet"
-	if rn.svc.hasActive {
-		msg += "; the previous version keeps serving"
-	} else {
-		msg += "; there is no previous version, so nothing is being served"
-	}
-	return &failure{code: CodeSwitchUnavailable, appSafe: rn.appSafe(nil), msg: msg}
+	// cancellation and watchdog (plan 0004, "Deadlines and contexts"), each with
+	// its own bound (switch.go); the job context stays in rn.jobCtx only so they
+	// can read why it was cancelled (a shutdown ends the drain).
+	return rn.afterHealth(context.WithoutCancel(rn.jobCtx))
 }
 
 // ---- stage bookkeeping ----
@@ -952,6 +949,11 @@ func (rn *run) probe(hctx, ctx context.Context, target string, lastErr *string) 
 // shutdown) never retries: the scheduler would refuse the requeue and end the job
 // cancelled, and the row must not be left "waiting".
 func (rn *run) finish(f *failure) error {
+	if rn.committed {
+		// Past the commit the candidate is the live version: it is never removed, and
+		// nothing that happened after it can fail the deploy (switch.go).
+		return rn.finishCommitted(f)
+	}
 	if f == nil {
 		f = &failure{code: CodeStartFailed, msg: "the deploy ended without a result"}
 	}
@@ -961,7 +963,9 @@ func (rn *run) finish(f *failure) error {
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
 	defer cancel()
-	rn.removeCandidate(fctx)
+	if !f.keep {
+		rn.removeCandidate(fctx)
+	}
 	if f.noRecord {
 		return errors.New(f.msg)
 	}
@@ -1073,7 +1077,7 @@ func (rn *run) recordFinal(ctx context.Context, f *failure) {
 			return nil
 		}
 		if rn.stage != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ? AND state = 'running'`,
+			if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ? AND state IN ('running', 'pending')`,
 				rn.now(), agent.CleanText(f.msg, agent.MaxDetailText), rn.deploy, rn.stage); err != nil {
 				return err
 			}

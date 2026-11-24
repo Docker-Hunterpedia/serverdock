@@ -37,6 +37,7 @@ type RunnerConfig struct {
 	Ops      RunnerOps
 	Alloc    AddressAllocator
 	Tracker  StateTracker
+	Routes   RouteControl // the route calls of the switch and the commit (step 8b); *Routes
 	Net      NetControl
 	AppNet   SubnetSource
 	Instance string // the install id: it names the app network
@@ -50,6 +51,16 @@ type RunnerConfig struct {
 	Watchdog             time.Duration // overrides jobs.timeout_s (tests only)
 	CleanupBound         time.Duration // candidate removal and the end-of-deploy writes: 30 s
 	ShutdownCleanupBound time.Duration // the same at shutdown: 5 s
+
+	// Step 8b (switch.go). Zero means the plan's value; tests shorten them.
+	SwitchBound time.Duration // the switch, route lock wait included: 30 s
+	CommitBound time.Duration // the commit, route lock wait included: 10 s
+	DrainUnit   time.Duration // one second of drain_s: 1 s
+	// KeepLog is the deploy-log hook of step 11: it is called with the previous
+	// container's id before that container is stopped, to keep the tail of its
+	// output in its deploy's log. Nil until step 11. A failure never fails the
+	// deploy: the stage detail says "log not kept: <reason>".
+	KeepLog func(ctx context.Context, deploy int64, container string) error
 }
 
 // Runner runs the jobs of the scheduler (jobs.RunFunc). Every run, and every
@@ -61,9 +72,9 @@ type Runner struct {
 	cfg RunnerConfig
 	// exec is what jobs.run_deploy does once its policy passed; tests replace it.
 	exec func(ctx context.Context, c actions.Call, job int64) (RunDeployOut, error)
-	// afterHealth takes a candidate that passed its health gate on to the switch.
-	// Step 8a has none (it fails the deploy); step 8b replaces it.
-	afterHealth func(ctx context.Context, rn *run) *failure
+	// trace, if set (tests only), is told the phase boundaries of the switch, commit,
+	// drain and stop_old, so a test can record the exact order against the ops.
+	trace func(event string)
 
 	progMu   sync.Mutex
 	progress map[int64]agentops.PullProgress // latest pull progress of each running deploy; bounded (maxProgress), removed when the deploy ends
@@ -122,9 +133,17 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	if cfg.ShutdownCleanupBound == 0 {
 		cfg.ShutdownCleanupBound = 5 * time.Second
 	}
+	if cfg.SwitchBound == 0 {
+		cfg.SwitchBound = SwitchBound
+	}
+	if cfg.CommitBound == 0 {
+		cfg.CommitBound = CommitBound
+	}
+	if cfg.DrainUnit == 0 {
+		cfg.DrainUnit = time.Second
+	}
 	r := &Runner{cfg: cfg, progress: map[int64]agentops.PullProgress{}}
 	r.exec = r.runDeploy
-	r.afterHealth = defaultAfterHealth
 	return r
 }
 

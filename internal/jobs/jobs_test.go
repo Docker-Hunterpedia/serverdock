@@ -1126,6 +1126,45 @@ func TestFinishEndsTheDeployRowTheRunnerLeftLive(t *testing.T) {
 	})
 }
 
+// The succeeded side of the backstop (step 8b): a job that ends succeeded while its
+// deploy row is still running AND committed (the runner could not write the end of a
+// deploy that had committed) ends the row as succeeded, "record incomplete", with
+// its stages tidied. A row that never committed is left alone.
+func TestSucceededJobSettlesACommittedDeployRow(t *testing.T) {
+	e := newEnv(t)
+	svc := e.service(t, "web")
+	enq, err := e.js.EnqueueDeploy(ctx, deploy(svc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
+	e.exec(t, `UPDATE deploys SET status = 'running', ip = '10.250.0.7', stage = 'drain', committed_at = 'x' WHERE id = ?`, enq.DeployID)
+	e.exec(t, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'commit', 'ok'), (?, 'drain', 'running'), (?, 'stop_old', 'pending')`, enq.DeployID, enq.DeployID, enq.DeployID)
+	if err := e.js.Finish(ctx, enq.JobID, StateSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	var status, stage, code, reason string
+	if err := e.st.R.QueryRow(`SELECT status, stage, reason_code, reason FROM deploys WHERE id = ?`, enq.DeployID).Scan(&status, &stage, &code, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || stage != "done" || code != "warning" || reason != RecordIncompleteReason {
+		t.Errorf("deploy: %s %s %s %q", status, stage, code, reason)
+	}
+	got := map[string]string{}
+	rs, _ := e.st.R.Query(`SELECT stage, state FROM deploy_stages WHERE deploy_id = ?`, enq.DeployID)
+	for rs.Next() {
+		var a, b string
+		rs.Scan(&a, &b)
+		got[a] = b
+	}
+	rs.Close()
+	if got["commit"] != "ok" || got["drain"] != "ok" || got["stop_old"] != "skipped" {
+		t.Errorf("stages %v", got)
+	}
+	// The address is free again.
+	e.exec(t, `INSERT INTO deploys(service_id, number, kind, snapshot_json, ip, status, actor_kind, actor_id, created_at) VALUES (?, 99, 'deploy', '{}', '10.250.0.7', 'running', 'user', '1', 'x')`, svc)
+}
+
 // The cancel and the stage check are one transaction: a deploy in switch (or any
 // later stage) cannot be cancelled, one before it can, and nothing is flagged when
 // the cancel is refused.

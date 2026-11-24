@@ -170,7 +170,7 @@ func (d *svcDeps) deploy(ctx context.Context, c actions.Call, in ServiceDeployIn
 
 // cancel ends a queued deploy at once and flags a running one. A deploy that is
 // already finished is a conflict; one inside switch or commit cannot be cancelled
-// (409 not_cancellable, wired with the switch in step 8b).
+// (409 not_cancellable: the runner writes the stage in the same transaction that checks the cancel flag, see enterSwitch).
 func (d *svcDeps) cancel(ctx context.Context, in CancelIn) (CancelOut, error) {
 	project, name, err := splitRef(in.Service)
 	if err != nil {
@@ -215,7 +215,7 @@ func (d *svcDeps) cancel(ctx context.Context, in CancelIn) (CancelOut, error) {
 }
 
 // nonCancellableStages are the stages a cancel cannot reach.
-var nonCancellableStages = []string{StageSwitch, StageCommit, StageDrain, StageStopOld}
+var nonCancellableStages = []string{StageSwitch, StageCommit, StageDrain, StageStopOld, StageDone}
 
 func registerDeployActions(r *actions.Registry, d *svcDeps) {
 	actions.Register(r, actions.Def[ServiceDeployIn, DeployOut]{

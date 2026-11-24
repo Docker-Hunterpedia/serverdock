@@ -32,14 +32,17 @@ import (
 //     (that opens the boot gate), then SetContainer and RemoveContainer per
 //     event, and Refresh after a resync. The watcher takes only the route lock.
 //
-// The route lock ignores ctx while waiting (a plain mutex). Step 8b should make
-// it a channel semaphore selected against ctx.Done(). A mutate function must
+// The route lock is a channel semaphore, taken in a select against the caller's
+// ctx (step 8b): a caller whose context ends while another apply is in flight
+// gives up with an error that says its mutate did not run. A mutate function must
 // commit anything it writes before returning, must not be called with a SQLite
 // write transaction open, and never takes a service or allocation lock.
 //
 // Lock order (plan 0004): service lock, then allocation lock, then the route
 // lock; the route lock is a leaf here (nothing else is taken inside it except
-// the state map's own short mutex and the database).
+// the state map's own short mutex and the database). The deploy runner holds its
+// service lock for the whole job and takes the allocation lock only at `check`,
+// never inside a route call, so the order is never reversed.
 
 // Container states that keep an upstream. A restarting container stays routed
 // so that a crash loop does not flip the config on every restart; Caddy answers
@@ -241,7 +244,7 @@ type Routes struct {
 
 	state StateMap
 
-	mu        sync.Mutex // the global route lock
+	lock      chan struct{} // the global route lock: a token in it means held (capacity 1)
 	overrides map[int64]Override
 	lastHash  string
 	failed    map[int]bool // ports of the last apply that could not be bound
@@ -256,7 +259,7 @@ func NewRoutes(db *store.Store, px RouteApplier, log *slog.Logger) *Routes {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Routes{db: db, px: px, log: log, overrides: map[int64]Override{}, lastHash: hashRoutes(nil), failed: map[int]bool{}}
+	return &Routes{db: db, px: px, log: log, lock: make(chan struct{}, 1), overrides: map[int64]Override{}, lastHash: hashRoutes(nil), failed: map[int]bool{}}
 }
 
 // State returns the state map (read access for service state and tests).
@@ -283,7 +286,9 @@ func (r *Routes) BindStatus(port int) string {
 // they need a bound of their own.
 const ApplyBound = 30 * time.Second
 
-// MutateError is the error of an ApplyRoutes whose mutate function failed. The
+// MutateError is the error of an ApplyRoutes whose mutate function failed, or
+// that gave up waiting for the route lock (its context ended first), so the
+// mutate function never ran. Either way nothing was written through it and the
 // routes were not built or sent: a refused request never reloads the proxy.
 type MutateError struct{ Err error }
 
@@ -329,6 +334,25 @@ func (r *Routes) ApplyRoutesNoRetry(ctx context.Context, mutate func() error) er
 	return r.apply(ctx, mutate, false, mutate != nil)
 }
 
+// CommitRoutes is ApplyRoutesNoRetry for a deploy's commit (step 8b): commit, the
+// database transaction that makes the new deploy the service's active one, is the
+// mutate function, and when it has succeeded the service's override is cleared in
+// the same step, under the same hold of the route lock (the database now says what
+// the override said, so the routes normally do not change and nothing is sent).
+// Like every ApplyRoutesNoRetry it never retries another service's failed port.
+// Its errors: *MutateError (commit failed, or the lock wait ended first: nothing
+// was committed), ErrRoutesNotReady (committed, nothing sent), any other error
+// (committed, the send failed and the routes are marked stale).
+func (r *Routes) CommitRoutes(ctx context.Context, service int64, commit func() error) error {
+	return r.ApplyRoutesNoRetry(ctx, func() error {
+		if err := commit(); err != nil {
+			return err
+		}
+		delete(r.overrides, service)
+		return nil
+	})
+}
+
 // hasFailed reports whether the last successful apply left ports unopened.
 func (r *Routes) hasFailed() bool {
 	r.statusMu.Lock()
@@ -357,8 +381,10 @@ func (r *Routes) setStale(v bool) {
 // paths pass false, so a crash loop never reloads, failed port or not. detach
 // is true when mutate wrote the database: the send then outlives ctx.
 func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if err := r.acquire(ctx); err != nil {
+		return &MutateError{Err: fmt.Errorf("waiting for the route lock: %w", err)}
+	}
+	defer r.release()
 	committed := false
 	if mutate != nil {
 		if err := mutate(); err != nil {
@@ -381,6 +407,25 @@ func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach b
 	r.setStale(err != nil)
 	return err
 }
+
+// acquire takes the route lock or gives up when ctx ends first. A free lock is
+// always taken, even by a caller whose context has already ended (the old mutex
+// did too); only a wait is bounded by ctx.
+func (r *Routes) acquire(ctx context.Context) error {
+	select {
+	case r.lock <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case r.lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
+func (r *Routes) release() { <-r.lock }
 
 // send builds the list and sends it if it changed. The caller holds the route lock.
 func (r *Routes) send(ctx context.Context, retry bool) error {

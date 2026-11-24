@@ -86,7 +86,7 @@ flowchart LR
 2. Clone into a sandbox dir (refuse symlinks escaping the repo) → build with Railpack/Dockerfile under cgroup caps, or hand off to a builder.
 3. Compose/service spec passes **policy check** (no `privileged`, host pid/network, docker.sock or `/` mounts, devices — unless the admin allows it, audited).
 4. Start the new container(s) beside the old ones → health gate (HTTP/TCP/command) with timeout.
-5. Healthy → switch Caddy upstream atomically → stop old containers after a drain period. Unhealthy → remove the candidate, keep the old version running, report with the log tail.
+5. Healthy → switch Caddy upstream atomically → stop old containers after a drain period. Unhealthy → remove the candidate, keep the old version running, report with the log tail. **As built for image deploys (M3a step 8b, `internal/deploy/switch.go`):** the switch is a route override applied as an in-memory table swap in the agent (no Caddy load, so no request is dropped on any app or the panel); the **commit** is one database transaction (`services.active_deploy_id`, `deploys.committed_at`, the stage rows) run as the mutate of the route lock's no-retry apply; then a bounded drain (`drain_s`), then the old container is stopped and removed. The old container is never stopped before the commit, on any path. Switch and commit run on a context cut off from the job (a cancel, a supersede or the `timeout_s` watchdog cannot reach them): entering the switch is one write that checks the job's cancel flag, and `deploys.cancel` answers 409 from that moment. A failed switch or commit re-applies the database's routes on a fresh context and removes the candidate (kept, with `app_safe` unknown, if the proxy does not confirm the repair).
 6. Record Deploy, update commit status, notify.
 
 ## Deploy strategies
@@ -154,6 +154,8 @@ Per-session goroutines (they exist because a session exists; none wakes on a tim
 
 Short-lived, event-driven goroutine, no timer: after each argon2 hash the hasher starts one goroutine that calls `debug.FreeOSMemory` (`internal/auth/hasher.go`), so the 19 MiB the hash used is returned to the OS off the response path; it exits at once. The SPA's own timers (the footer status poll every 15 s while the page is visible, the two-factor step warning) run in the browser, not in the server.
 
+Bounded wait during a deploy only, no goroutine of ours: the **drain** of a blue-green deploy (`internal/deploy/switch.go`) is one `time.Timer` for exactly `drain_s` between the commit and the stop of the old container, inside the deploy job's own goroutine (ended early only by a shutdown); nothing waits at idle.
+
 Lazy, no timer and no goroutine: session and pending-sign-in pruning (a bounded batch on insert), the `last_seen_at` write (at most once a minute, best-effort), the setup-token file (written at start while no admin exists), the panel certificate check (at start only) and the hub certificate renewal and its 1 minute back-off (`internal/pki`, checked in the TLS handshake); the rate limiters' eviction (`internal/limits`); the audit log's denied-row "suppressed" summaries (written on the next denied attempt or at shutdown); finished-job pruning (at most 100 per job insert) and deploy-row pruning (when a deploy finishes), the app subnet choice (first start, or when something first asks for it) and its overlap check (at each address allocation); the migration runner and its backup (startup only); the `system.exposure` answer (kept 30 s, its age checked on read, never refreshed by a timer); the app side's boot (`deploy.Booter`: `network_ensure`, then the first container list that opens the route gate, run once by one goroutine after the panel is up and joined at shutdown, and again lazily by a service action that finds the gate closed, never on a timer); the startup wait on the data-directory lock (at most about 1 s).
 
 ## Security model (summary)
@@ -193,7 +195,7 @@ internal/actions/         + action registry (with the JSON Schema reflector, `sc
 internal/memstat/         * /proc/self/status + Go runtime stats (heap in use, idle and released; read through the debug socket by the idle-memory check)
 internal/mcp/             MCP server
 internal/ai/              assistant loop, redaction, approvals
-internal/deploy/          pipeline, health gate, rollback, reconciler
+internal/deploy/          pipeline (pull, check, start, health gate in `rundeploy.go`; switch, commit, drain, stop old in `switch.go`), rollback, reconciler
 internal/policy/          + default-deny rulebook (no state, no background work): name, image reference, registry host, port and health-path validators, resource caps, `CheckImage`, `CheckCreate` (run in the control plane and again in the agent on the exact create bytes)
 internal/build/           railpack/buildkit, builder selection
 web/                      ++ SvelteKit SPA (Svelte 5, static adapter, SPA fallback). `go build -tags spa` embeds `web/build` (embed_spa.go); without the tag `web/dist/index.html` is the placeholder (embed_placeholder.go). Node is needed only to build it (`make web`, `make dev`, CI). `e2e/` holds the Playwright + axe suite, `src/lib/api-types.ts` is generated from `docs/api/openapi.json`

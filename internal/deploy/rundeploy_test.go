@@ -48,7 +48,9 @@ type fcont struct {
 type fakeOps struct {
 	mu         sync.Mutex
 	calls      []string
-	ctxErrs    map[string][]error // ctx.Err() seen by an op, by op name (a fresh context has none)
+	ctxErrs    map[string][]error         // ctx.Err() seen by an op, by op name (a fresh context has none)
+	dls        map[string][]time.Duration // time left to each call's context deadline, by op name (0: no deadline)
+	onCall     func(op, what string)      // called (without the lock) at the start of every op
 	cs         map[string]*fcont
 	extra      []agentops.ListedContainer // containers that exist but have no fcont (a pre-existing fixture)
 	n          int
@@ -62,7 +64,8 @@ type fakeOps struct {
 	inspectFn  func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
 	listErr    error
 	removeErr  error
-	netMissing atomic.Bool // the app network is "pruned": create and network_inspect say so
+	stopErrFn  func(id string) error // an error for a stop of this container id
+	netMissing atomic.Bool           // the app network is "pruned": create and network_inspect say so
 	labelsSeen []map[string]string
 	// afterNetInspect, if set, runs after a successful network_inspect.
 	afterNetInspect func()
@@ -70,13 +73,24 @@ type fakeOps struct {
 	removeHook func()
 }
 
-func newFakeOps() *fakeOps { return &fakeOps{cs: map[string]*fcont{}, ctxErrs: map[string][]error{}} }
+func newFakeOps() *fakeOps {
+	return &fakeOps{cs: map[string]*fcont{}, ctxErrs: map[string][]error{}, dls: map[string][]time.Duration{}}
+}
 
 func (f *fakeOps) rec(ctx context.Context, op, what string) {
+	var left time.Duration
+	if d, ok := ctx.Deadline(); ok {
+		left = time.Until(d)
+	}
 	f.mu.Lock()
 	f.calls = append(f.calls, op+":"+what)
 	f.ctxErrs[op] = append(f.ctxErrs[op], ctx.Err())
+	f.dls[op] = append(f.dls[op], left)
+	hook := f.onCall
 	f.mu.Unlock()
+	if hook != nil {
+		hook(op, what)
+	}
 }
 
 // dead is what the real hub returns for an op whose context has ended: the
@@ -192,6 +206,11 @@ func (f *fakeOps) ContainerStop(ctx context.Context, id string, _ int) error {
 	f.rec(ctx, "stop", id[:8])
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.stopErrFn != nil {
+		if err := f.stopErrFn(id); err != nil {
+			return err
+		}
+	}
 	if c := f.cs[id]; c != nil {
 		c.running = false
 		return nil
@@ -384,14 +403,18 @@ func newRRig(t *testing.T, opts ...rigOpt) *rrig {
 	g.refresh = &fakeRefresh{}
 	cfg := RunnerConfig{DB: st, Jobs: g.js, Inv: g.reg.SystemInvoker(), Refresh: g.refresh, Locks: &ServiceLocks{}, Log: log,
 		Ops: g.ops, Alloc: NewAllocator(st, g.ops, fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}), Tracker: g.routes, Net: g.net,
-		AppNet: fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}, Instance: instance,
-		HealthInterval: 3 * time.Millisecond, CleanupBound: 5 * time.Second, ShutdownCleanupBound: 5 * time.Second}
+		AppNet: fixedSubnet{netip.MustParsePrefix("10.250.0.0/24")}, Instance: instance, Routes: g.routes,
+		HealthInterval: 3 * time.Millisecond, CleanupBound: 5 * time.Second, ShutdownCleanupBound: 5 * time.Second, DrainUnit: time.Millisecond}
 	for _, o := range opts {
 		o(&cfg)
 	}
 	g.runner = NewRunner(cfg)
 	RegisterJobActions(g.reg, g.runner)
 	g.svc = g.service("web")
+	// The boot gate is open, as it is whenever a job can run on a real server.
+	if err := g.routes.ApplyRoutes(context.Background(), func() error { g.routes.state.replace(nil); return nil }); err != nil {
+		t.Fatal(err)
+	}
 	return g
 }
 
@@ -525,7 +548,14 @@ func (g *rrig) live(svc int64, number int, ip string) int64 {
 	g.t.Helper()
 	d := addDeploy(g.t, g.st, svc, number, "succeeded", ip)
 	mustExec(g.t, g.st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, d, svc)
-	g.routes.Track(Container{ID: fmt.Sprintf("live-%d", d), Service: svc, Deploy: d, State: StateRunning, IP: ip})
+	// A running container of this install at its address, as the resync would see it.
+	g.ops.mu.Lock()
+	g.ops.n++
+	id := fmt.Sprintf("%08x", 0xa0000000+g.ops.n) + strings.Repeat("0", 56) // its own first 8 characters: the call log shows them
+	g.ops.cs[id] = &fcont{id: id, name: fmt.Sprintf("sd-p-live-d%d-a1", d), ip: ip, image: testImageID, running: true, labels: map[string]string{
+		agentops.LabelProject: "1", agentops.LabelService: strconv.FormatInt(svc, 10), agentops.LabelDeploy: strconv.FormatInt(d, 10), agentops.LabelAttempt: "1"}}
+	g.ops.mu.Unlock()
+	g.routes.Track(Container{ID: id, Service: svc, Deploy: d, State: StateRunning, IP: ip})
 	return d
 }
 
@@ -550,47 +580,42 @@ func opErr(code, msg string) error { return &agent.OpError{Code: code, Msg: msg}
 
 // ---- the tests ----
 
-// A healthy candidate is the best 8a can do: it is removed again, the deploy fails
-// with the switch seam's code, nothing was routed, and every stage row says what
-// happened.
-func TestHealthyCandidateIsRemovedAndTheDeployEndsAtTheSwitchSeam(t *testing.T) {
+// A healthy candidate goes all the way (step 8b): it is switched in, committed as
+// the live version, the old container is removed after the drain, and every stage
+// row says what happened.
+func TestHealthyCandidateIsSwitchedCommittedAndTheOldOneRemoved(t *testing.T) {
 	g := newRRig(t)
 	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
 	g.start(false)
 	d, job := g.deploy(g.svc)
-	if s := g.wait(job); s != jobs.StateFailed {
+	if s := g.wait(job); s != jobs.StateSucceeded {
 		t.Fatalf("job %s", s)
 	}
 	r := g.row(d)
-	if r.status != "failed" || r.code != CodeSwitchUnavailable || r.appSafe != "yes" || r.ip != "10.250.0.3" || r.imageID != testImageID {
+	if r.status != "succeeded" || r.code != "" || r.ip != "10.250.0.3" || r.imageID != testImageID || r.stage != StageDone {
 		t.Fatalf("%+v", r)
 	}
-	if !strings.Contains(r.reason, "healthy") {
-		t.Errorf("reason %q", r.reason)
-	}
 	st := g.stages(d)
-	for _, s := range []string{StagePull, StageCheck, StageStart, StageHealth} {
+	for _, s := range blueGreenStages {
 		if st[s] != StageOK {
 			t.Errorf("stage %s is %s", s, st[s])
 		}
 	}
-	for _, s := range []string{StageSwitch, StageCommit, StageDrain, StageStopOld} {
-		if st[s] != StageSkipped {
-			t.Errorf("stage %s is %s, want skipped", s, st[s])
-		}
+	if g.ops.find(oldID) != nil {
+		t.Error("the old container was left behind")
 	}
-	if !g.noContainers() {
-		t.Error("the candidate was left behind")
-	}
-	if g.px.n() != 0 {
-		t.Error("a route was applied")
+	if g.containerOf(d) == nil || !g.containerOf(d).running {
+		t.Error("the new container is not running")
 	}
 	var active int64
+	var committed sql.NullString
 	g.st.R.QueryRow(`SELECT active_deploy_id FROM services WHERE id = ?`, g.svc).Scan(&active)
-	if active != old {
-		t.Errorf("the active deploy changed to %d", active)
+	g.st.R.QueryRow(`SELECT committed_at FROM deploys WHERE id = ?`, d).Scan(&committed)
+	if active != d || !committed.Valid {
+		t.Errorf("active deploy %d (want %d), committed_at %v", active, d, committed)
 	}
-	// The order of the Docker calls: pull, inspect, list+network (allocation), create, start, inspect, health..., stop, remove.
+	// The call order: pull, create, start, then (after the commit) stop and remove the old one.
 	var order []string
 	for _, c := range g.ops.names() {
 		op, _, _ := strings.Cut(c, ":")
@@ -640,7 +665,7 @@ func TestTransientPullRetryThenSuccess(t *testing.T) {
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	g.until("the deploy to be waiting", func() bool { return n.Load() >= 1 })
-	if s := g.wait(job); s != jobs.StateFailed { // success in 8a = the pipeline reached the switch seam
+	if s := g.wait(job); s != jobs.StateSucceeded {
 		t.Fatalf("job %s", s)
 	}
 	if n.Load() != 3 {
@@ -650,7 +675,7 @@ func TestTransientPullRetryThenSuccess(t *testing.T) {
 	if j.Attempt != 3 {
 		t.Errorf("attempt %d", j.Attempt)
 	}
-	if r := g.row(d); r.code != CodeSwitchUnavailable {
+	if r := g.row(d); r.status != StatusSucceeded {
 		t.Fatalf("%+v", r)
 	}
 	// Each attempt would use a new container name: only the last got as far as create.
@@ -764,7 +789,7 @@ func TestAllocationFailsTransientlyWhenDockerIsUnreachable(t *testing.T) {
 	g2.ops.listErr = nil
 	g2.ops.mu.Unlock()
 	g2.wait(job2)
-	if r := g2.row(d2); r.code != CodeSwitchUnavailable {
+	if r := g2.row(d2); r.status != StatusSucceeded {
 		t.Fatalf("after Docker came back: %+v", r)
 	}
 }
@@ -810,7 +835,7 @@ func TestAllocatorNeverReusesAStoppedOrActiveContainersAddress(t *testing.T) {
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	g.wait(job)
-	if r := g.row(d); r.ip != "10.250.0.7" || r.code != CodeSwitchUnavailable {
+	if r := g.row(d); r.ip != "10.250.0.7" || r.status != StatusSucceeded {
 		t.Fatalf("%+v: the allocator reused an address a container still owns", r)
 	}
 	c := g.ops.labelsSeen
@@ -851,7 +876,7 @@ func TestTwoConcurrentChecksNeverGetTheSameAddress(t *testing.T) {
 	if r1.ip == "" || r2.ip == "" || r1.ip == r2.ip {
 		t.Fatalf("addresses %q and %q", r1.ip, r2.ip)
 	}
-	if r1.code != CodeSwitchUnavailable || r2.code != CodeSwitchUnavailable {
+	if r1.status != StatusSucceeded || r2.status != StatusSucceeded {
 		t.Fatalf("%+v %+v", r1, r2)
 	}
 }
@@ -908,7 +933,7 @@ func TestNameCollisionReusesOwnContainer(t *testing.T) {
 	d, job := g.deploy(g.svc)
 	g.wait(job)
 	r := g.row(d)
-	if r.code != CodeSwitchUnavailable {
+	if r.status != StatusSucceeded {
 		t.Fatalf("%+v", r)
 	}
 	if g.ops.count("create") != 1 || g.ops.count("start") != 1 {
@@ -923,8 +948,8 @@ func TestNameCollisionReusesOwnContainer(t *testing.T) {
 			t.Errorf("start detail %q", detail)
 		}
 	}
-	if !g.noContainers() {
-		t.Error("the container was left behind")
+	if c := g.containerOf(d); c == nil || !c.running {
+		t.Error("the reused container is not the running, live version")
 	}
 }
 
@@ -976,7 +1001,7 @@ func TestFailFastOnExitAndOOM(t *testing.T) {
 			if r.code != tc.code || r.appSafe != AppSafeYes || time.Since(t0) > 5*time.Second {
 				t.Fatalf("%+v after %v", r, time.Since(t0))
 			}
-			if !g.noContainers() {
+			if g.containerOf(d) != nil {
 				t.Error("the failed candidate was left behind")
 			}
 		})
@@ -1115,8 +1140,9 @@ func TestRunnerRecordsCandidateWithoutTheWatcher(t *testing.T) {
 	if c.Service != g.svc || c.Deploy != d || c.IP != "10.250.0.2" || c.State != StateRunning || len(c.ID) != 64 {
 		t.Errorf("%+v", c)
 	}
-	if left := g.routes.State().snapshot(); len(left) != 0 {
-		t.Errorf("the removed candidate is still in the state map: %+v", left)
+	// The candidate is the live version now: it stays in the state map.
+	if left := g.routes.State().snapshot(); len(left) != 1 || left[0].Deploy != d {
+		t.Errorf("the state map after the deploy: %+v", left)
 	}
 	if g.px.n() != 0 {
 		t.Error("recording the candidate applied routes")
@@ -1292,7 +1318,7 @@ func TestShutdownBeforeSwitchRemovesCandidate(t *testing.T) {
 	if r.status != "failed" || r.code != CodeShutdown || r.appSafe != AppSafeYes {
 		t.Fatalf("%+v", r)
 	}
-	if !g.noContainers() {
+	if g.containerOf(d) != nil {
 		t.Error("the candidate was left behind")
 	}
 	for _, e := range g.ops.ctxErrs["remove"] {
@@ -1351,7 +1377,7 @@ func TestNetworkProblemRefusesTheDeployWithItsReason(t *testing.T) {
 	g.net.mu.Unlock()
 	d1, job1 := g.deploy(g.svc)
 	g.wait(job1)
-	if r := g.row(d1); r.code != CodeSwitchUnavailable || g.net.runs != 2 {
+	if r := g.row(d1); r.status != StatusSucceeded || g.net.runs != 2 {
 		t.Fatalf("after the problem was fixed: %+v (ensured %d times)", r, g.net.runs)
 	}
 	// An unknown status is ensured once; Docker still silent: transient, retried.
@@ -1370,7 +1396,7 @@ func TestNetworkProblemRefusesTheDeployWithItsReason(t *testing.T) {
 	g3.start(false)
 	d3, job3 := g3.deploy(g3.svc)
 	g3.wait(job3)
-	if r := g3.row(d3); r.code != CodeSwitchUnavailable || g3.net.runs != 1 {
+	if r := g3.row(d3); r.status != StatusSucceeded || g3.net.runs != 1 {
 		t.Fatalf("%+v ensures %d", r, g3.net.runs)
 	}
 }
@@ -1384,7 +1410,7 @@ func TestMissingNetworkIsEnsuredAgainAtCreateAndAtCheck(t *testing.T) {
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	g.wait(job)
-	if r := g.row(d); r.code != CodeSwitchUnavailable {
+	if r := g.row(d); r.status != StatusSucceeded {
 		t.Fatalf("%+v", r)
 	}
 	if g.net.gone != 1 || g.net.runs != 1 {
@@ -1404,7 +1430,7 @@ func TestMissingNetworkIsEnsuredAgainAtCreateAndAtCheck(t *testing.T) {
 	g2.start(false)
 	d2, job2 := g2.deploy(g2.svc)
 	g2.wait(job2)
-	if r := g2.row(d2); r.code != CodeSwitchUnavailable {
+	if r := g2.row(d2); r.status != StatusSucceeded {
 		t.Fatalf("%+v", r)
 	}
 	if g2.net.gone != 1 || g2.net.runs != 1 || g2.ops.count("create") != 2 {
@@ -1425,24 +1451,25 @@ func TestImageRefIsRevalidatedWithTheInstallsOptions(t *testing.T) {
 	g2.start(false)
 	d2, job2 := g2.deploy(g2.svc, func(s *Snapshot) { s.ImageRef = "127.0.0.1:5000/app:1" })
 	g2.wait(job2)
-	if r := g2.row(d2); r.code != CodeSwitchUnavailable {
+	if r := g2.row(d2); r.status != StatusSucceeded {
 		t.Fatalf("%+v", r)
 	}
 }
 
-// The runner of step 8a never calls proxy_apply, on any path: not on success of the
-// health gate, not on any failure, not on cancel. The proxy the Routes would use and
-// the agent both count.
-func TestRunnerNeverCallsProxyApply(t *testing.T) {
+// Before the switch the runner never calls proxy_apply: not on any failure of pull,
+// check, start or the health gate, and not on a cancel. (After the health gate the
+// switch is step 8b's; switch_test.go covers it.) The proxy the Routes would use
+// and the agent both count.
+func TestPreSwitchStagesNeverCallProxyApply(t *testing.T) {
 	g := newRRig(t)
 	g.live(g.svc, 1, "10.250.0.2")
-	if err := g.routes.ApplyRoutes(context.Background(), func() error { g.routes.state.replace(nil); return nil }); err != nil {
+	mustExec(t, g.st, `UPDATE services SET public_port = 9000 WHERE id = ?`, g.svc) // an exposed service: a route exists
+	if err := g.routes.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	before := g.px.n()
 	g.start(false)
 	scenarios := []func(){
-		func() {}, // healthy: reaches the seam
 		func() {
 			g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
 				return agentops.HealthResult{}, nil
@@ -1468,18 +1495,36 @@ func TestRunnerNeverCallsProxyApply(t *testing.T) {
 	}
 }
 
-// Structurally too: the runner's source files name no route-changing call.
-func TestRunnerSourceHasNoRouteCalls(t *testing.T) {
+// Structurally too: the pre-switch files (runner.go, rundeploy.go) name no
+// route-changing call, and the one file that may (switch.go, step 8b) names only
+// the three it needs: never ProxyApply, a plain ApplyRoutes, Refresh, Sync or a
+// state-map write that applies.
+func TestRouteCallsAreOnlyInTheSwitchFile(t *testing.T) {
+	forbidden := []string{"ProxyApply", "ApplyRoutes", "SetOverride", "ClearOverride", "CommitRoutes", "SetContainer", "RemoveContainer(", ".Refresh(", "Sync("}
 	for _, f := range []string{"runner.go", "rundeploy.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		src := string(b)
-		for _, bad := range []string{"ProxyApply", "ApplyRoutes", "SetOverride", "ClearOverride", "SetContainer", "RemoveContainer(", ".Refresh(", "Sync("} {
-			if strings.Contains(src, bad) {
-				t.Errorf("%s mentions %s: step 8a must not touch the routes", f, bad)
+		for _, bad := range forbidden {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("%s mentions %s: the pre-switch files must not touch the routes", f, bad)
 			}
+		}
+	}
+	b, err := os.ReadFile("switch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"ProxyApply", "ApplyRoutes(", "ApplyRoutesNoRetry", "SetContainer", "RemoveContainer(", ".Refresh(", "Sync(", ".mu.Lock"} {
+		if strings.Contains(string(b), bad) {
+			t.Errorf("switch.go mentions %s", bad)
+		}
+	}
+	// Every route call of the runner goes through RouteControl.
+	for _, want := range []string{"Routes.SetOverride(", "Routes.ClearOverride(", "Routes.CommitRoutes("} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("switch.go has no %s", want)
 		}
 	}
 }
@@ -1515,11 +1560,16 @@ func TestDefaultBuildHasNoTestHooks(t *testing.T) {
 
 // A pause point exists at every stage boundary (the names step 10's kill tests use).
 func TestPausePointsAtEveryStageBoundary(t *testing.T) {
-	b, err := os.ReadFile("rundeploy.go")
-	if err != nil {
-		t.Fatal(err)
+	var src []byte
+	for _, f := range []string{"rundeploy.go", "switch.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(src, b...)
 	}
-	for _, s := range []string{StagePull, StageCheck, StageStart, StageHealth} {
+	b := src
+	for _, s := range []string{StagePull, StageCheck, StageStart, StageHealth, StageSwitch, StageCommit, StageDrain, StageStopOld} {
 		for _, side := range []string{"before", "after"} {
 			if !strings.Contains(string(b), `pausePoint("`+s+`:`+side+`")`) {
 				t.Errorf("no pause point %s:%s", s, side)

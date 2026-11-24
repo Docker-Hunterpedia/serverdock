@@ -77,7 +77,7 @@ func newITRunner(t *testing.T, g *switchRig, mod func(*RunnerConfig)) *itRunner 
 	rt := NewRoutes(st, cl, log)
 	subnet := fixedSubnet{netip.MustParsePrefix(g.subnet)}
 	cfg := RunnerConfig{DB: st, Jobs: jobs.NewStore(st, nil), Inv: reg.SystemInvoker(), Refresh: &fakeRefresh{}, Locks: &ServiceLocks{}, Log: log,
-		Ops: cl, Alloc: NewAllocator(st, cl, subnet), Tracker: rt, Net: &fakeNet{status: NetStatus{State: NetOK}}, AppNet: subnet, Instance: g.inst,
+		Ops: cl, Alloc: NewAllocator(st, cl, subnet), Tracker: rt, Routes: rt, Net: &fakeNet{status: NetStatus{State: NetOK}}, AppNet: subnet, Instance: g.inst,
 		Policy: policy.Options{AllowLoopbackRegistry: true}, HealthInterval: 200 * time.Millisecond}
 	if mod != nil {
 		mod(&cfg)

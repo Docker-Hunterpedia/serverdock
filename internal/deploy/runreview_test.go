@@ -133,7 +133,11 @@ func mustExecIgnore(g *rrig, q string) {
 func TestPanicInAStageRemovesTheCandidateAndEndsTheRow(t *testing.T) {
 	g := newRRig(t)
 	g.live(g.svc, 1, "10.250.0.2")
-	g.runner.afterHealth = func(context.Context, *run) *failure { panic("boom") } // after the candidate was started and healthy
+	g.runner.trace = func(ev string) { // after the candidate was started and healthy, before any route changed
+		if ev == "switch" {
+			panic("boom")
+		}
+	}
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	if s := g.wait(job); s != jobs.StateFailed {
@@ -143,7 +147,7 @@ func TestPanicInAStageRemovesTheCandidateAndEndsTheRow(t *testing.T) {
 	if r.status != "failed" || r.code != CodeInternal || strings.Contains(r.reason, "boom") {
 		t.Fatalf("%+v", r)
 	}
-	if !g.noContainers() {
+	if g.containerOf(d) != nil {
 		t.Error("the candidate was left running")
 	}
 	for _, e := range g.ops.ctxErrs["remove"] {
@@ -293,34 +297,6 @@ func TestSuccessfulCleanUpClearsUnknown(t *testing.T) {
 	}
 }
 
-// The seam gets a context cut off from the job's cancellation and watchdog (plan
-// 0004: switch, commit, drain and stop_old are not cancellable).
-func TestTheSwitchSeamContextSurvivesTheJobsCancellation(t *testing.T) {
-	g := newRRig(t, func(c *RunnerConfig) { c.Watchdog = 20 * time.Second })
-	var live, causeOK atomic.Bool
-	g.runner.afterHealth = func(ctx context.Context, rn *run) *failure {
-		// Cancel the job while the seam runs, and let the (short) watchdog pass too.
-		_ = g.sched.Cancel(context.Background(), rn.job.ID, "cancelled by the user")
-		g.until("the job context to be cancelled", func() bool { return rn.jobCtx.Err() != nil })
-		var cc jobs.CancelCause
-		causeOK.Store(errors.As(context.Cause(rn.jobCtx), &cc))
-		live.Store(ctx.Err() == nil)
-		if _, has := ctx.Deadline(); has {
-			t.Error("the seam's context carries the watchdog's deadline")
-		}
-		return &failure{code: CodeSwitchUnavailable, msg: "seam"}
-	}
-	g.start(false)
-	_, job := g.deploy(g.svc)
-	g.wait(job)
-	if !causeOK.Load() {
-		t.Error("the job context was not cancelled by the test")
-	}
-	if !live.Load() {
-		t.Error("the seam's context ended with the job's cancellation")
-	}
-}
-
 // A run whose deploy had already ended (the queue wrote its end state) records
 // nothing: a "superseded" is not rewritten as "cancelled".
 func TestARunOverAnEndedDeployWritesNothing(t *testing.T) {
@@ -347,9 +323,7 @@ func TestCandidateIsUntrackedOnlyAfterItsRemovalSucceeded(t *testing.T) {
 	g := newRRig(t)
 	g.ops.removeErr = opErr(agent.CodeDocker, "the Docker request failed")
 	var seen int
-	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
-		return agentops.HealthResult{OK: true}, nil
-	}
+	g.ops.startFn = func(c *fcont) { c.running, c.exit = false, 1 } // the candidate fails its gate and must be removed
 	g.start(false)
 	_, job := g.deploy(g.svc)
 	g.wait(job)
@@ -376,7 +350,7 @@ func TestASingleInspectErrorDoesNotFailTheHealthGate(t *testing.T) {
 	g.start(false)
 	d, job := g.deploy(g.svc)
 	g.wait(job)
-	if r := g.row(d); r.code != CodeSwitchUnavailable {
+	if r := g.row(d); r.status != StatusSucceeded {
 		t.Fatalf("one failed inspect ended the gate: %+v", r)
 	}
 	if g.ops.count("health") < 1 {
@@ -388,7 +362,7 @@ func TestASingleInspectErrorDoesNotFailTheHealthGate(t *testing.T) {
 func TestAppSafeIsUnknownWhenTheLiveVersionIsNotSeenRunning(t *testing.T) {
 	g := newRRig(t)
 	old := g.live(g.svc, 1, "10.250.0.2")
-	g.routes.Untrack(fmt.Sprintf("live-%d", old)) // the state map no longer shows it
+	g.routes.Untrack(g.containerOf(old).id) // the state map no longer shows it
 	g.ops.pullFn = func(context.Context, string, func(agentops.PullProgress)) (agentops.PullResult, error) {
 		return agentops.PullResult{}, opErr(agent.CodeDiskFull, "x")
 	}
@@ -400,24 +374,12 @@ func TestAppSafeIsUnknownWhenTheLiveVersionIsNotSeenRunning(t *testing.T) {
 	}
 }
 
-func TestSwitchSeamMessageSaysNoPreviousVersionOnAFirstDeploy(t *testing.T) {
-	g := newRRig(t)
-	g.start(false)
-	d, job := g.deploy(g.svc)
-	g.wait(job)
-	if r := g.row(d); !strings.Contains(r.reason, "no previous version") || strings.Contains(r.reason, "keeps serving") {
-		t.Fatalf("%q", r.reason)
-	}
-}
-
 // The old version's container is never stopped, restarted or removed by a deploy
 // that is superseded during its health gate.
 func TestSupersededCandidateNeverTouchesTheOldContainer(t *testing.T) {
 	g := newRRig(t)
 	old := g.live(g.svc, 1, "10.250.0.2")
-	oldID := strings.Repeat("f", 64)
-	g.ops.cs[oldID] = &fcont{id: oldID, name: "sd-p-web-d1-a1", ip: "10.250.0.2", running: true, image: testImageID,
-		labels: map[string]string{agentops.LabelDeploy: fmt.Sprint(old), agentops.LabelService: fmt.Sprint(g.svc), agentops.LabelAttempt: "1", agentops.LabelProject: "1"}}
+	oldID := g.containerOf(old).id
 	inHealth := make(chan struct{}, 1)
 	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
 		select {
@@ -431,12 +393,16 @@ func TestSupersededCandidateNeverTouchesTheOldContainer(t *testing.T) {
 	<-inHealth
 	g.ops.mu.Lock()
 	g.ops.healthFn = nil
+	// The newer deploy fails at its pull, so only the superseded one is under test.
+	g.ops.pullFn = func(context.Context, string, func(agentops.PullProgress)) (agentops.PullResult, error) {
+		return agentops.PullResult{}, opErr(agent.CodeDiskFull, "x")
+	}
 	g.ops.mu.Unlock()
 	_, j2 := g.deploy(g.svc)
 	g.wait(j1)
 	g.wait(j2)
 	for _, c := range g.ops.names() {
-		if strings.HasSuffix(c, ":ffffffff") {
+		if strings.HasSuffix(c, ":"+oldID[:8]) && !strings.HasPrefix(c, "inspect:") && !strings.HasPrefix(c, "list:") {
 			t.Errorf("the old version's container was touched: %s", c)
 		}
 	}
@@ -511,7 +477,11 @@ func TestTransientFailureThatLosesToACancelReadsCancelled(t *testing.T) {
 func TestPanicCleanUpRunsUnderTheServiceLock(t *testing.T) {
 	g := newRRig(t)
 	var heldAtCleanUp atomic.Bool
-	g.runner.afterHealth = func(context.Context, *run) *failure { panic("boom") }
+	g.runner.trace = func(ev string) {
+		if ev == "switch" {
+			panic("boom")
+		}
+	}
 	g.ops.mu.Lock()
 	g.ops.removeHook = func() {
 		if unlock, ok := g.runner.cfg.Locks.TryLock(g.svc); ok {

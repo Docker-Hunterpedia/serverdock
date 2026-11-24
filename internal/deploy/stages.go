@@ -1,7 +1,9 @@
 package deploy
 
 // The stages of a deploy (plan 0004, "Blue-green deploy"), as deploy_stages.stage
-// and deploys.stage name them. Step 8a runs the first four; the rest are 8b.
+// and deploys.stage name them. Step 8a runs the first four; switch, commit, drain
+// and stop_old are step 8b (switch.go); StageDone is deploys.stage of a finished
+// (succeeded) deploy.
 const (
 	StagePull    = "pull"
 	StageCheck   = "check"
@@ -11,6 +13,7 @@ const (
 	StageCommit  = "commit"
 	StageDrain   = "drain"
 	StageStopOld = "stop_old"
+	StageDone    = "done"
 )
 
 // blueGreenStages is the ordered stage list written (as pending) when a deploy
@@ -32,7 +35,7 @@ const (
 // new version is live by then.
 func CancellableStage(s string) bool {
 	switch s {
-	case StageSwitch, StageCommit, StageDrain, StageStopOld:
+	case StageSwitch, StageCommit, StageDrain, StageStopOld, StageDone:
 		return false
 	}
 	return true

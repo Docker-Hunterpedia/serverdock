@@ -33,6 +33,13 @@ type fakeProxy struct {
 	afterApply error
 	// lastDeadline is the deadline of the last call's context (zero: none).
 	lastDeadline time.Time
+	// enter, if set, runs at the start of every call (before the sleep); onApply
+	// runs after a call was recorded. Both run without the fake's lock.
+	enter    func()
+	enterCtx func(ctx context.Context)
+	onApply  func(routes []agentops.Route)
+	// failN fails the first failN calls with fail (then succeeds).
+	failN int
 }
 
 func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route, retryFailed bool) (agentops.ApplyResult, error) {
@@ -45,23 +52,45 @@ func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route, ret
 		f.overlap = true
 	}
 	f.busy = true
+	enter, enterCtx := f.enter, f.enterCtx
 	f.mu.Unlock()
+	if enterCtx != nil {
+		enterCtx(ctx)
+	}
+	if enter != nil {
+		enter()
+	}
 	time.Sleep(f.sleep)
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.busy = false
+	if err := ctx.Err(); err != nil { // a real call whose context ends mid-call fails
+		f.mu.Unlock()
+		return agentops.ApplyResult{}, err
+	}
 	if f.fail != nil {
-		return agentops.ApplyResult{}, f.fail
+		err := f.fail
+		if f.failN > 0 { // fail this many calls, then succeed
+			if f.failN--; f.failN == 0 {
+				f.fail = nil
+			}
+		}
+		f.mu.Unlock()
+		return agentops.ApplyResult{}, err
 	}
 	f.calls = append(f.calls, append([]agentops.Route(nil), routes...))
 	f.retries = append(f.retries, retryFailed)
 	if f.events != nil {
 		*f.events = append(*f.events, "proxy_apply")
 	}
-	if f.afterApply != nil {
-		return agentops.ApplyResult{}, f.afterApply
+	hook, after, failed := f.onApply, f.afterApply, f.failed
+	f.mu.Unlock()
+	if hook != nil {
+		hook(routes)
 	}
-	return agentops.ApplyResult{Applied: true, FailedPorts: f.failed}, nil
+	if after != nil {
+		return agentops.ApplyResult{}, after
+	}
+	return agentops.ApplyResult{Applied: true, FailedPorts: failed}, nil
 }
 
 func (f *fakeProxy) n() int {

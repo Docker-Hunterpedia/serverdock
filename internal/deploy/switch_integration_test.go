@@ -53,15 +53,19 @@ type switchRig struct {
 // startApp runs a container of the test image on the app network at ip whose
 // /cgi-bin/id answers 200 "app-<name>" to GET and to POST (the image's plain
 // httpd answers a POST with 501), through the docker CLI: the chain under test
-// is the route path, not container creation. The script does not read the
-// request body: busybox httpd with a script that does (cat or dd) returned an
-// empty 200 about once in 5000 POSTs through a plain Caddy reverse_proxy as
-// well (measured, also with the pre-6b config), which is the app's doing.
-func (g *switchRig) startApp(t *testing.T, ref, name, ip string) {
+// is the route path, not container creation. The script reads the request body
+// before it answers, like the test image's own script (see its Dockerfile).
+//
+// extra are further docker run arguments (the 8b tests pass the labels that make the
+// fixture a container of this install, so a deploy finds and stops it).
+func (g *switchRig) startApp(t *testing.T, ref, name, ip string, extra ...string) {
 	t.Helper()
-	script := `mkdir -p /www/cgi-bin && printf '#!/bin/sh\necho "Content-type: text/plain"\necho\necho app-` + name + `\n' > /www/cgi-bin/id && chmod +x /www/cgi-bin/id && exec httpd -f -p 8080 -h /www`
+	script := `mkdir -p /www/cgi-bin && printf '#!/bin/sh\nhead -c "${CONTENT_LENGTH:-0}" >/dev/null\necho "Content-type: text/plain"\necho\necho app-` + name + `\n' > /www/cgi-bin/id && chmod +x /www/cgi-bin/id && exec httpd -f -p 8080 -h /www`
 	cname := "sd-it-" + g.inst[:8] + "-" + strings.ToLower(name)
-	itDocker(t, "run", "-d", "--name", cname, "--network", g.netName, "--ip", ip, "--label", "serverdock.instance="+g.inst, "--entrypoint", "sh", ref, "-c", script)
+	args := []string{"run", "-d", "--name", cname, "--network", g.netName, "--ip", ip, "--label", "serverdock.instance=" + g.inst}
+	args = append(args, extra...)
+	args = append(args, "--entrypoint", "sh", ref, "-c", script)
+	itDocker(t, args...)
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", cname).Run() })
 	var probe agentops.HealthResult
 	var err error

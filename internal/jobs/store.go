@@ -401,8 +401,12 @@ func (s *Store) finish(ctx context.Context, id int64, state, errText string, den
 		if err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n == 1 && (state == StateFailed || state == StateCancelled) {
+		n, _ := res.RowsAffected()
+		switch {
+		case n == 1 && (state == StateFailed || state == StateCancelled):
 			return endDeployTx(ctx, tx, id, state, errText, denied, now)
+		case n == 1 && state == StateSucceeded:
+			return settleCommittedDeployTx(ctx, tx, id, now)
 		}
 		return nil
 	})
@@ -447,6 +451,36 @@ func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText stri
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = 'ended with its job'
+		WHERE state = 'running' AND deploy_id IN (SELECT id FROM deploys WHERE job_id = ?)`, ts, job); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE state = 'pending' AND deploy_id IN (SELECT id FROM deploys WHERE job_id = ?)`, job)
+	return err
+}
+
+// RecordIncompleteReason is the reason of a deploy that committed but whose end
+// the runner could not write: the queue settles it as succeeded when its job ends
+// succeeded (plan 0004, failure rules: after the commit the deploy stays
+// succeeded, honestly marked "record incomplete").
+const RecordIncompleteReason = "record incomplete: the new version is live, but the end of this deploy could not be written"
+
+// settleCommittedDeployTx is the succeeded-side backstop: a deploy job that ends
+// succeeded while its deploy row is still running and has a commit (committed_at)
+// ends the row as succeeded, in the same transaction, so the row never stays
+// "running" (holding its address in deploys_ip_live) after a post-commit write
+// failure in the runner. A row with no commit is left alone: it is not ours to
+// call succeeded.
+func settleCommittedDeployTx(ctx context.Context, tx *sql.Tx, job int64, now time.Time) error {
+	ts := FormatTime(now)
+	res, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'succeeded', stage = 'done', reason_code = 'warning', reason = ?, finished_at = ?
+		WHERE job_id = ? AND status = 'running' AND committed_at IS NOT NULL`, RecordIncompleteReason, ts, job)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'ok', finished_at = ?, detail = 'record incomplete'
 		WHERE state = 'running' AND deploy_id IN (SELECT id FROM deploys WHERE job_id = ?)`, ts, job); err != nil {
 		return err
 	}
