@@ -52,6 +52,7 @@ type fakeDocker struct {
 	containers   []*fakeContainer
 	images       map[string]string // reference or id -> inspect JSON
 	netMissing   bool
+	netFails     bool // GET /networks/... answers 500 (Docker unhealthy)
 	netLabels    map[string]string
 	netUsed      map[string]string // ip -> container id
 	dataRoot     string
@@ -66,6 +67,9 @@ func containerID(name string) string {
 }
 
 func (f *fakeDocker) record(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.Unlock() }
+
+// netInspects counts the network inspect calls Docker has seen.
+func (f *fakeDocker) netInspects() int { return f.called("GET /networks/") }
 
 func (f *fakeDocker) called(prefix string) int {
 	f.mu.Lock()
@@ -158,6 +162,8 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jerr(404, "no such image")
+	case strings.HasPrefix(path, "/networks/") && r.Method == http.MethodGet && f.netFails:
+		jerr(500, "docker is unwell")
 	case strings.HasPrefix(path, "/networks/") && r.Method == http.MethodGet:
 		if f.netMissing || strings.TrimPrefix(path, "/networks/") != testNet {
 			jerr(404, "no such network")
@@ -327,7 +333,8 @@ func newRig(t *testing.T, mods ...func(*Deps)) *rig {
 	t.Cleanup(docker.Close)
 
 	deps := Deps{Docker: docker, Instance: testInstance, CheckCreate: policy.CheckCreateAgent, Log: quiet,
-		freeBytes: func(string) (uint64, error) { return 100 << 30, nil }}
+		freeBytes: func(string) (uint64, error) { return 100 << 30, nil },
+		AppSubnet: func(context.Context) (string, error) { return testSubnet, nil }}
 	for _, m := range mods {
 		m(&deps)
 	}

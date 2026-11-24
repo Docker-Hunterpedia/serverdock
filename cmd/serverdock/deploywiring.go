@@ -49,8 +49,11 @@ func loadInstallID(ctx context.Context, st *store.Store) (string, error) {
 // applier is the embedded proxy's route applier for proxy_apply; nil when the
 // proxy is off (the op then says so). reserved are ServerDock's own listen ports
 // besides --listen and --https-listen, which an app route may not use.
-func localOps(docker *dockerapi.Client, instance string, allowLoopbackRegistry bool, applier *proxy.Applier, reserved []int, log *slog.Logger) (map[string]agent.Handler, error) {
-	d := agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: allowLoopbackRegistry, ReservedPorts: reserved, Log: log}
+//
+// appSubnet reads the recorded meta.app_subnet on each proxy_apply that carries
+// an upstream (no cache, no timer; it is recorded lazily after start).
+func localOps(docker *dockerapi.Client, instance string, allowLoopbackRegistry bool, applier *proxy.Applier, reserved []int, appSubnet func(context.Context) (string, error), log *slog.Logger) (map[string]agent.Handler, error) {
+	d := agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent, AllowLoopbackRegistry: allowLoopbackRegistry, ReservedPorts: reserved, AppSubnet: appSubnet, Log: log}
 	if applier != nil { // never a typed nil in the interface
 		d.Proxy = applier
 	}

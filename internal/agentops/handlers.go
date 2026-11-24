@@ -44,6 +44,12 @@ type Deps struct {
 	// --https-listen (the proxy knows those two): today --agent-listen's. An app
 	// route may not use them.
 	ReservedPorts []int
+	// AppSubnet returns the recorded app subnet (meta.app_subnet), or "" while
+	// none is recorded. proxy_apply calls it on every request that carries an
+	// upstream and checks the upstreams against it, with no Docker call. It must
+	// read the record each time (no cache, no timer): the subnet is recorded
+	// lazily, after the agent starts. Nil means none is recorded.
+	AppSubnet func(ctx context.Context) (string, error)
 	// Log receives internal errors that are not sent to the control plane.
 	Log *slog.Logger
 

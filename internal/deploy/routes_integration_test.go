@@ -128,7 +128,8 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 	// The agent (real handlers, real Docker, the real applier) behind a hub session.
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ops, err := agentops.Handlers(agentops.Deps{Docker: docker, Instance: inst, CheckCreate: policy.CheckCreateAgent,
-		AllowLoopbackRegistry: true, Proxy: applier, Log: quiet})
+		AllowLoopbackRegistry: true, Proxy: applier, Log: quiet,
+		AppSubnet: func(context.Context) (string, error) { return subnet, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

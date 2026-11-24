@@ -10,7 +10,6 @@ import (
 	"strconv"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
-	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
@@ -28,7 +27,7 @@ type RouteApplier interface {
 // an IPv4 literal and a port. That an upstream is a host address of our app
 // network's static range (never loopback, the gateway, the network or broadcast
 // address, the dynamic range, or another network) is checked by proxyApply
-// against the network itself, when any route has an upstream.
+// against the recorded app subnet, when any route has an upstream.
 func (h *handlers) appRoutes(a ApplyArgs) ([]proxy.AppRoute, error) {
 	if len(a.Routes) > MaxRoutes {
 		return nil, opErr(agent.CodeInvalid, "at most %d routes", MaxRoutes)
@@ -78,22 +77,30 @@ func (h *handlers) proxyApply(ctx context.Context, raw json.RawMessage, _ *agent
 	if h.Proxy == nil {
 		return nil, opErr(agent.CodeConflict, "the proxy is not running on this server")
 	}
-	// Only a list with an upstream needs the network (a list of static pages works
-	// before it exists): every upstream must be a host address of our static range.
-	var net_ *dockerapi.NetworkInfo
+	// Only a list with an upstream needs the app subnet (a list of static pages
+	// works before it is recorded). The check is against the recorded
+	// meta.app_subnet and the gateway and dynamic range derived from it
+	// (policy.StaticAddr), with no Docker call: a switch, a revert or the
+	// maintenance path works while Docker is hung or restarting (plan 0004
+	// step 6b). This drops the network inspect, and with it the app network's
+	// instance-label and drift check that ourNetwork gave every proxy_apply;
+	// network_ensure and the deploy-time checks (create, health) still cover a
+	// missing, foreign or drifted network. AppSubnet is read on each call (it is
+	// recorded lazily, after the agent starts); nothing is cached.
+	subnet := ""
 	for _, r := range a.Routes {
 		if r.Upstream == "" {
 			continue
 		}
-		if net_ == nil {
-			n, err := h.ourNetwork(ctx, agent.OpProxyApply)
+		if subnet == "" {
+			s, err := h.recordedSubnet(ctx)
 			if err != nil {
 				return nil, err
 			}
-			net_ = &n
+			subnet = s
 		}
 		host, _, _ := net.SplitHostPort(r.Upstream) // shape checked by appRoutes
-		if err := StaticAddr(*net_, netip.MustParseAddr(host)); err != nil {
+		if err := policy.StaticAddr(subnet, "", "", netip.MustParseAddr(host)); err != nil {
 			return nil, opErr(agent.CodePolicy, "route port %d: the upstream is not a host address of the app network's static range", r.Port)
 		}
 	}
@@ -116,4 +123,21 @@ func (h *handlers) proxyApply(ctx context.Context, raw json.RawMessage, _ *agent
 		failed = []int{}
 	}
 	return ApplyResult{Applied: true, FailedPorts: failed}, nil
+}
+
+// recordedSubnet is the recorded app subnet, or CodeNotFound while none is
+// recorded (or no getter is wired), so any upstream route is refused.
+func (h *handlers) recordedSubnet(ctx context.Context) (string, error) {
+	if h.AppSubnet == nil {
+		return "", opErr(agent.CodeNotFound, "the app network has no recorded subnet yet")
+	}
+	s, err := h.AppSubnet(ctx)
+	if err != nil {
+		h.Log.Warn("reading the recorded app subnet failed", "err", err)
+		return "", opErr(agent.CodeConflict, "the recorded app subnet could not be read")
+	}
+	if s == "" {
+		return "", opErr(agent.CodeNotFound, "the app network has no recorded subnet yet")
+	}
+	return s, nil
 }

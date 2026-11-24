@@ -222,6 +222,25 @@ func NewAppNet(o AppNetOptions) (*AppNet, error) {
 	return &AppNet{o: o}, nil
 }
 
+// Recorded reads meta.app_subnet and nothing else: it never chooses or records a
+// subnet and never calls Docker, and it keeps no copy (every call reads the
+// row). It returns "" while none is recorded. The agent's proxy_apply uses it to
+// check upstreams without a Docker call (plan 0004 step 6b).
+func (a *AppNet) Recorded(ctx context.Context) (string, error) {
+	var v string
+	err := a.o.Store.R.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, metaAppSubnet).Scan(&v)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	if p, perr := netip.ParsePrefix(v); perr != nil || !p.Addr().Is4() || p.Masked() != p {
+		return "", fmt.Errorf("deploy: meta.app_subnet %q is not a valid IPv4 CIDR", v)
+	}
+	return v, nil
+}
+
 // Subnet returns the recorded app subnet, choosing and recording it first if this
 // is the first call ever. The choice needs Docker (every existing network must be
 // avoided): while Docker is unreachable nothing is recorded and the error says so,

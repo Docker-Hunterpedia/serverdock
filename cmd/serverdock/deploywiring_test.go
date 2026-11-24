@@ -21,6 +21,8 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
@@ -39,6 +41,8 @@ type fakeEngine struct {
 	created map[string]string
 	// listFails makes GET /containers/json answer 500 (Docker "down" for Sync).
 	listFails atomic.Bool
+	// netsFail makes GET /networks answer 500 (the subnet cannot be chosen yet).
+	netsFail atomic.Bool
 }
 
 func startFakeEngine(t *testing.T, networks string) (string, *fakeEngine) {
@@ -104,6 +108,10 @@ func startFakeEngine(t *testing.T, networks string) (string, *fakeEngine) {
 			}
 			io.WriteString(w, body)
 		case r.Method == "GET" && path == "networks":
+			if fe.netsFail.Load() {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			io.WriteString(w, nets)
 		case r.Method == "GET" && path == "version":
 			io.WriteString(w, `{"Version":"25.0.3","ApiVersion":"1.45"}`)
@@ -481,5 +489,79 @@ func TestPanelAddrsReturnsTheBoundAddressOrEveryInterface(t *testing.T) {
 	}
 	if !lo {
 		t.Error("loopback is missing: an SSH tunnel reaches the panel there")
+	}
+}
+
+// recordingApplier is the proxy_apply side of TestSubnetRecordedAfterBoot.
+type recordingApplier struct {
+	mu  sync.Mutex
+	got [][]proxy.AppRoute
+}
+
+func (r *recordingApplier) Apply(_ context.Context, routes []proxy.AppRoute) ([]int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, routes)
+	return nil, nil
+}
+
+// meta.app_subnet is recorded lazily, after the agent starts: before it exists an
+// upstream route is refused and static pages apply; after deploy.AppNet records
+// it, with no restart, the same upstream applies (the getter reads on each call).
+func TestSubnetRecordedAfterBoot(t *testing.T) {
+	sock, fe := startFakeEngine(t, `[]`)
+	fe.netsFail.Store(true) // Docker "down" for the subnet choice
+	ctx := context.Background()
+	st, err := store.Open(ctx, newData(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	docker := dockerapi.New(sock)
+	defer docker.Close()
+	instance := strings.Repeat("ab", 16)
+	an, err := recordAppSubnet(ctx, st, docker, instance, "", quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &recordingApplier{}
+	ops, err := agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent,
+		Proxy: app, AppSubnet: an.Recorded, Log: quietLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := func(routes ...agentops.Route) error {
+		raw, _ := json.Marshal(agentops.ApplyArgs{Routes: routes})
+		_, err := ops[agent.OpProxyApply](ctx, raw, nil)
+		return err
+	}
+	up := agentops.Route{Port: 9000, Upstream: "10.250.0.2:8080"} // the first choice with no Docker networks
+	page := agentops.Route{Port: 9001, Page: agentops.PageMaintenance}
+	if err := apply(up); !agentops.IsCode(err, agent.CodeNotFound) {
+		t.Fatalf("an upstream before the subnet is recorded: %v", err)
+	}
+	if err := apply(page); err != nil {
+		t.Fatalf("a static page before the subnet is recorded: %v", err)
+	}
+	if len(app.got) != 1 {
+		t.Fatalf("%d applies reached the proxy, want only the static page", len(app.got))
+	}
+	// Docker answers again; the first Subnet call records it. No restart.
+	fe.netsFail.Store(false)
+	if _, err := an.Subnet(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(up, page); err != nil {
+		t.Fatalf("the same upstream after the subnet is recorded: %v", err)
+	}
+	if len(app.got) != 2 {
+		t.Fatalf("%d applies reached the proxy", len(app.got))
+	}
+	// And the recorded range, not Docker, bounds it.
+	if v, _ := an.Recorded(ctx); v != "10.250.0.0/24" {
+		t.Fatalf("recorded %q", v)
+	}
+	if err := apply(agentops.Route{Port: 9000, Upstream: "10.250.0.1:80"}); !agentops.IsCode(err, agent.CodePolicy) {
+		t.Fatalf("the gateway: %v", err)
 	}
 }

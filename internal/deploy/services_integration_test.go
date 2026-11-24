@@ -91,7 +91,8 @@ func TestIntegrationServiceActionsAgainstDockerAndCaddy(t *testing.T) {
 	reserved := []int{httpsPort, listenPort}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ops, err := agentops.Handlers(agentops.Deps{Docker: docker, Instance: inst, CheckCreate: policy.CheckCreateAgent,
-		AllowLoopbackRegistry: true, Proxy: applier, ReservedPorts: reserved, Log: quiet})
+		AllowLoopbackRegistry: true, Proxy: applier, ReservedPorts: reserved, Log: quiet,
+		AppSubnet: func(context.Context) (string, error) { return subnet, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

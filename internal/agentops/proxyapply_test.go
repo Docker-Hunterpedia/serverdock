@@ -136,13 +136,41 @@ func TestProxyApplyRefusesUpstreamOutsideTheStaticRange(t *testing.T) {
 	if len(f.got) != 0 {
 		t.Fatalf("%d lists reached the proxy", len(f.got))
 	}
-	// Static pages alone need no network at all.
-	rg.fd.netMissing = true
+	// Static pages alone need no recorded subnet at all.
+	rg = newRig(t, func(d *Deps) { d.Proxy = f; d.AppSubnet = func(context.Context) (string, error) { return "", nil } })
 	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9001, Page: PageNotRunning}}); err != nil {
-		t.Fatalf("static pages before the network exists: %v", err)
+		t.Fatalf("static pages before the subnet is recorded: %v", err)
 	}
 	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Upstream: "10.250.7.2:80"}}); !IsCode(err, agent.CodeNotFound) {
-		t.Fatalf("an upstream without the network: %v", err)
+		t.Fatalf("an upstream without a recorded subnet: %v", err)
+	}
+}
+
+// proxy_apply never calls Docker: with network_inspect failing a valid switch
+// applies and an address outside the recorded static range is refused.
+func TestProxyApplyNeedsNoDocker(t *testing.T) {
+	f := &fakeApplier{}
+	rg := proxyRig(t, f)
+	rg.fd.mu.Lock()
+	rg.fd.netFails = true
+	rg.fd.mu.Unlock()
+	before := rg.fd.netInspects()
+	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Upstream: "10.250.7.2:8080"}}); err != nil {
+		t.Fatalf("a valid switch with Docker failing: %v", err)
+	}
+	if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Page: PageMaintenance}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, up := range []string{"10.250.7.1:80", "10.250.7.200:80", "10.250.8.2:80", "127.0.0.1:80"} {
+		if _, err := rg.cl.ProxyApply(ctx5(t), []Route{{Port: 9000, Upstream: up}}); !IsCode(err, agent.CodePolicy) {
+			t.Errorf("%s: %v", up, err)
+		}
+	}
+	if len(f.got) != 2 {
+		t.Fatalf("%d lists reached the proxy, want 2", len(f.got))
+	}
+	if rg.fd.netInspects() != before {
+		t.Fatalf("proxy_apply called network inspect %d times", rg.fd.netInspects()-before)
 	}
 }
 

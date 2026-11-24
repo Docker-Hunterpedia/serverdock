@@ -441,11 +441,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// One list of ServerDock's own ports, shared by the agent's proxy_apply and
 	// the service actions: an app may never be exposed on one of them.
 	reserved := cfg.reservedPorts()
-	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, applier, reserved, log)
+	appNet, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log)
 	if err != nil {
 		return err
 	}
-	appNet, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log)
+	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, applier, reserved, appNet.Recorded, log)
 	if err != nil {
 		return err
 	}
