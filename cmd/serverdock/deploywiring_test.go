@@ -565,3 +565,57 @@ func TestSubnetRecordedAfterBoot(t *testing.T) {
 		t.Fatalf("the gateway: %v", err)
 	}
 }
+
+// A damaged or edited meta.app_subnet row never widens what an upstream may be:
+// Recorded applies the --app-subnet rule, and proxy_apply then refuses every
+// upstream ("could not be read") while static pages still apply.
+func TestProxyApplyRefusesAMalformedOrOutOfPolicyRecordedSubnet(t *testing.T) {
+	sock, _ := startFakeEngine(t, `[]`)
+	ctx := context.Background()
+	st, err := store.Open(ctx, newData(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	docker := dockerapi.New(sock)
+	defer docker.Close()
+	instance := strings.Repeat("cd", 16)
+	an, err := deploy.NewAppNet(deploy.AppNetOptions{Store: st, Instance: instance, Docker: docker, Log: quietLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &recordingApplier{}
+	ops, err := agentops.Handlers(agentops.Deps{Docker: docker, Instance: instance, CheckCreate: policy.CheckCreateAgent,
+		Proxy: app, AppSubnet: an.Recorded, Log: quietLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := func(routes ...agentops.Route) error {
+		raw, _ := json.Marshal(agentops.ApplyArgs{Routes: routes})
+		_, err := ops[agent.OpProxyApply](ctx, raw, nil)
+		return err
+	}
+	for _, bad := range []struct{ row, up string }{
+		{"127.0.0.0/24", "127.0.0.2:80"}, {"172.17.0.0/16", "172.17.0.2:80"}, {"8.8.8.0/24", "8.8.8.8:80"},
+		{"10.250.0.0/25", "10.250.0.2:80"}, {"10.250.0.5/24", "10.250.0.9:80"}, {"garbage", "10.250.0.2:80"}, {" 10.250.0.0/24", "10.250.0.2:80"},
+	} {
+		if _, err := st.W.ExecContext(ctx, `INSERT OR REPLACE INTO meta(key, value) VALUES ('app_subnet', ?)`, bad.row); err != nil {
+			t.Fatal(err)
+		}
+		if err := apply(agentops.Route{Port: 9000, Upstream: bad.up}); !agentops.IsCode(err, agent.CodeConflict) {
+			t.Errorf("row %q: %v, want the conflict refusal", bad.row, err)
+		}
+		if err := apply(agentops.Route{Port: 9001, Page: agentops.PageMaintenance}); err != nil {
+			t.Errorf("row %q: a static page: %v", bad.row, err)
+		}
+	}
+	if n := len(app.got); n != 7 { // only the static pages reached the proxy
+		t.Fatalf("%d applies reached the proxy, want 7 (the static pages)", n)
+	}
+	if _, err := st.W.ExecContext(ctx, `INSERT OR REPLACE INTO meta(key, value) VALUES ('app_subnet', '10.250.0.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(agentops.Route{Port: 9000, Upstream: "10.250.0.2:80"}); err != nil {
+		t.Fatalf("a valid row: %v", err)
+	}
+}

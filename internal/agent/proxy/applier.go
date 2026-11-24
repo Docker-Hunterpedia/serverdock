@@ -60,8 +60,13 @@ func (a *Applier) Stop() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.started = false
+	// The apps keep serving until Caddy has stopped, and a failed stop leaves the
+	// table as it was instead of making every app answer "not running".
+	if err := a.stop(); err != nil {
+		return err
+	}
 	a.commit(nil, nil)
-	return a.stop()
+	return nil
 }
 
 // commit records a successful load (or a table-only swap): what Caddy serves
@@ -133,8 +138,10 @@ func without(routes []AppRoute, drop ...int) []AppRoute {
 //
 // If the set of ports is the one already served plus the ports that failed to
 // bind last time, and retryFailed is false, only the table is swapped: no
-// caddy.Load, so a deploy switch never reloads, even while another service's
-// port is taken. Otherwise (a different port set, or retryFailed) it loads;
+// caddy.Load, so a deploy switch (same port set) never reloads, even while
+// another service's port is taken. A change of the port set loads even without
+// retryFailed, and a still-wanted failed port is part of that load (one failed
+// load, then the isolating one). Otherwise (a different port set, or retryFailed) it loads;
 // when caddy.Load fails, Caddy keeps the previous config running, and Apply
 // retries without each newly added port in turn, so one port held by another
 // program cannot take the other apps down. If several new ports fail, it starts
@@ -214,7 +221,14 @@ func (a *Applier) Apply(ctx context.Context, routes []AppRoute, retryFailed bool
 			return nil, err
 		}
 		rest := without(routes, p)
-		if a.try(rest) == nil {
+		// An identical config is never force-reloaded: when Caddy named this very
+		// port, "rest" equal to what is served needs no load. For any other error
+		// the probe is a real load, because only it shows whether p was the cause.
+		try := a.try
+		if bp, ok := bindErrorPort(loadErr); ok && bp == p {
+			try = a.tryOrSkip
+		}
+		if try(rest) == nil {
 			a.commit(rest, []int{p})
 			return []int{p}, nil
 		}

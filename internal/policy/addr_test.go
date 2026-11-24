@@ -33,3 +33,15 @@ func TestStaticAddrOnADefaultSubnet(t *testing.T) {
 		}
 	}
 }
+
+func TestStaticAddrRefusesLoopbackLinkLocalAndUnspecifiedOutright(t *testing.T) {
+	for _, ip := range []string{"127.0.0.2", "169.254.169.254", "0.0.0.0", "224.0.0.1"} {
+		if err := StaticAddr("10.250.7.0/24", "", "", netip.MustParseAddr(ip)); err == nil {
+			t.Errorf("%s accepted", ip)
+		}
+	}
+	// Even a damaged subnet that contains them does not make them acceptable.
+	if err := StaticAddr("127.0.0.0/24", "", "", netip.MustParseAddr("127.0.0.2")); err == nil {
+		t.Error("a loopback subnet accepted loopback")
+	}
+}

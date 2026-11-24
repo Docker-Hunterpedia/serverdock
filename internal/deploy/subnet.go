@@ -235,8 +235,10 @@ func (a *AppNet) Recorded(ctx context.Context) (string, error) {
 	case err != nil:
 		return "", err
 	}
-	if p, perr := netip.ParsePrefix(v); perr != nil || !p.Addr().Is4() || p.Masked() != p {
-		return "", fmt.Errorf("deploy: meta.app_subnet %q is not a valid IPv4 CIDR", v)
+	// The same rule as --app-subnet on write (/24 to /20, private space only): a
+	// row that was edited or damaged never widens what an upstream may be.
+	if _, perr := ParseAppSubnet(v); perr != nil {
+		return "", fmt.Errorf("deploy: meta.app_subnet %q is not a valid app subnet: %w", v, perr)
 	}
 	return v, nil
 }

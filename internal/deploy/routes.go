@@ -290,10 +290,11 @@ func (r *Routes) ApplyRoutes(ctx context.Context, mutate func() error) error {
 }
 
 // ApplyRoutesNoRetry is ApplyRoutes that never asks the agent to retry failed
-// ports: a mutation that leaves the route list unchanged sends nothing, and one
-// that changes it never reloads because of another service's taken port. The
-// deploy commit (step 8b) uses it, so a deploy never retries, and so never
-// reloads for, someone else's failed port.
+// ports: a mutation that leaves the route list unchanged sends nothing, and a
+// switch (same set of public ports) never reloads because of another service's
+// taken port. A mutation that changes the port set still loads (including the
+// still-wanted failed ports: one failed load plus one load). The deploy commit
+// (step 8b) uses it, so a deploy never retries someone else's failed port.
 func (r *Routes) ApplyRoutesNoRetry(ctx context.Context, mutate func() error) error {
 	return r.apply(ctx, mutate, false, mutate != nil)
 }

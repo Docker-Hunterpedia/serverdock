@@ -18,6 +18,9 @@ func StaticAddr(subnetStr, gateway, ipRange string, ip netip.Addr) error {
 	if err != nil || !subnet.Addr().Is4() || subnet.Bits() > 30 {
 		return errors.New("the app network has no usable IPv4 subnet")
 	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return fmt.Errorf("%s is not a container address", ip)
+	}
 	if !ip.Is4() || !subnet.Contains(ip) {
 		return fmt.Errorf("%s is not in the app subnet %s", ip, subnet)
 	}

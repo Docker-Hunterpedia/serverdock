@@ -168,39 +168,11 @@ func newSwitchRig(t *testing.T) (*switchRig, string) {
 	return g, ref
 }
 
-// loadCounter counts how often Caddy's active config was replaced since it was
-// created: a Caddy load always installs a new root context (caddy.ActiveContext).
-// It is a lower bound (sampled), and a test goroutine, not part of the product.
-type loadCounter struct {
-	changes atomic.Int64
-	stop    chan struct{}
-	done    sync.WaitGroup
-}
-
-func startLoadCounter() *loadCounter {
-	c := &loadCounter{stop: make(chan struct{})}
-	last := caddy.ActiveContext().Context
-	c.done.Go(func() {
-		for {
-			select {
-			case <-c.stop:
-				return
-			case <-time.After(time.Millisecond):
-			}
-			if now := caddy.ActiveContext().Context; now != last {
-				c.changes.Add(1)
-				last = now
-			}
-		}
-	})
-	return c
-}
-
-func (c *loadCounter) finish() int64 {
-	close(c.stop)
-	c.done.Wait()
-	return c.changes.Load()
-}
+// caddyLoaded reports whether any Caddy load succeeded since before was read: a
+// successful load installs a new root context (caddy.ActiveContext) and keeps
+// it until the next one, so a comparison of two readings is exact for "zero
+// loads" and needs no goroutine.
+func caddyLoaded(before caddy.Context) bool { return caddy.ActiveContext().Context != before.Context }
 
 // TestIntegrationTwentySwitchesUnderLoadDropNothing: 20 route switches (upstream
 // to upstream, maintenance and not-running flips) of one app, with constant
@@ -345,7 +317,7 @@ func TestIntegrationTwentySwitchesUnderLoadDropNothing(t *testing.T) {
 		}
 	}
 	time.Sleep(300 * time.Millisecond) // load is flowing before the first switch
-	counter := startLoadCounter()
+	ctxBefore := caddy.ActiveContext()
 
 	type step struct {
 		name string
@@ -376,7 +348,7 @@ func TestIntegrationTwentySwitchesUnderLoadDropNothing(t *testing.T) {
 		time.Sleep(60 * time.Millisecond)
 	}
 	time.Sleep(300 * time.Millisecond)
-	loads := counter.finish()
+	loaded := caddyLoaded(ctxBefore)
 	close(stop)
 	load.Wait()
 
@@ -390,12 +362,12 @@ func TestIntegrationTwentySwitchesUnderLoadDropNothing(t *testing.T) {
 			t.Errorf("%s: %d dropped, %d retries, %d failed (first: %v)", c.name, c.drops.Load(), c.retries.Load(), c.fail.Load(), firstBad.Load())
 		}
 	}
-	t.Logf("non-conforming responses %d; caddy loads seen during the switches %d", bad.Load(), loads)
+	t.Logf("non-conforming responses %d; a Caddy load happened during the switches: %v", bad.Load(), loaded)
 	if bad.Load() != 0 {
 		t.Errorf("%d unexpected responses (first: %v)", bad.Load(), firstBad.Load())
 	}
-	if loads != 0 {
-		t.Errorf("%d Caddy loads during 20 switches, want 0", loads)
+	if loaded {
+		t.Errorf("Caddy loaded a config during the 20 switches, want none")
 	}
 	if got := g.applier.Applied(); fmt.Sprint(got) != fmt.Sprint(appliedBefore) {
 		t.Errorf("applied ports changed: %v -> %v", appliedBefore, got)

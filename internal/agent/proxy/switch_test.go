@@ -224,7 +224,7 @@ func TestTableAndConfigNeverDivergeAfterAFailedLoad(t *testing.T) {
 	base := ap.load
 	ap.load = func(c Config) error {
 		err := base(c)
-		if err == nil && len(c.Apps) == 1 { // the "keep" load of the several-failed path
+		if err == nil && len(c.Apps) == 1 { // the first successful load of the sequence: 9000 alone
 			cancel()
 		}
 		return err
@@ -284,10 +284,13 @@ func TestHandlerUnderConcurrentSwaps(t *testing.T) {
 		newTable([]AppRoute{up(portA, "10.1.1.1:80"), up(portB, "10.1.1.2:80")}),
 		nil,
 	}
-	valid := map[string]bool{
-		"503|page A\n|7": true, "429|page B\n|9": true,
-		"200|next:10.1.1.1:80|": true, "200|next:10.1.1.2:80|": true,
-		"503|" + BodyNotRunning + "|": true,
+	// What each port may answer: any of its own table entries, never another
+	// port's upstream.
+	notRunning := "503|" + BodyNotRunning + "|"
+	valid := map[int]map[string]bool{
+		portA:    {"503|page A\n|7": true, "429|page B\n|9": true, "200|next:10.1.1.1:80|": true, notRunning: true},
+		portB:    {"503|page A\n|7": true, "429|page B\n|9": true, "200|next:10.1.1.2:80|": true, notRunning: true},
+		portNone: {notRunning: true},
 	}
 	table.Store(tables[0])
 	stop := make(chan struct{})
@@ -321,15 +324,11 @@ func TestHandlerUnderConcurrentSwaps(t *testing.T) {
 				b, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				key := fmt.Sprintf("%d|%s|%s", resp.StatusCode, b, resp.Header.Get("Retry-After"))
-				if port == portNone && key != "503|"+BodyNotRunning+"|" {
+				if !valid[port][key] {
 					bad.Add(1)
-					t.Errorf("unknown port answered %q", key)
+					t.Errorf("port %d answered %q (half a table, or another port's entry)", port, key)
 				}
-				if !valid[key] {
-					bad.Add(1)
-					t.Errorf("half a table: %q", key)
-				}
-				if resp.StatusCode == 503 && resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" && resp.StatusCode != 200 {
+				if resp.StatusCode != 200 && (resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Content-Type") != "text/plain; charset=utf-8") {
 					bad.Add(1)
 					t.Errorf("headers: %v", resp.Header)
 				}

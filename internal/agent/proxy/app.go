@@ -33,7 +33,7 @@ const (
 // appEntry is one port's answer: a static page (upstream == "") or an upstream.
 type appEntry struct {
 	status     int
-	body       string
+	body       []byte // converted once when the table is built: no per-response allocation
 	retryAfter string // "" = no header
 	upstream   string // "ip:port"
 }
@@ -47,8 +47,9 @@ type appTable map[int]appEntry
 //
 // Exactly one Applier may write it per process, and it does: Caddy itself is a
 // process singleton (caddy.Load replaces the one running config), so a second
-// Applier would replace the first one's config as well. Only Applier.Start,
-// Stop and the commit after a successful load store it. Server mode only; the
+// Applier would replace the first one's config as well. Only Applier.commit
+// stores it (Start and Stop, every successful load and the store-only switch all
+// go through it). Server mode only; the
 // remote agent never builds an Applier with a panel, so it never stores it and
 // its config (golden test) carries no app server.
 var table atomic.Pointer[appTable]
@@ -57,7 +58,7 @@ func newTable(routes []AppRoute) *appTable {
 	t := make(appTable, len(routes))
 	for _, r := range routes {
 		if r.Static != nil {
-			e := appEntry{status: r.Static.Status, body: r.Static.Body}
+			e := appEntry{status: r.Static.Status, body: []byte(r.Static.Body)}
 			if r.Static.RetryAfter > 0 {
 				e.retryAfter = strconv.Itoa(r.Static.RetryAfter)
 			}
@@ -97,7 +98,7 @@ func (Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.
 			h.Set("Retry-After", e.retryAfter)
 		}
 		w.WriteHeader(e.status)
-		_, _ = w.Write([]byte(e.body))
+		_, _ = w.Write(e.body)
 		return nil
 	}
 	caddyhttp.SetVar(r.Context(), upstreamVar, e.upstream)
@@ -112,7 +113,7 @@ func lookup(t *appTable, port int) appEntry {
 		}
 	}
 	s := NotRunning()
-	return appEntry{status: s.Status, body: s.Body}
+	return appEntry{status: s.Status, body: []byte(s.Body)} // the rare path (no entry): one small allocation
 }
 
 // localPort is the port the connection arrived on (http.LocalAddrContextKey is

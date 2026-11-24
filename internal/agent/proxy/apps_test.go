@@ -364,7 +364,7 @@ func TestBootLoadsPanelBeforeApps(t *testing.T) {
 		t.Fatalf("the first load is not the panel alone: %+v", f.loads)
 	}
 	b, _ := BuildConfig(f.loads[0])
-	if strings.Contains(string(b), `"app-`) {
+	if _, ok := servers(t, b)["apps"]; ok || strings.Contains(string(b), "serverdock_app") {
 		t.Fatal("an app server in the boot config")
 	}
 	if _, err := ap.Apply(context.Background(), routes(9000), false); err != nil || len(f.loads) != 2 || len(f.loads[1].Apps) != 1 {
