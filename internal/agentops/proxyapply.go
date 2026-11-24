@@ -18,7 +18,7 @@ import (
 // ports that could not be bound; an error means the routes were not (all)
 // applied and Caddy still serves what it served before.
 type RouteApplier interface {
-	Apply(ctx context.Context, routes []proxy.AppRoute) (failedPorts []int, err error)
+	Apply(ctx context.Context, routes []proxy.AppRoute, retryFailed bool) (failedPorts []int, err error)
 }
 
 // appRoutes validates a proxy_apply request and converts it. The agent does not
@@ -104,7 +104,7 @@ func (h *handlers) proxyApply(ctx context.Context, raw json.RawMessage, _ *agent
 			return nil, opErr(agent.CodePolicy, "route port %d: the upstream is not a host address of the app network's static range", r.Port)
 		}
 	}
-	failed, err := h.Proxy.Apply(ctx, routes)
+	failed, err := h.Proxy.Apply(ctx, routes, a.RetryFailed)
 	switch {
 	case err == nil:
 	case errors.Is(err, context.DeadlineExceeded):

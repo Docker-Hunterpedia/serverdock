@@ -92,7 +92,7 @@ func TestPanelConfigUnchangedWithApps(t *testing.T) {
 			t.Errorf("server %q changed when apps were added", k)
 		}
 	}
-	if len(sb) != 4 || sb["app-8080"] == nil || sb["app-8081"] == nil {
+	if len(sb) != 3 || sb["apps"] == nil || !reflect.DeepEqual(sb["apps"].(map[string]any)["listen"], []any{":8080", ":8081"}) {
 		t.Errorf("servers: %v", sb)
 	}
 	// Everything outside the servers (TLS policy, storage, logging, admin) too.
@@ -138,8 +138,29 @@ func TestAppRouteGolden(t *testing.T) {
 	}
 	// The properties the golden is there for.
 	s := servers(t, b)
-	for _, k := range []string{"app-9000", "app-9001", "app-9002"} {
+	if len(s) != 3 {
+		t.Errorf("want the panel's two servers and ONE app server, got %d", len(s))
+	}
+	for _, k := range []string{"apps"} {
 		srv := s[k].(map[string]any)
+		if l := srv["listen"].([]any); !reflect.DeepEqual(l, []any{":9000", ":9001", ":9002"}) {
+			t.Errorf("%s listen %v", k, l)
+		}
+		// Exactly one reverse_proxy, behind the serverdock_app handler, dialing the
+		// per-request variable, with no health checks, limits or retries.
+		h := srv["routes"].([]any)[0].(map[string]any)["handle"].([]any)
+		if len(h) != 2 || h[0].(map[string]any)["handler"] != "serverdock_app" || h[1].(map[string]any)["handler"] != "reverse_proxy" {
+			t.Errorf("%s handlers %v", k, h)
+		}
+		rp := h[1].(map[string]any)
+		for _, bad := range []string{"health_checks", "load_balancing", "dynamic_upstreams", "circuit_breaker"} {
+			if _, ok := rp[bad]; ok {
+				t.Errorf("reverse_proxy has %s", bad)
+			}
+		}
+		if up := rp["upstreams"].([]any); len(up) != 1 || !reflect.DeepEqual(up[0], map[string]any{"dial": "{http.vars.sd_upstream}"}) {
+			t.Errorf("upstreams %v", up)
+		}
 		if p := srv["protocols"].([]any); len(p) != 1 || p[0] != "h1" {
 			t.Errorf("%s protocols %v", k, p)
 		}
@@ -236,7 +257,7 @@ func TestStaticNotRunningAndMaintenancePages(t *testing.T) {
 		{Port: pNot, Static: NotRunning()},
 		{Port: pMaint, Static: Maintenance()},
 		{Port: pUp, Upstream: hostPort(up)},
-	})
+	}, false)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("%v %v", failed, err)
 	}
@@ -291,40 +312,6 @@ func waitTickers(t *testing.T, want int) {
 	}
 }
 
-func TestStaticRouteHasNoReverseProxyTicker(t *testing.T) {
-	ap := startApplier(t)
-	// Other tests in this package may leave tickers behind: count from here. The
-	// panel's own is the first.
-	waitStable := func() int {
-		prev := -1
-		for i := 0; i < 50; i++ {
-			n := tickers()
-			if n == prev {
-				return n
-			}
-			prev = n
-			time.Sleep(20 * time.Millisecond)
-		}
-		return prev
-	}
-	base := waitStable()
-	pA, pB, pC := freePort(t), freePort(t), freePort(t)
-	apply := func(routes ...AppRoute) {
-		t.Helper()
-		if failed, err := ap.Apply(context.Background(), routes); err != nil || len(failed) != 0 {
-			t.Fatalf("%v %v", failed, err)
-		}
-	}
-	apply(AppRoute{Port: pA, Static: NotRunning()}, AppRoute{Port: pB, Static: Maintenance()})
-	waitTickers(t, base)
-	apply(AppRoute{Port: pA, Static: NotRunning()}, AppRoute{Port: pB, Upstream: "10.200.0.2:8080"}, AppRoute{Port: pC, Upstream: "10.200.0.3:8080"})
-	waitTickers(t, base+2) // old ones torn down on the reload, one per upstream route
-	apply(AppRoute{Port: pA, Static: NotRunning()}, AppRoute{Port: pB, Static: NotRunning()}, AppRoute{Port: pC, Upstream: "10.200.0.3:8080"})
-	waitTickers(t, base+1)
-	apply()
-	waitTickers(t, base)
-}
-
 // ---- Applier logic over a fake load ----
 
 type fakeLoad struct {
@@ -367,7 +354,7 @@ func TestBootLoadsPanelBeforeApps(t *testing.T) {
 	f := &fakeLoad{}
 	ap := fakeApplier(f)
 	// Before Start nothing can be applied, and nothing was loaded.
-	if _, err := ap.Apply(context.Background(), routes(9000)); !errors.Is(err, ErrNotStarted) || len(f.loads) != 0 {
+	if _, err := ap.Apply(context.Background(), routes(9000), false); !errors.Is(err, ErrNotStarted) || len(f.loads) != 0 {
 		t.Fatalf("%v, %d loads", err, len(f.loads))
 	}
 	if err := ap.Start(); err != nil {
@@ -380,7 +367,7 @@ func TestBootLoadsPanelBeforeApps(t *testing.T) {
 	if strings.Contains(string(b), `"app-`) {
 		t.Fatal("an app server in the boot config")
 	}
-	if _, err := ap.Apply(context.Background(), routes(9000)); err != nil || len(f.loads) != 2 || len(f.loads[1].Apps) != 1 {
+	if _, err := ap.Apply(context.Background(), routes(9000), false); err != nil || len(f.loads) != 2 || len(f.loads[1].Apps) != 1 {
 		t.Fatalf("%v %d", err, len(f.loads))
 	}
 	// A base that carried Apps does not leak them into the first load.
@@ -399,7 +386,7 @@ func TestApplierIsolatesFailuresInTheLogic(t *testing.T) {
 	f := &fakeLoad{failOn: map[int]bool{9001: true}}
 	ap := fakeApplier(f)
 	_ = ap.Start()
-	failed, err := ap.Apply(ctx, routes(9000, 9001, 9002))
+	failed, err := ap.Apply(ctx, routes(9000, 9001, 9002), false)
 	if err != nil || !reflect.DeepEqual(failed, []int{9001}) || !reflect.DeepEqual(ap.Applied(), []int{9000, 9002}) {
 		t.Fatalf("%v %v %v", failed, err, ap.Applied())
 	}
@@ -407,27 +394,27 @@ func TestApplierIsolatesFailuresInTheLogic(t *testing.T) {
 	f = &fakeLoad{failOn: map[int]bool{9000: true, 9002: true}}
 	ap = fakeApplier(f)
 	_ = ap.Start()
-	failed, err = ap.Apply(ctx, routes(9000, 9001, 9002))
+	failed, err = ap.Apply(ctx, routes(9000, 9001, 9002), false)
 	if err != nil || !reflect.DeepEqual(failed, []int{9000, 9002}) || !reflect.DeepEqual(ap.Applied(), []int{9001}) {
 		t.Fatalf("%v %v %v", failed, err, ap.Applied())
 	}
-	// A failure with no new port is an error, and what ran stays recorded.
+	// A failure with no new port (a removal) is an error, and what ran stays recorded.
 	f = &fakeLoad{}
 	ap = fakeApplier(f)
 	_ = ap.Start()
-	_, _ = ap.Apply(ctx, routes(9000))
+	_, _ = ap.Apply(ctx, routes(9000, 9001), false)
 	f.failAll = errors.New("boom")
 	n := len(f.loads)
-	if _, err := ap.Apply(ctx, []AppRoute{{Port: 9000, Upstream: "10.0.0.2:80"}}); err == nil || len(f.loads) != n+1 || !reflect.DeepEqual(ap.Applied(), []int{9000}) {
+	if _, err := ap.Apply(ctx, routes(9000), false); err == nil || len(f.loads) != n+1 || !reflect.DeepEqual(ap.Applied(), []int{9000, 9001}) {
 		t.Fatalf("%v %d", err, len(f.loads))
 	}
 	// A new port when everything fails: error, nothing recorded as applied.
-	if failed, err := ap.Apply(ctx, routes(9000, 9001)); err == nil || failed != nil || !reflect.DeepEqual(ap.Applied(), []int{9000}) {
+	if failed, err := ap.Apply(ctx, routes(9000, 9001, 9002), false); err == nil || failed != nil || !reflect.DeepEqual(ap.Applied(), []int{9000, 9001}) {
 		t.Fatalf("%v %v %v", failed, err, ap.Applied())
 	}
 	// A bad route list never reaches Caddy.
 	n = len(f.loads)
-	if _, err := ap.Apply(ctx, routes(80)); err == nil || len(f.loads) != n {
+	if _, err := ap.Apply(ctx, routes(80), false); err == nil || len(f.loads) != n {
 		t.Fatalf("%v", err)
 	}
 }
@@ -438,7 +425,7 @@ func TestBindFailureIsolatedToOnePort(t *testing.T) {
 	pOld, pGood, pBad := freePort(t), freePort(t), freePort(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "old app") }))
 	defer up.Close()
-	if failed, err := ap.Apply(ctx, []AppRoute{{Port: pOld, Upstream: hostPort(up)}}); err != nil || len(failed) != 0 {
+	if failed, err := ap.Apply(ctx, []AppRoute{{Port: pOld, Upstream: hostPort(up)}}, false); err != nil || len(failed) != 0 {
 		t.Fatalf("%v %v", failed, err)
 	}
 	// Another program holds pBad.
@@ -452,7 +439,7 @@ func TestBindFailureIsolatedToOnePort(t *testing.T) {
 		{Port: pOld, Upstream: hostPort(up)},
 		{Port: pBad, Static: NotRunning()},
 		{Port: pGood, Static: Maintenance()},
-	})
+	}, false)
 	if err != nil || !reflect.DeepEqual(failed, []int{pBad}) {
 		t.Fatalf("failed %v, err %v", failed, err)
 	}
@@ -471,7 +458,7 @@ func TestBindFailureIsolatedToOnePort(t *testing.T) {
 		{Port: pOld, Upstream: hostPort(up)},
 		{Port: pBad, Static: NotRunning()},
 		{Port: pGood, Static: Maintenance()},
-	})
+	}, true)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("after release: %v %v", failed, err)
 	}
@@ -566,7 +553,7 @@ func TestChildAppRouteProxyEnv(t *testing.T) {
 	}
 	ap := startApplier(t)
 	port := freePort(t)
-	if failed, err := ap.Apply(context.Background(), []AppRoute{{Port: port, Upstream: upstream}}); err != nil || len(failed) != 0 {
+	if failed, err := ap.Apply(context.Background(), []AppRoute{{Port: port, Upstream: upstream}}, false); err != nil || len(failed) != 0 {
 		t.Fatalf("%v %v", failed, err)
 	}
 	// The request to Caddy itself is on loopback, which is never proxied.
@@ -581,7 +568,7 @@ func TestBindErrorPortIsTriedFirst(t *testing.T) {
 	ap := fakeApplier(f)
 	_ = ap.Start()
 	n := len(f.loads)
-	failed, err := ap.Apply(context.Background(), routes(9000, 9001, 9002, 9003))
+	failed, err := ap.Apply(context.Background(), routes(9000, 9001, 9002, 9003), false)
 	if err != nil || !reflect.DeepEqual(failed, []int{9002}) {
 		t.Fatalf("%v %v", failed, err)
 	}

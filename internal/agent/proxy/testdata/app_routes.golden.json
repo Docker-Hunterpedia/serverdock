@@ -9,79 +9,14 @@
     "http": {
       "grace_period": "10s",
       "servers": {
-        "app-9000": {
+        "apps": {
           "automatic_https": {
             "disable": true
           },
           "idle_timeout": "2m",
           "listen": [
-            ":9000"
-          ],
-          "max_header_bytes": 65536,
-          "protocols": [
-            "h1"
-          ],
-          "read_header_timeout": "10s",
-          "routes": [
-            {
-              "handle": [
-                {
-                  "handler": "reverse_proxy",
-                  "transport": {
-                    "network_proxy": {
-                      "from": "none"
-                    },
-                    "protocol": "http"
-                  },
-                  "upstreams": [
-                    {
-                      "dial": "10.200.0.2:8080"
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "app-9001": {
-          "automatic_https": {
-            "disable": true
-          },
-          "idle_timeout": "2m",
-          "listen": [
-            ":9001"
-          ],
-          "max_header_bytes": 65536,
-          "protocols": [
-            "h1"
-          ],
-          "read_header_timeout": "10s",
-          "routes": [
-            {
-              "handle": [
-                {
-                  "body": "This app is not running (ServerDock)\n",
-                  "handler": "static_response",
-                  "headers": {
-                    "Cache-Control": [
-                      "no-store"
-                    ],
-                    "Content-Type": [
-                      "text/plain; charset=utf-8"
-                    ]
-                  },
-                  "status_code": 503
-                }
-              ]
-            }
-          ]
-        },
-        "app-9002": {
-          "automatic_https": {
-            "disable": true
-          },
-          "idle_timeout": "2m",
-          "listen": [
+            ":9000",
+            ":9001",
             ":9002"
           ],
           "max_header_bytes": 65536,
@@ -93,20 +28,21 @@
             {
               "handle": [
                 {
-                  "body": "Deploying, back in a moment\n",
-                  "handler": "static_response",
-                  "headers": {
-                    "Cache-Control": [
-                      "no-store"
-                    ],
-                    "Content-Type": [
-                      "text/plain; charset=utf-8"
-                    ],
-                    "Retry-After": [
-                      "10"
-                    ]
+                  "handler": "serverdock_app"
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "transport": {
+                    "network_proxy": {
+                      "from": "none"
+                    },
+                    "protocol": "http"
                   },
-                  "status_code": 503
+                  "upstreams": [
+                    {
+                      "dial": "{http.vars.sd_upstream}"
+                    }
+                  ]
                 }
               ]
             }

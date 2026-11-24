@@ -498,7 +498,7 @@ type recordingApplier struct {
 	got [][]proxy.AppRoute
 }
 
-func (r *recordingApplier) Apply(_ context.Context, routes []proxy.AppRoute) ([]int, error) {
+func (r *recordingApplier) Apply(_ context.Context, routes []proxy.AppRoute, _ bool) ([]int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.got = append(r.got, routes)

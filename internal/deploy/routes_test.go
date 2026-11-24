@@ -21,6 +21,7 @@ import (
 type fakeProxy struct {
 	mu      sync.Mutex
 	calls   [][]agentops.Route
+	retries []bool    // retry_failed of each recorded call
 	events  *[]string // shared sequence log (may be nil)
 	fail    error
 	failed  []int
@@ -34,7 +35,7 @@ type fakeProxy struct {
 	lastDeadline time.Time
 }
 
-func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route) (agentops.ApplyResult, error) {
+func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route, retryFailed bool) (agentops.ApplyResult, error) {
 	if err := ctx.Err(); err != nil { // a real call on a cancelled context never starts
 		return agentops.ApplyResult{}, err
 	}
@@ -53,6 +54,7 @@ func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route) (ag
 		return agentops.ApplyResult{}, f.fail
 	}
 	f.calls = append(f.calls, append([]agentops.Route(nil), routes...))
+	f.retries = append(f.retries, retryFailed)
 	if f.events != nil {
 		*f.events = append(*f.events, "proxy_apply")
 	}
@@ -793,5 +795,48 @@ func TestStaleAfterAFailedBootSync(t *testing.T) {
 	px.fail = errors.New("agent gone")
 	if err := r.SetOverride(bg, svc, Override{Kind: OverrideMaintenance}); err == nil || !r.Stale() {
 		t.Fatalf("%v stale=%v", err, r.Stale())
+	}
+}
+
+// retry_failed is true only for an explicit retry while a port is failed; the
+// no-retry option (the 8b commit) never sets it, and with an unchanged list it
+// sends nothing.
+func TestRetryFailedFlagAndTheNoRetryOption(t *testing.T) {
+	r, px, svc, d := failedPortRig(t)
+	if !reflect.DeepEqual(px.retries, []bool{false}) {
+		t.Fatalf("first send: %v", px.retries)
+	}
+	noop := func() error { return nil }
+	if err := r.Refresh(bg); err != nil || !reflect.DeepEqual(px.retries, []bool{false, true}) {
+		t.Fatalf("Refresh: %v %v", err, px.retries)
+	}
+	if err := r.ApplyRoutes(bg, noop); err != nil || !reflect.DeepEqual(px.retries, []bool{false, true, true}) {
+		t.Fatalf("ApplyRoutes: %v %v", err, px.retries)
+	}
+	// No-retry, nothing changed: nothing is sent.
+	if err := r.ApplyRoutesNoRetry(bg, noop); err != nil || px.n() != 3 {
+		t.Fatalf("no-retry with no change: %v %d", err, px.n())
+	}
+	// No-retry with a changed list (the service goes to "not running"): sent, with
+	// retry_failed false although a port is failed.
+	if err := r.ApplyRoutesNoRetry(bg, func() error {
+		r.state.replace([]Container{up(svc, d, 1, "exited", "10.250.1.2")})
+		return nil
+	}); err != nil || !reflect.DeepEqual(px.retries, []bool{false, true, true, false}) {
+		t.Fatalf("no-retry with a change: %v %v", err, px.retries)
+	}
+	// The state-map path (a container event) never asks for a retry either.
+	if err := r.SetContainer(bg, up(svc, d, 1, StateRunning, "10.250.1.2")); err != nil || px.retries[len(px.retries)-1] {
+		t.Fatalf("SetContainer: %v %v", err, px.retries)
+	}
+	// No failed port: an explicit retry sends the flag as false.
+	r2, px2, _, _ := failedPortRig(t)
+	px2.failed = nil
+	_ = r2.Refresh(bg)
+	if err := r2.Refresh(bg); err != nil || !reflect.DeepEqual(px2.retries, []bool{false, true}) {
+		t.Fatalf("%v %v", err, px2.retries)
+	}
+	if err := r2.ApplyRoutes(bg, noop); err != nil || px2.n() != 2 {
+		t.Fatalf("nothing failed, nothing changed: %v %d", err, px2.n())
 	}
 }

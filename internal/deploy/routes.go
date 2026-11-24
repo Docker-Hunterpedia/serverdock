@@ -177,7 +177,7 @@ type Override struct {
 
 // RouteApplier sends the route list to the agent: *agentops.Client.
 type RouteApplier interface {
-	ProxyApply(ctx context.Context, routes []agentops.Route) (agentops.ApplyResult, error)
+	ProxyApply(ctx context.Context, routes []agentops.Route, retryFailed bool) (agentops.ApplyResult, error)
 }
 
 // BootSource is what Sync reads from Docker: *agentops.Client.
@@ -289,6 +289,15 @@ func (r *Routes) ApplyRoutes(ctx context.Context, mutate func() error) error {
 	return r.apply(ctx, mutate, mutate != nil, mutate != nil)
 }
 
+// ApplyRoutesNoRetry is ApplyRoutes that never asks the agent to retry failed
+// ports: a mutation that leaves the route list unchanged sends nothing, and one
+// that changes it never reloads because of another service's taken port. The
+// deploy commit (step 8b) uses it, so a deploy never retries, and so never
+// reloads for, someone else's failed port.
+func (r *Routes) ApplyRoutesNoRetry(ctx context.Context, mutate func() error) error {
+	return r.apply(ctx, mutate, false, mutate != nil)
+}
+
 // hasFailed reports whether the last successful apply left ports unopened.
 func (r *Routes) hasFailed() bool {
 	r.statusMu.Lock()
@@ -352,7 +361,7 @@ func (r *Routes) send(ctx context.Context, retry bool) error {
 	if h == r.lastHash && !(retry && r.hasFailed()) {
 		return nil
 	}
-	res, err := r.px.ProxyApply(ctx, routes)
+	res, err := r.px.ProxyApply(ctx, routes, retry && r.hasFailed())
 	if err != nil {
 		// The outcome is unknown (the agent may have applied the list before the
 		// call timed out or the reply was lost): forget the hash so the next call

@@ -345,9 +345,11 @@ func (c *Client) Events(ctx context.Context, onReady func(), fn func(Event) erro
 // ProxyApply makes routes the complete set of app routes. The result's
 // FailedPorts are ports the agent could not bind; every other route is live.
 // An error means the routes were not applied (the previous ones keep running).
-func (c *Client) ProxyApply(ctx context.Context, routes []Route) (ApplyResult, error) {
+// retryFailed asks the agent to try the failed ports again (and so to load); a
+// change that keeps the set of ports never reloads without it.
+func (c *Client) ProxyApply(ctx context.Context, routes []Route, retryFailed bool) (ApplyResult, error) {
 	var r ApplyResult
-	if err := c.call(ctx, agent.OpProxyApply, ApplyArgs{Routes: routes}, &r, nil); err != nil {
+	if err := c.call(ctx, agent.OpProxyApply, ApplyArgs{Routes: routes, RetryFailed: retryFailed}, &r, nil); err != nil {
 		return ApplyResult{}, err
 	}
 	sent := map[int]bool{}

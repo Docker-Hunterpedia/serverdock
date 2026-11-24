@@ -134,7 +134,7 @@ func registerTestCells(r *actions.Registry) {
 
 type stubApplier struct{}
 
-func (stubApplier) ProxyApply(context.Context, []agentops.Route) (agentops.ApplyResult, error) {
+func (stubApplier) ProxyApply(context.Context, []agentops.Route, bool) (agentops.ApplyResult, error) {
 	return agentops.ApplyResult{Applied: true, FailedPorts: []int{}}, nil
 }
 

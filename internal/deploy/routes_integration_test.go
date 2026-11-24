@@ -77,7 +77,9 @@ func itFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx runs the real chain: the
+// TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx (port-set changes, which
+// still reload; upstream switches do not, see TestIntegrationTwentySwitchesUnderLoadDropNothing)
+// runs the real chain: the
 // real Docker, the real agent ops over the hub session, the real embedded
 // Caddy, Routes.ApplyRoutes. Twenty config-changing reloads happen while the
 // panel and an app take constant load over keep-alive and new connections;
@@ -324,6 +326,12 @@ func TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx(t *testing.T) {
 		}
 		if cl.drops.Load()*20 > cl.total.Load() {
 			t.Errorf("%s: %d of %d requests were dropped (over 5 %%)", cl.name, cl.drops.Load(), cl.total.Load())
+		}
+		// Per-reload bound (plan 0004 Revision 9 follow-ups): drops track reloads
+		// (about 0.6 to 0.9 per reload), not requests, so a slow runner with fewer
+		// requests cannot flake the percentage alone: at most 2 per reload.
+		if cl.drops.Load() > 2*20 {
+			t.Errorf("%s: %d dropped connections over 20 reloads (at most 2 per reload)", cl.name, cl.drops.Load())
 		}
 	}
 	if badStatus.Load() != 0 {

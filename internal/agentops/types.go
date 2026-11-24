@@ -285,6 +285,11 @@ type Route struct {
 // ApplyArgs is the proxy_apply request: the complete route list.
 type ApplyArgs struct {
 	Routes []Route `json:"routes"`
+	// RetryFailed asks the agent to try again the ports it could not bind. Without
+	// it a route change that keeps the same set of ports (plus the failed ones)
+	// swaps the agent's route table and loads nothing (plan 0004 step 6b). Additive:
+	// an agent that ignores it behaves as step 6.
+	RetryFailed bool `json:"retry_failed,omitempty"`
 }
 
 // ApplyResult is the proxy_apply result. FailedPorts are the ports Caddy could

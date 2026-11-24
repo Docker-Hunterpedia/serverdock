@@ -44,9 +44,11 @@ type Config struct {
 	// Listen address into a redirect-only HTTP server. The remote agent's proxy
 	// never sets it, so its config stays byte-identical.
 	Panel *Panel
-	// Apps are the exposed apps' routes, one Caddy server per public port (server
-	// mode only: they need Panel). The remote agent never sets it, so its config
-	// and the panel servers stay byte-identical.
+	// Apps are the exposed apps' routes, all in one Caddy server with one listen
+	// entry per public port (server mode only: they need Panel). Only the set of
+	// ports reaches the config; what each port answers is the Applier's table
+	// (app.go). The remote agent never sets it, so its config and the panel
+	// servers stay byte-identical.
 	Apps []AppRoute
 }
 
@@ -66,8 +68,8 @@ type AppRoute struct {
 	Port int
 	// Upstream is "ip:port": an IPv4 literal, never a name or a socket.
 	Upstream string
-	// Static is the page served when there is no upstream. A static route has no
-	// reverse_proxy handler, so Caddy starts no upstream-health ticker for it.
+	// Static is the page served when there is no upstream (the serverdock_app
+	// handler writes it; it never reaches the reverse_proxy).
 	Static *Static
 }
 
@@ -199,25 +201,29 @@ func (c Config) validateApps() error {
 	return nil
 }
 
-// appServer is the Caddy server of one app route: plain HTTP on every
-// interface, HTTP/1.1 only (no h2c, no HTTP/3, so no UDP), the panel's public
-// limits.
-func appServer(a AppRoute, limits func(m) m) m {
-	var handler m
-	if a.Static != nil {
-		handler = m{"handler": "static_response", "status_code": a.Static.Status, "body": a.Static.Body,
-			"headers": m{"Content-Type": []string{"text/plain; charset=utf-8"}, "Cache-Control": []string{"no-store"}}}
-		if a.Static.RetryAfter > 0 {
-			handler["headers"].(m)["Retry-After"] = []string{strconv.Itoa(a.Static.RetryAfter)}
-		}
-	} else {
-		// Never follow HTTP_PROXY/HTTPS_PROXY from the environment: an app route
-		// dials its container directly (the panel's handler is unchanged).
-		handler = reverseProxy(a.Upstream, m{"transport": m{"protocol": "http", "network_proxy": m{"from": "none"}}})
+// appServer is the one Caddy server of every app route (plan 0004 step 6b):
+// plain HTTP on every public port (one listen entry each), HTTP/1.1 only (no
+// h2c, no HTTP/3, so no UDP), the panel's public limits. Its route is the
+// serverdock_app handler (static pages, and the sd_upstream variable for an
+// upstream) followed by the ONE reverse_proxy of all apps, which dials
+// {http.vars.sd_upstream}. Nothing else is configured on that reverse_proxy: no
+// passive health checks, no max_requests, no retries (lb_try_duration), no
+// dynamic_upstreams. The single upstream host entry is shared by every app, so
+// a failing app must never be able to mark it down or fill it for the others
+// (reverseproxy/hosts.go:93-103: health only counts failures when a health
+// policy exists, line 95; hosts.go:106-107: Full only with max_requests;
+// reverseproxy.go:1440-1442: tryAgain is false with no try duration and no
+// retries). Never follow HTTP_PROXY/HTTPS_PROXY from the environment: an app
+// route dials its container directly.
+func appServer(apps []AppRoute, limits func(m) m) m {
+	listen := make([]string, len(apps))
+	for i, a := range apps {
+		listen[i] = ":" + strconv.Itoa(a.Port)
 	}
+	proxy := reverseProxy(upstreamDial, m{"transport": m{"protocol": "http", "network_proxy": m{"from": "none"}}})
 	return limits(m{
-		"listen":    []string{":" + strconv.Itoa(a.Port)},
-		"routes":    []m{{"handle": []m{handler}}},
+		"listen":    listen,
+		"routes":    []m{{"handle": []m{{"handler": appHandlerName}, proxy}}},
 		"protocols": []string{"h1"},
 	})
 }
@@ -311,8 +317,9 @@ func BuildConfig(c Config) ([]byte, error) {
 		servers := httpApp["servers"].(m)
 		apps := append([]AppRoute(nil), c.Apps...)
 		sort.Slice(apps, func(i, j int) bool { return apps[i].Port < apps[j].Port })
-		for _, a := range apps {
-			servers["app-"+strconv.Itoa(a.Port)] = appServer(a, limits)
+		if len(apps) > 0 {
+			registerAppHandler()
+			servers["apps"] = appServer(apps, limits)
 		}
 		cfg["apps"].(m)["tls"] = m{
 			"certificates":          m{"load_files": []m{{"certificate": c.Panel.CertFile, "key": c.Panel.CertFile, "format": "pem"}}},
