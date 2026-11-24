@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,8 +233,50 @@ func TestFreeOSMemoryNotOnTheResponsePath(t *testing.T) {
 	waitFor(t, "the last release to free memory", func() bool { return freed.Load() == 1 })
 }
 
-// The dummy verification costs the same as a real one (within 20%), so a missing
-// user cannot be told from a wrong password by timing. Best of several runs.
+// The dummy verification does exactly the work of a real failed one, so a
+// missing user cannot be told from a wrong password by timing. Two parts:
+// the structural one is exact (both paths derive with the same argon2
+// parameters, salt size and key size, and the dummy string is built from the
+// current parameters), and a timing check guards against anything the
+// structure does not show. The timing check measures the CPU time of one OS
+// thread, not wall time: a CI runner that is busy with other processes made
+// wall-clock ratios of the very same code path swing from 0.64 to 1.67, in both
+// directions (measured), which says nothing about the code.
+func TestDummyVerifyDerivesWithTheSameParametersAsARealOne(t *testing.T) {
+	h := NewHasher()
+	h.freeMem = func() {}
+	type call struct {
+		mem, t         uint32
+		threads        uint8
+		keyLen         uint32
+		saltLen, pwLen int
+	}
+	var calls []call
+	real := h.derive
+	h.derive = func(pw, salt []byte, mem, tm uint32, th uint8, kl uint32) []byte {
+		calls = append(calls, call{mem, tm, th, kl, len(salt), len(pw)})
+		return real(pw, salt, mem, tm, th, kl)
+	}
+	phc, err := h.Hash(bg, "some real password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	if ok, err := h.Verify(bg, phc, "wrong password"); ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	if err := h.VerifyDummy(bg, "wrong password"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0] != calls[1] {
+		t.Fatalf("a real failed verify and the dummy derive differently: %+v", calls)
+	}
+	want := call{argonMemoryKiB, argonTime, argonThreads, argonKeyLen, argonSaltLen, len("wrong password")}
+	if calls[0] != want {
+		t.Fatalf("derive %+v, want the current parameters %+v", calls[0], want)
+	}
+}
+
 func TestDummyHashWithin20PercentOfARealOne(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing")
@@ -242,22 +286,51 @@ func TestDummyHashWithin20PercentOfARealOne(t *testing.T) {
 	// measurement; it is not part of what an attacker can time per attempt.
 	h.freeMem = func() {}
 	phc, _ := h.Hash(bg, "some real password")
-	// Interleave the two so both see the same machine load (shared CI runners,
-	// -race), and keep the best of each.
+	// One OS thread for the whole measurement, so its CPU time is the work of the
+	// hash (argon2 with one lane runs on the caller's goroutine).
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	_, cpu := threadCPU()
 	timeIt := func(f func()) time.Duration {
+		if cpu {
+			c0, _ := threadCPU()
+			f()
+			c1, _ := threadCPU()
+			return c1 - c0
+		}
 		t0 := time.Now()
 		f()
 		return time.Since(t0)
 	}
-	real, dummy := time.Hour, time.Hour
-	for i := 0; i < 9; i++ {
-		real = min(real, timeIt(func() { h.Verify(bg, phc, "wrong password") }))
-		dummy = min(dummy, timeIt(func() { h.VerifyDummy(bg, "wrong password") }))
+	// Warm both paths, then interleave the samples.
+	h.Verify(bg, phc, "wrong password")
+	h.VerifyDummy(bg, "wrong password")
+	// The median, not the minimum: a thread's CPU clock is not exact under load,
+	// and a single sample too low (measured: 0.57 ms for a 4 ms hash) would be
+	// kept by a minimum and make the ratio meaningless. Up to three rounds: cache
+	// and memory-bandwidth contention from other processes can still move one
+	// round by 20 % (measured 1.22 with the machine saturated), but a real
+	// difference between the paths would show in every round, and the structural
+	// test above fails on it exactly.
+	const samples, rounds = 15, 3
+	var ratios []float64
+	for round := 0; round < rounds; round++ {
+		var rs, ds [samples]time.Duration
+		for i := range rs {
+			rs[i] = timeIt(func() { h.Verify(bg, phc, "wrong password") })
+			ds[i] = timeIt(func() { h.VerifyDummy(bg, "wrong password") })
+		}
+		sort.Slice(rs[:], func(i, j int) bool { return rs[i] < rs[j] })
+		sort.Slice(ds[:], func(i, j int) bool { return ds[i] < ds[j] })
+		ratio := float64(ds[samples/2]) / float64(rs[samples/2])
+		t.Logf("round %d: real %v dummy %v ratio %.2f (thread CPU time: %v)", round+1, rs[samples/2], ds[samples/2], ratio, cpu)
+		ratios = append(ratios, ratio)
+		if ratio >= 0.8 && ratio <= 1.2 {
+			break
+		}
 	}
-	ratio := float64(dummy) / float64(real)
-	t.Logf("real %v dummy %v ratio %.2f", real, dummy, ratio)
-	if ratio < 0.8 || ratio > 1.2 {
-		t.Errorf("dummy/real = %.2f, want within 20%%", ratio)
+	if last := ratios[len(ratios)-1]; last < 0.8 || last > 1.2 {
+		t.Errorf("dummy/real ratios %.2f in %d rounds, want within 20%% in one", ratios, rounds)
 	}
 	if err := h.VerifyDummy(bg, ""); err != nil {
 		t.Fatal(err)
