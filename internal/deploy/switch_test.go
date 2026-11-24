@@ -797,10 +797,11 @@ func TestPanicAfterTheCommitKeepsTheNewVersion(t *testing.T) {
 	}
 }
 
-// SIGTERM during the drain leaves the committed deploy as it is: the job stays
-// running for the boot pass, which settles the deploy as succeeded; the old
-// container is left for the resync.
-func TestShutdownDuringTheDrainLeavesTheDeployForTheBootPass(t *testing.T) {
+// SIGTERM during the drain: the committed deploy is written succeeded at once, with
+// the honest reason (the previous container is removed at the next start), and the
+// job ends; nothing is left for the boot pass but a failed write. The old container
+// is left for the resync.
+func TestShutdownDuringTheDrainWritesTheHonestEnd(t *testing.T) {
 	g := newRRig(t, func(c *RunnerConfig) { c.DrainUnit = time.Second })
 	old := g.live(g.svc, 1, "10.250.0.2")
 	oldID := g.containerOf(old).id
@@ -818,17 +819,18 @@ func TestShutdownDuringTheDrainLeavesTheDeployForTheBootPass(t *testing.T) {
 	if took := time.Since(t0); took > 5*time.Second {
 		t.Errorf("the shutdown waited %v for a 10 s drain", took)
 	}
-	if s := g.jobState(job); s != jobs.StateRunning {
-		t.Errorf("job %s; a shutdown leaves it running", s)
+	if s := g.jobState(job); s != jobs.StateSucceeded {
+		t.Errorf("job %s, want succeeded: the runner wrote the end itself", s)
 	}
 	if g.activeDeploy(g.svc) != d || !g.alive(oldID) || g.containerOf(d) == nil {
 		t.Error("the committed state was disturbed")
 	}
-	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now()); err != nil || n != 1 {
-		t.Fatalf("%d %v", n, err)
-	}
-	if r := g.row(d); r.status != StatusSucceeded {
+	r := g.row(d)
+	if r.status != StatusSucceeded || r.code != "warning" || !strings.Contains(r.reason, "stopped during the drain") || strings.Contains(r.reason, "record incomplete") {
 		t.Fatalf("%+v", r)
+	}
+	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now()); err != nil || n != 0 {
+		t.Fatalf("the boot pass found %d jobs (%v), want none", n, err)
 	}
 }
 
@@ -1072,7 +1074,7 @@ func TestShutdownAfterASupersedeDuringTheDrainReturnsPromptly(t *testing.T) {
 	if took := time.Since(t0); took > 5*time.Second {
 		t.Fatalf("the shutdown waited %v behind a 10 s drain", took)
 	}
-	if r := g.row(d); r.status != StatusSucceeded {
+	if r := g.row(d); r.status != StatusSucceeded || !strings.Contains(r.reason, "stopped during the drain") {
 		t.Errorf("a committed deploy was recorded %+v", r)
 	}
 	if g.activeDeploy(g.svc) != d || !g.alive(oldID) {

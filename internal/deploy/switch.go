@@ -373,7 +373,7 @@ func (rn *run) commit(ctx context.Context) *failure {
 	defer cancel()
 	rn.trace("commit:lock")
 	err := rn.r.cfg.Routes.CommitRoutes(cctx, rn.svc.id, func() error {
-		tctx, tcancel := context.WithTimeout(cctx, rn.r.cfg.CommitBound)
+		tctx, tcancel := context.WithTimeout(context.WithoutCancel(cctx), rn.r.cfg.CommitBound) // the lock wait must not eat the transaction's time
 		defer tcancel()
 		return rn.commitTx(tctx)
 	})
@@ -636,7 +636,12 @@ func (rn *run) stopOld(ctx context.Context, old int64) string {
 // commit included) becomes a warning on the succeeded deploy.
 func (rn *run) finishCommitted(f *failure) error {
 	if f != nil && f.code == CodeShutdown {
-		return errors.New(f.msg)
+		// Left as it is: the deploy is committed and live; the previous container is
+		// removed at the next start. Write that honestly, once, on the shutdown bound,
+		// so neither the queue's backstop nor the boot pass has to guess. A failed
+		// write is covered by both.
+		rn.recordShutdownDuringDrain()
+		return nil
 	}
 	if f != nil {
 		rn.warn("ServerDock hit an internal error after switching traffic; the new version is live and the previous container may still need removing")
@@ -689,5 +694,28 @@ func (rn *run) recordSucceeded() {
 	}
 	if _, err := PruneDeploys(ctx, rn.r.cfg.DB, rn.svc.id); err != nil {
 		rn.r.cfg.Log.Warn("old deploys could not be pruned", "err", err.Error())
+	}
+}
+
+// recordShutdownDuringDrain ends a committed deploy that a shutdown cut short in
+// the drain: succeeded, with the reason that says what was left undone.
+func (rn *run) recordShutdownDuringDrain() {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rn.r.cfg.ShutdownCleanupBound)
+	defer cancel()
+	const reason = "ServerDock was stopped during the drain; the previous container is removed at the next start"
+	err := rn.r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
+		ts := rn.now()
+		if _, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'succeeded', stage = ?, reason_code = 'warning', reason = ?, finished_at = ?
+			WHERE id = ? AND status IN ('queued', 'running')`, StageDone, reason, ts, rn.deploy); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'ok', finished_at = ?, detail = 'cut short by the shutdown' WHERE deploy_id = ? AND state = 'running'`, ts, rn.deploy); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped' WHERE deploy_id = ? AND state = 'pending'`, rn.deploy)
+		return err
+	})
+	if err != nil {
+		rn.r.cfg.Log.Error("the end of a deploy cut short by the shutdown could not be written (the queue or the boot pass settles it)", "deploy", rn.deploy, "err", err.Error())
 	}
 }

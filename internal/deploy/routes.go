@@ -291,6 +291,8 @@ const ApplyBound = 30 * time.Second
 // that gave up waiting for the route lock (its context ended first), so the
 // mutate function never ran. Either way nothing was written through it and the
 // routes were not built or sent: a refused request never reloads the proxy.
+// (ClearOverride is the exception in one respect: it deletes the override before
+// it waits for the lock, so when its wait gives up the override is already gone.)
 type MutateError struct{ Err error }
 
 func (e *MutateError) Error() string { return e.Err.Error() }

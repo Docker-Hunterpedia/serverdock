@@ -194,7 +194,7 @@ func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (ou
 		if p := recover(); p != nil {
 			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
 			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: rn.statusOf(&failure{})}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
-				msg: "ServerDock hit an internal error while deploying; the new version was removed"})
+				msg: "ServerDock hit an internal error while deploying"})
 		}
 	}()
 
@@ -966,7 +966,7 @@ func (rn *run) finish(f *failure) error {
 		f = &failure{code: CodeStartFailed, msg: "the deploy ended without a result"}
 	}
 	bound := rn.cleanupBound() // 30 s, or 5 s when the process is going away
-	if !f.noRecord && rn.switched {
+	if rn.switched {
 		// The routes may point at the candidate (a panic, or any early return, after
 		// the switch): put them back BEFORE it is removed, so no route names a
 		// container that is gone and whose address may be handed out again.

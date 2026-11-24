@@ -665,7 +665,13 @@ func TestRetryArmsTheTimerAndNothingElse(t *testing.T) {
 	n := job("service:1")
 	n.MaxAttempts = 2
 	id, _ := s.Enqueue(context.Background(), n)
-	waitFor(t, "the retry timer", func() bool { _, ok := s.NextWake(); return ok })
+	// The timer is also armed, for "now", when the job is first enqueued, and it keeps
+	// that wake until the job is picked: wait for the RETRY's wake (about 300 ms
+	// ahead), which is set only after the requeue was recorded.
+	waitFor(t, "the retry timer", func() bool {
+		at, ok := s.NextWake()
+		return ok && time.Until(at) > 100*time.Millisecond
+	})
 	if e.state(t, id) != StateQueued {
 		t.Errorf("state %s while waiting to retry", e.state(t, id))
 	}
