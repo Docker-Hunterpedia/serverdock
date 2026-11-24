@@ -444,3 +444,129 @@ func TestSupersededCandidateNeverTouchesTheOldContainer(t *testing.T) {
 		t.Errorf("the old container: %+v", c)
 	}
 }
+
+// A job whose stored actor cannot be rebuilt (a bad blob, or one that disagrees with
+// the row's kind, id or session: a tamper signal) never runs, is audited as one
+// denied row with a fixed reason (nothing from the blob), and its deploy ends
+// "denied" through the sentinel, not through the error's text.
+func TestUnreadableActorEndsTheDeployDeniedWithOneAuditRow(t *testing.T) {
+	for name, mod := range map[string]string{
+		"garbage blob":    `UPDATE jobs SET actor_blob = '{"secret-looking-text'`,
+		"system kind":     `UPDATE jobs SET actor_blob = '{"v":1,"k":"system","id":"x"}'`,
+		"kind mismatch":   `UPDATE jobs SET actor_kind = 'user'`,
+		"id mismatch":     `UPDATE jobs SET actor_id = '999'`,
+		"session swapped": `UPDATE jobs SET actor_session = 'sess-other'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRRig(t)
+			g.start(true) // the gate is closed while the row is altered
+			d, job := g.deploy(g.svc)
+			mustExec(t, g.st, mod)
+			g.sched.OpenGate()
+			if s := g.wait(job); s != jobs.StateFailed {
+				t.Fatalf("job %s", s)
+			}
+			r := g.row(d)
+			if r.status != "failed" || r.code != "denied" || r.reason != jobs.DeniedReason {
+				t.Fatalf("%+v", r)
+			}
+			if g.ops.count("pull") != 0 || g.refresh.n() != 0 {
+				t.Error("a job with an unreadable actor ran or was refreshed")
+			}
+			if got := g.auditRows(`action = 'jobs.run_deploy' AND phase = 'denied' AND executor = 'system' AND error NOT LIKE '%secret-looking%'`); got != 1 {
+				t.Errorf("%d denied audit rows, want exactly 1", got)
+			}
+			if got := g.auditRows(`error LIKE '%secret-looking%' OR args_json LIKE '%secret-looking%'`); got != 0 {
+				t.Error("the blob's text reached the audit log")
+			}
+		})
+	}
+}
+
+// A transient failure that loses the race against a cancel is recorded as the cancel
+// (or supersede), not as the pull error.
+func TestTransientFailureThatLosesToACancelReadsCancelled(t *testing.T) {
+	g := newRRig(t)
+	g.ops.pullFn = func(ctx context.Context, _ string, _ func(agentops.PullProgress)) (agentops.PullResult, error) {
+		var job int64
+		if err := g.st.R.QueryRow(`SELECT id FROM jobs LIMIT 1`).Scan(&job); err != nil {
+			t.Error(err)
+		}
+		_ = g.sched.Cancel(context.Background(), job, "cancelled by the user")
+		<-ctx.Done() // the cancel has reached the job's context; the pull still reports a transient error
+		return agentops.PullResult{}, opErr(agent.CodeDocker, "toomanyrequests: 429")
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	if s := g.wait(job); s != jobs.StateCancelled {
+		t.Fatalf("job %s", s)
+	}
+	if r := g.row(d); r.status != "cancelled" || r.code != CodeCancelled {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A panic's clean-up runs while the service lock is still held: a second deploy of
+// the service cannot start its own work in between.
+func TestPanicCleanUpRunsUnderTheServiceLock(t *testing.T) {
+	g := newRRig(t)
+	var heldAtCleanUp atomic.Bool
+	g.runner.afterHealth = func(context.Context, *run) *failure { panic("boom") }
+	g.ops.mu.Lock()
+	g.ops.removeHook = func() {
+		if unlock, ok := g.runner.cfg.Locks.TryLock(g.svc); ok {
+			unlock()
+		} else {
+			heldAtCleanUp.Store(true)
+		}
+	}
+	g.ops.mu.Unlock()
+	g.start(false)
+	_, job := g.deploy(g.svc)
+	g.wait(job)
+	if !heldAtCleanUp.Load() {
+		t.Error("the service lock was already released when the panic's clean-up ran")
+	}
+}
+
+// A candidate removed by hand during the gate fails the gate at once, with a clear
+// reason, instead of waiting out the timeout as "Docker did not answer".
+func TestCandidateRemovedByHandFailsTheGateFast(t *testing.T) {
+	g := newRRig(t)
+	var n atomic.Int32
+	g.ops.inspectFn = func(ctx context.Context, id string) (agentops.ContainerState, error, bool) {
+		if n.Add(1) >= 2 { // the first inspect is the runner's confirm
+			return agentops.ContainerState{}, opErr(agent.CodeNotFound, "not found"), true
+		}
+		return agentops.ContainerState{}, nil, false
+	}
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		return agentops.HealthResult{OK: false, Status: 503}, nil
+	}
+	g.start(false)
+	t0 := time.Now()
+	d, job := g.deploy(g.svc, func(s *Snapshot) { s.Health.TimeoutS = 600 })
+	g.wait(job)
+	r := g.row(d)
+	if r.code != CodeStartFailed || !strings.Contains(r.reason, "removed") || strings.Contains(r.reason, "did not answer") || time.Since(t0) > 5*time.Second {
+		t.Fatalf("%+v after %v", r, time.Since(t0))
+	}
+}
+
+// The health timeout reports the app's last answer, never an inspect that failed only
+// because the gate's own deadline had run out.
+func TestHealthTimeoutReasonIsTheAppsLastFailureNotTheDeadline(t *testing.T) {
+	g := newRRig(t)
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		return agentops.HealthResult{OK: false, Status: 503}, nil
+	}
+	// Every inspect after the runner's own fails once the gate's context has ended,
+	// as the real hub's would: it returns the context's cause.
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	r := g.row(d)
+	if r.code != CodeHealthTimeout || !strings.Contains(r.reason, "HTTP 503") || strings.Contains(r.reason, "did not answer") {
+		t.Fatalf("%+v", r)
+	}
+}

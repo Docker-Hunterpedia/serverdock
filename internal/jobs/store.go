@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -380,6 +379,13 @@ func (s *Store) NextDue(ctx context.Context, since time.Time) (time.Time, bool, 
 // Finish records the end of a running job. The error text is cut to
 // MaxErrorText bytes at a rune boundary.
 func (s *Store) Finish(ctx context.Context, id int64, state, errText string) error {
+	return s.finish(ctx, id, state, errText, false)
+}
+
+// finish is Finish; denied says the run was refused by policy (the error wrapped
+// actions.ErrDenied: the scheduler decides that with errors.Is, never by reading
+// the text), so a deploy the runner left live ends with code "denied".
+func (s *Store) finish(ctx context.Context, id int64, state, errText string, denied bool) error {
 	switch state {
 	case StateSucceeded, StateFailed, StateCancelled:
 	default:
@@ -396,7 +402,7 @@ func (s *Store) Finish(ctx context.Context, id int64, state, errText string) err
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 1 && (state == StateFailed || state == StateCancelled) {
-			return endDeployTx(ctx, tx, id, state, errText, now)
+			return endDeployTx(ctx, tx, id, state, errText, denied, now)
 		}
 		return nil
 	})
@@ -414,7 +420,7 @@ const DeniedReason = "the user or token that queued this deploy can no longer ru
 // panic, a failed write of its own, a retry that lost the race against a cancel).
 // The runner normally ends the row itself first, with a precise reason; this only
 // touches rows still queued or running (the cancelTx pattern).
-func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText string, now time.Time) error {
+func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText string, denied bool, now time.Time) error {
 	ts := FormatTime(now)
 	status, code, reason := "failed", "job_failed", clip(errText, 512)
 	switch {
@@ -425,13 +431,13 @@ func endDeployTx(ctx context.Context, tx *sql.Tx, job int64, state, errText stri
 		if reason == "" {
 			reason = "cancelled"
 		}
-	case strings.HasPrefix(errText, "actions: denied"):
+	case denied:
 		code, reason = "denied", DeniedReason
 	case reason == "":
 		reason = "the deploy's job failed"
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE deploys SET status = ?, reason_code = ?, reason = ?, finished_at = ?,
-		app_safe = COALESCE(app_safe, CASE WHEN EXISTS (SELECT 1 FROM services s WHERE s.id = deploys.service_id AND s.active_deploy_id IS NOT NULL) THEN 'yes' ELSE 'unknown' END),
+		app_safe = COALESCE(app_safe, 'unknown'), -- the queue cannot see the old version; step 10's resync raises it
 		superseded_by = CASE WHEN ? = 'superseded' THEN (SELECT MAX(d2.id) FROM deploys d2 WHERE d2.service_id = deploys.service_id AND d2.id > deploys.id) ELSE superseded_by END
 		WHERE job_id = ? AND status IN ('queued', 'running')`, status, code, reason, ts, status, job)
 	if err != nil {

@@ -1042,11 +1042,10 @@ func TestFinishEndsTheDeployRowTheRunnerLeftLive(t *testing.T) {
 	type tc struct {
 		name, state, errText string
 		status, code, reason string
-		keepsRunnerEnd       bool
-		wantReason           func(string) bool
+		denied               bool
 	}
 	cases := []tc{
-		{name: "denied", state: StateFailed, errText: "actions: denied: the API token that queued this job was revoked", status: "failed", code: "denied", reason: DeniedReason},
+		{name: "denied", state: StateFailed, errText: "the API token that queued this job was revoked", denied: true, status: "failed", code: "denied", reason: DeniedReason},
 		{name: "failed", state: StateFailed, errText: "the job panicked", status: "failed", code: "job_failed", reason: "the job panicked"},
 		{name: "cancelled", state: StateCancelled, errText: "cancelled by the user", status: "cancelled", code: "cancelled", reason: "cancelled by the user"},
 		{name: "superseded", state: StateCancelled, errText: "superseded", status: "superseded", code: "superseded", reason: "superseded by a newer deploy"},
@@ -1066,8 +1065,10 @@ func TestFinishEndsTheDeployRowTheRunnerLeftLive(t *testing.T) {
 			// Make the first one a running deploy that holds an address, mid-stage.
 			e.exec(t, `UPDATE jobs SET state = 'running', boot_id = 'b' WHERE id = ?`, enq.JobID)
 			e.exec(t, `UPDATE deploys SET status = 'running', ip = '10.250.0.7', stage = 'health' WHERE id = ?`, enq.DeployID)
+			// The service has a live version: the backstop still says unknown (it cannot see it).
+			e.exec(t, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, newer.DeployID, svc)
 			e.exec(t, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'pull', 'ok'), (?, 'health', 'running'), (?, 'switch', 'pending')`, enq.DeployID, enq.DeployID, enq.DeployID)
-			if err := e.js.Finish(ctx, enq.JobID, c.state, c.errText); err != nil {
+			if err := e.js.finish(ctx, enq.JobID, c.state, c.errText, c.denied); err != nil {
 				t.Fatal(err)
 			}
 			var status, code, reason, safe string

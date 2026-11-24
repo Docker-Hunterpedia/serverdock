@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 )
 
 // RunFunc runs one job. It is the deploy package's entry point (step 8a). ctx is
@@ -496,7 +498,8 @@ func (s *Scheduler) record(ctx context.Context, j Job, runErr, cause error) {
 			return err
 		})
 	default:
-		err = try(func() error { return st.Finish(ctx, j.ID, StateFailed, runErr.Error()) })
+		denied := errors.Is(runErr, actions.ErrDenied)
+		err = try(func() error { return st.finish(ctx, j.ID, StateFailed, runErr.Error(), denied) })
 	}
 	if err != nil {
 		s.cfg.Log.Error("jobs: record result (the boot pass will resolve it)", "job", j.ID, "err", err)

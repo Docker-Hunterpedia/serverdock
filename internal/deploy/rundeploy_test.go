@@ -66,6 +66,8 @@ type fakeOps struct {
 	labelsSeen []map[string]string
 	// afterNetInspect, if set, runs after a successful network_inspect.
 	afterNetInspect func()
+	// removeHook, if set, runs at the start of every container_remove.
+	removeHook func()
 }
 
 func newFakeOps() *fakeOps { return &fakeOps{cs: map[string]*fcont{}, ctxErrs: map[string][]error{}} }
@@ -199,6 +201,12 @@ func (f *fakeOps) ContainerStop(ctx context.Context, id string, _ int) error {
 
 func (f *fakeOps) ContainerRemove(ctx context.Context, id string) error {
 	f.rec(ctx, "remove", id[:8])
+	f.mu.Lock()
+	hook := f.removeHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.removeErr != nil {
@@ -1010,15 +1018,16 @@ func TestSupersedeDuringHealthGateIsUnhealthy(t *testing.T) {
 	g.start(false)
 	d1, j1 := g.deploy(g.svc, func(s *Snapshot) { s.Health.TimeoutS = 600 })
 	<-inHealth
+	d2, j2 := g.deploy(g.svc) // supersedes the running one
+	if s := g.wait(j1); s != jobs.StateCancelled {
+		t.Fatalf("the superseded job is %s", s)
+	}
+	// Only now (the first deploy is over) does the probe start passing, for the second.
 	g.ops.mu.Lock()
 	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
 		return agentops.HealthResult{OK: true}, nil
 	}
 	g.ops.mu.Unlock()
-	d2, j2 := g.deploy(g.svc) // supersedes the running one
-	if s := g.wait(j1); s != jobs.StateCancelled {
-		t.Fatalf("the superseded job is %s", s)
-	}
 	r := g.row(d1)
 	if r.status != "superseded" || r.code != CodeSuperseded || r.supersededBy != d2 || r.appSafe != AppSafeYes || !strings.Contains(r.reason, "unhealthy") {
 		t.Fatalf("%+v (newer deploy %d)", r, d2)

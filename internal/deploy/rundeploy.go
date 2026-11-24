@@ -170,15 +170,6 @@ func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (ou
 		return RunDeployOut{}, errors.New("the job could not be read")
 	}
 	rn := &run{r: r, job: j, attempt: j.Attempt, jobCtx: ctx}
-	// A panic in a stage must not leave the candidate running or the row live: the
-	// clean-up runs on a fresh context, the row ends, and the job fails.
-	defer func() {
-		if p := recover(); p != nil {
-			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
-			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: StatusFailed}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
-				msg: "ServerDock hit an internal error while deploying; the new version was removed"})
-		}
-	}()
 	if err := rn.load(ctx); err != nil {
 		return RunDeployOut{}, err
 	}
@@ -188,6 +179,16 @@ func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (ou
 	}
 	defer unlock()
 	defer r.dropProgress(rn.deploy)
+	// A panic in a stage must not leave the candidate running or the row live: the
+	// clean-up runs on a fresh context, the row ends, and the job fails. It is
+	// registered after the lock, so it runs while the service lock is still held.
+	defer func() {
+		if p := recover(); p != nil {
+			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
+			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: StatusFailed}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
+				msg: "ServerDock hit an internal error while deploying; the new version was removed"})
+		}
+	}()
 
 	f := rn.execute(ctx)
 	return RunDeployOut{Deploy: rn.svc.deployNumber, Status: rn.statusOf(f)}, rn.finish(f)
@@ -818,7 +819,7 @@ func (rn *run) health(ctx context.Context) *failure {
 	target := net.JoinHostPort(rn.ip, strconv.Itoa(rn.snap.ContainerPort))
 	passes, lastErr := 0, ""
 	for {
-		f, inspected := rn.unhealthy(hctx, ctx)
+		f, inspected := rn.unhealthy(hctx, ctx, &lastErr)
 		if f != nil {
 			return f
 		}
@@ -828,8 +829,6 @@ func (rn *run) health(ctx context.Context) *failure {
 			if ok, f = rn.probe(hctx, ctx, target, &lastErr); f != nil {
 				return f
 			}
-		} else {
-			lastErr = "Docker did not answer the inspect"
 		}
 		if ok {
 			passes++
@@ -867,7 +866,7 @@ func (rn *run) unhealthyBy(f *failure) *failure {
 
 // unhealthy is the fail-fast check of the candidate: an inspect showing it exited,
 // is restarting or was killed for memory fails the gate at once.
-func (rn *run) unhealthy(hctx, ctx context.Context) (f *failure, inspected bool) {
+func (rn *run) unhealthy(hctx, ctx context.Context, lastErr *string) (f *failure, inspected bool) {
 	if ctx.Err() != nil {
 		return rn.unhealthyBy(rn.ctxFailure(ctx)), false
 	}
@@ -877,8 +876,21 @@ func (rn *run) unhealthy(hctx, ctx context.Context) (f *failure, inspected bool)
 		if ctx.Err() != nil {
 			return rn.unhealthyBy(rn.ctxFailure(ctx)), false
 		}
+		if hctx.Err() != nil {
+			return nil, false // the gate's own deadline: it says nothing about the app or Docker; the loop reports the timeout
+		}
+		if agentops.IsCode(err, agent.CodeNotFound) {
+			// The candidate is gone (removed by hand): waiting out the timeout helps nobody.
+			rn.cid = ""
+			return &failure{code: CodeStartFailed, msg: "the new version's container disappeared while it was being checked (it was removed)"}, true
+		}
 		// One failed inspect is one failed check, not the end of the gate: Docker
 		// may answer the next one. Only the deadline ends it.
+		if isDockerTrouble(err) {
+			*lastErr = "Docker did not answer the inspect"
+		} else {
+			*lastErr = opText(err, "the container could not be inspected")
+		}
 		return nil, false
 	}
 	if !rn.ours(st) {
@@ -959,7 +971,12 @@ func (rn *run) finish(f *failure) error {
 	rctx, rcancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rbound)
 	defer rcancel()
 
-	if f.retry && rn.canRetry() && rn.jobCtx.Err() == nil {
+	if f.retry && rn.jobCtx.Err() != nil {
+		// The transient failure lost the race against a cancel, a supersede, a revoke
+		// or a shutdown: the deploy reads that, not the pull error.
+		f = rn.ctxFailure(rn.jobCtx)
+	}
+	if f.retry && rn.canRetry() {
 		rn.recordRetry(rctx, f)
 		return jobs.Retryable(errors.New(f.msg))
 	}

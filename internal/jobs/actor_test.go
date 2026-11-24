@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -133,10 +134,12 @@ func TestCancelSessionJobsCancelsQueuedAndRunningJobsOfThoseSessionsOnly(t *test
 	if !sawCancel.Load() {
 		t.Error("the running job's context was not cancelled")
 	}
+	// queuedOther is on a free service, so a worker may have picked it before the
+	// cancel and it then ends asynchronously like the first job: wait for it too. What
+	// the test means: both revoked sessions' jobs end cancelled, picked or not.
 	for _, id := range []int64{queuedSame, queuedOther} {
-		if st := e.state(t, id); st != StateCancelled {
-			t.Errorf("job %d is %s", id, st)
-		}
+		id := id
+		waitFor(t, fmt.Sprintf("job %d to be cancelled", id), func() bool { return e.state(t, id) == StateCancelled })
 	}
 	var reason string
 	e.st.R.QueryRow(`SELECT cancel_reason FROM jobs WHERE id = ?`, running).Scan(&reason)

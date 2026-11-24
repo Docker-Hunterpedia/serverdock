@@ -162,8 +162,15 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 	reqID := jobs.RequestID(j.ID, j.Attempt)
 	rebuilt, err := j.RebuildActor(r.cfg.Inv)
 	if err != nil {
-		r.cfg.Log.Warn("a job's actor could not be rebuilt; the job does not run", "job", j.ID, "err", err.Error())
-		return errors.New("denied: the job's actor could not be rebuilt")
+		// A bad blob or a blob that disagrees with the row's kind, id and session is a
+		// tamper signal: audited as a denial (the actor is empty, so the row says
+		// "invalid"; nothing from the blob is echoed), logged, and the deploy ends
+		// denied through the one sentinel actions.ErrDenied.
+		r.cfg.Log.Warn("a job's actor could not be rebuilt; the job does not run", "job", j.ID, "attempt", j.Attempt, "actor_kind", j.Actor.Kind)
+		if aerr := r.cfg.Inv.RecordDenied(ctx, actions.Actor{}, action, in, "the job's stored actor is not valid", reqID); aerr != nil {
+			r.cfg.Log.Error("the refusal could not be audited", "job", j.ID, "err", aerr.Error())
+		}
+		return fmt.Errorf("%w: the job's stored actor is not valid", actions.ErrDenied)
 	}
 	actor, err := r.cfg.Refresh.RefreshJobActor(ctx, rebuilt, j.EnqueuedAt)
 	if err != nil {
