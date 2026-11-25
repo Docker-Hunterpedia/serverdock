@@ -64,8 +64,10 @@ type fakeOps struct {
 	inspectFn   func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
 	listErr     error
 	removeErr   error
+	restartFn   func(c *fcont, grace int) error // container_restart: nil leaves the container running
 	stopGraceFn func(grace int)
 	stopErrFn   func(id string) error // an error for a stop of this container id
+	imagesGone  atomic.Bool           // the local image store has no image (inspect by id says not found)
 	netMissing  atomic.Bool           // the app network is "pruned": create and network_inspect say so
 	labelsSeen  []map[string]string
 	// afterNetInspect, if set, runs after a successful network_inspect.
@@ -134,8 +136,11 @@ func (f *fakeOps) ImagePull(ctx context.Context, ref string, _ time.Duration, on
 	return agentops.PullResult{ImageID: testImageID, RepoDigest: "x@sha256:" + strings.Repeat("b", 64)}, nil
 }
 
-func (f *fakeOps) ImageInspect(ctx context.Context, ref string, _ bool) (agentops.ImageInfo, error) {
+func (f *fakeOps) ImageInspect(ctx context.Context, ref string, byID bool) (agentops.ImageInfo, error) {
 	f.rec(ctx, "image_inspect", ref)
+	if byID && f.imagesGone.Load() {
+		return agentops.ImageInfo{}, &agent.OpError{Code: agent.CodeNotFound, Msg: "no such image"}
+	}
 	return agentops.ImageInfo{ID: testImageID, ExposedPorts: []string{"8080/tcp"}}, nil
 }
 
@@ -220,6 +225,32 @@ func (f *fakeOps) ContainerStop(ctx context.Context, id string, grace int) error
 		return nil
 	}
 	return &agent.OpError{Code: agent.CodeNotFound, Msg: "not found"}
+}
+
+// ContainerRestart is container_restart: the container ends up running (restartFn
+// may change that).
+func (f *fakeOps) ContainerRestart(ctx context.Context, id string, grace int) error {
+	f.rec(ctx, "restart", id[:8])
+	if err := dead(ctx); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	c := f.cs[id]
+	fn := f.restartFn
+	f.mu.Unlock()
+	if c == nil {
+		return &agent.OpError{Code: agent.CodeNotFound, Msg: "not found"}
+	}
+	if fn != nil {
+		if err := fn(c, grace); err != nil {
+			return err
+		}
+		return nil
+	}
+	f.mu.Lock()
+	c.running = true
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fakeOps) ContainerRemove(ctx context.Context, id string) error {
@@ -1511,7 +1542,7 @@ func TestPreSwitchStagesNeverCallProxyApply(t *testing.T) {
 // state-map write that applies.
 func TestRouteCallsAreOnlyInTheSwitchFile(t *testing.T) {
 	forbidden := []string{"ProxyApply", "ApplyRoutes", "SetOverride", "ClearOverride", "CommitRoutes", "SetContainer", "RemoveContainer(", ".Refresh(", "Sync("}
-	for _, f := range []string{"runner.go", "rundeploy.go"} {
+	for _, f := range []string{"runner.go", "rundeploy.go", "stopfirst.go", "restart.go", "deployactions.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -1579,7 +1610,7 @@ func TestPausePointsAtEveryStageBoundary(t *testing.T) {
 		src = append(src, b...)
 	}
 	b := src
-	for _, s := range []string{StagePull, StageCheck, StageStart, StageHealth, StageSwitch, StageCommit, StageDrain, StageStopOld} {
+	for _, s := range []string{StagePull, StageCheck, StageMaintenance, StageStopOldFirst, StageStart, StageHealth, StageSwitch, StageCommit, StageDrain, StageStopOld} {
 		for _, side := range []string{"before", "after"} {
 			if !strings.Contains(string(b), `pausePoint("`+s+`:`+side+`")`) {
 				t.Errorf("no pause point %s:%s", s, side)

@@ -14,11 +14,28 @@ const (
 	StageDrain   = "drain"
 	StageStopOld = "stop_old"
 	StageDone    = "done"
+
+	// Stop-first only (plan 0004, "Stop-first"): the maintenance page goes up, then
+	// the previous container is stopped (kept, not removed) before the new one starts.
+	StageMaintenance  = "maintenance"
+	StageStopOldFirst = "stop_old_first"
 )
 
 // blueGreenStages is the ordered stage list written (as pending) when a deploy
-// starts to run. Stop-first adds its own stages in step 9.
-var blueGreenStages = []string{StagePull, StageCheck, StageStart, StageHealth, StageSwitch, StageCommit, StageDrain, StageStopOld}
+// starts to run; stopFirstStages is the one for the stop-first strategy (no drain:
+// the previous container is already stopped when the new one starts).
+var (
+	blueGreenStages = []string{StagePull, StageCheck, StageStart, StageHealth, StageSwitch, StageCommit, StageDrain, StageStopOld}
+	stopFirstStages = []string{StagePull, StageCheck, StageMaintenance, StageStopOldFirst, StageStart, StageHealth, StageSwitch, StageCommit, StageStopOld}
+)
+
+// stagesFor is the stage list of a strategy.
+func stagesFor(strategy string) []string {
+	if strategy == "stop_first" {
+		return stopFirstStages
+	}
+	return blueGreenStages
+}
 
 // Stage states (deploy_stages.state).
 const (

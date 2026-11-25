@@ -288,7 +288,15 @@ func (rn *run) revert(f *failure) *failure {
 	defer cancel()
 	rn.trace("revert")
 	rn.reverted = true
-	err := rn.r.cfg.Routes.ClearOverride(fctx, rn.svc.id)
+	var err error
+	if rn.gap {
+		// Stop-first: the previous container is stopped, so the routes go back to the
+		// maintenance page (not to a stopped container) until restoreOld has started it
+		// again and the gate has passed. Still a table swap.
+		err = rn.r.cfg.Routes.SetOverride(fctx, rn.svc.id, Override{Kind: OverrideMaintenance})
+	} else {
+		err = rn.r.cfg.Routes.ClearOverride(fctx, rn.svc.id)
+	}
 	if err != nil && !errors.Is(err, ErrRoutesNotReady) {
 		rn.r.cfg.Log.Warn("the previous routes could not be re-applied; the new container is kept", "deploy", rn.deploy, "err", err.Error())
 		f.keep, f.appSafe = true, AppSafeUnknown
@@ -296,7 +304,9 @@ func (rn *run) revert(f *failure) *failure {
 		return f
 	}
 	f.appSafe = rn.appSafe(nil)
-	if rn.svc.hasActive {
+	if rn.gap {
+		f.msg += "; the previous version is started again"
+	} else if rn.svc.hasActive {
 		f.msg += "; the previous version keeps serving"
 	} else {
 		f.msg += "; there is no previous version, so nothing is being served"
@@ -322,7 +332,8 @@ func (rn *run) commitTx(ctx context.Context) error {
 	}
 	now := rn.now()
 	err := rn.r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ? WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, rn.svc.id, old)
+		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ?, needs_attention = CASE WHEN needs_attention = ? THEN NULL ELSE needs_attention END
+			WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, AttentionPreviousDown, rn.svc.id, old)
 		if err != nil {
 			return err
 		}
@@ -419,6 +430,24 @@ func orNilText(err error) string {
 	return err.Error()
 }
 
+// setMaintenance puts the service's route on the maintenance page ("Deploying,
+// back in a moment", 503, Retry-After: 10): the stop-first gap. A table swap, no
+// Caddy load. rn.gap is set BEFORE the call, so any outcome (a failure that left
+// the page up included) is taken down again by finish.
+func (rn *run) setMaintenance(ctx context.Context) error {
+	rn.gap = true
+	rn.trace("maintenance")
+	return rn.r.cfg.Routes.SetOverride(ctx, rn.svc.id, Override{Kind: OverrideMaintenance})
+}
+
+// routesBack ends the stop-first gap: the override is cleared and the routes follow
+// the database again (the previous version, which restoreOld has started and
+// checked, or the "not running" page when it did not come back).
+func (rn *run) routesBack(ctx context.Context) error {
+	rn.gap = false
+	return rn.r.cfg.Routes.ClearOverride(ctx, rn.svc.id)
+}
+
 // clearOverride clears the service's override and re-applies, on a fresh context.
 func (rn *run) clearOverride() error {
 	rn.reverted = true
@@ -482,18 +511,20 @@ func (rn *run) afterCommit(ctx context.Context) *failure {
 	}
 	old := rn.svc.activeDeploy
 
-	pausePoint("drain:before")
-	rn.trace("drain")
-	if rn.drain() {
-		return &failure{code: CodeShutdown, msg: "ServerDock was stopped while the previous version was draining"}
+	if !rn.stopFirst { // stop-first has no drain: the previous container stopped before the new one started
+		pausePoint("drain:before")
+		rn.trace("drain")
+		if rn.drain() {
+			return &failure{code: CodeShutdown, msg: "ServerDock was stopped while the previous version was draining"}
+		}
+		secs := rn.snap.DrainS
+		rn.soft("the drain stage", func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'ok', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ?`,
+				rn.now(), fmt.Sprintf("waited %d seconds for open requests to finish", secs), rn.deploy, StageDrain)
+			return err
+		})
+		pausePoint("drain:after")
 	}
-	secs := rn.snap.DrainS
-	rn.soft("the drain stage", func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'ok', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ?`,
-			rn.now(), fmt.Sprintf("waited %d seconds for open requests to finish", secs), rn.deploy, StageDrain)
-		return err
-	})
-	pausePoint("drain:after")
 
 	pausePoint("stop_old:before")
 	rn.soft("the stop_old stage", func(ctx context.Context, tx *sql.Tx) error {

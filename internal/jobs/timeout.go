@@ -64,3 +64,9 @@ func TimeoutSeconds(s Settings) (int, error) {
 func (s Settings) String() string {
 	return fmt.Sprintf("%s health=%ds drain=%ds grace=%ds", s.Strategy, s.HealthTimeoutS, s.DrainS, s.StopGraceS)
 }
+
+// RestartTimeoutSeconds derives jobs.timeout_s for a restart: the stop of the
+// container (stop_grace_s + 15 s) and its health gate (health_timeout_s + 30 s).
+func RestartTimeoutSeconds(stopGraceS, healthTimeoutS int) int {
+	return (stopGraceS + stopExtraS) + (healthTimeoutS + restartExtraS)
+}

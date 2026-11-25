@@ -177,8 +177,10 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 	switch j.Kind {
 	case jobs.KindDeploy:
 		action = "jobs.run_deploy"
+	case jobs.KindRestart:
+		action = "jobs.run_restart"
 	default:
-		// Restart and delete are step 9.
+		// The delete job is the second half of step 9.
 		return fmt.Errorf("deploy: jobs of kind %q are not supported yet", j.Kind)
 	}
 	in, _ := json.Marshal(RunDeployIn{Job: j.ID})
@@ -216,6 +218,14 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 
 // RegisterJobActions registers the JobOnly actions the runner invokes.
 func RegisterJobActions(reg *actions.Registry, r *Runner) {
+	actions.Register(reg, actions.Def[RunRestartIn, RunRestartOut]{
+		Name: "jobs.run_restart", Summary: "Run a queued restart (only the job runner can invoke this, as the actor that queued it).",
+		Risk: actions.RiskMutate, Scope: actions.ScopeWrite, JobOnly: true,
+		Target: func(in RunRestartIn) string { return fmt.Sprintf("job:%d", in.Job) },
+		Execute: func(ctx context.Context, c actions.Call, in RunRestartIn) (RunRestartOut, error) {
+			return r.runRestart(ctx, c, in.Job)
+		},
+	})
 	actions.Register(reg, actions.Def[RunDeployIn, RunDeployOut]{
 		Name: "jobs.run_deploy", Summary: "Run a queued deploy (only the job runner can invoke this, as the actor that queued it).",
 		Risk: actions.RiskMutate, Scope: actions.ScopeWrite, JobOnly: true,

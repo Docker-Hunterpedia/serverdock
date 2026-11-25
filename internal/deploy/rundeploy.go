@@ -101,6 +101,7 @@ type RunnerOps interface {
 	ContainerRemove(ctx context.Context, id string) error
 	ContainerInspect(ctx context.Context, id string) (agentops.ContainerState, error)
 	ContainerList(ctx context.Context) (agentops.ListResult, error)
+	ContainerRestart(ctx context.Context, id string, grace int) error
 	HealthCheck(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error)
 }
 
@@ -155,6 +156,10 @@ type run struct {
 	createSent   bool   // a create was sent: the candidate may exist even if cid is ""
 	started      bool
 	failedDB     bool // a database write failed (logged once)
+	stopFirst    bool // the snapshot's strategy is stop_first (stopfirst.go)
+	gap          bool // the maintenance override was set (stop-first): finish takes the page down again
+	stopSent     bool // a stop of the previous container was sent: finish starts it again on any failure (stopfirst.go)
+	old          *oldVersion
 	switched     bool // the switch was started: the routes may point at the candidate
 	reverted     bool // the routes were put back (revert ran)
 	committed    bool // the commit transaction succeeded: from here the candidate is the live version and is never removed
@@ -292,8 +297,14 @@ func (rn *run) execute(ctx context.Context) *failure {
 	}
 	pctx, cancelW := context.WithTimeoutCause(ctx, watchdog, errWatchdog)
 	defer cancelW()
-	// Pull, check and start share one 10-minute bound.
-	sctx, cancelS := context.WithTimeoutCause(pctx, rn.r.cfg.PreSwitchBound, errPreSwitch)
+	// Pull, check and start share one 10-minute bound; stop-first adds the stop of
+	// the previous container (stop_grace_s + 15 s, plan 0004 "Deadlines and contexts").
+	rn.stopFirst = rn.snap.Strategy == jobs.StrategyStopFirst
+	bound := rn.r.cfg.PreSwitchBound
+	if rn.stopFirst {
+		bound += time.Duration(rn.snap.StopGraceS)*time.Second + StopExtra
+	}
+	sctx, cancelS := context.WithTimeoutCause(pctx, bound, errPreSwitch)
 	defer cancelS()
 
 	pausePoint("pull:before")
@@ -306,6 +317,18 @@ func (rn *run) execute(ctx context.Context) *failure {
 		return f
 	}
 	pausePoint("check:after")
+	if rn.stopFirst {
+		pausePoint("maintenance:before")
+		if f := rn.maintenance(sctx); f != nil {
+			return f
+		}
+		pausePoint("maintenance:after")
+		pausePoint("stop_old_first:before")
+		if f := rn.stopOldFirst(sctx); f != nil {
+			return f
+		}
+		pausePoint("stop_old_first:after")
+	}
 	pausePoint("start:before")
 	if f := rn.start(sctx); f != nil {
 		return f
@@ -348,7 +371,7 @@ func (rn *run) begin(ctx context.Context) *failure {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM deploy_stages WHERE deploy_id = ?`, rn.deploy); err != nil {
 			return err
 		}
-		for _, s := range blueGreenStages {
+		for _, s := range stagesFor(rn.snap.Strategy) {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, ?, 'pending')`, rn.deploy, s); err != nil {
 				return err
 			}
@@ -831,7 +854,7 @@ func (rn *run) health(ctx context.Context) *failure {
 		ok := false
 		if inspected {
 			var f *failure
-			if ok, f = rn.probe(hctx, ctx, target, &lastErr); f != nil {
+			if ok, f = rn.probe(hctx, ctx, target, rn.snap.Health, &lastErr); f != nil {
 				return f
 			}
 		}
@@ -913,8 +936,7 @@ func (rn *run) unhealthy(hctx, ctx context.Context, lastErr *string) (f *failure
 	return nil, true
 }
 
-func (rn *run) probe(hctx, ctx context.Context, target string, lastErr *string) (bool, *failure) {
-	h := rn.snap.Health
+func (rn *run) probe(hctx, ctx context.Context, target string, h SnapHealth, lastErr *string) (bool, *failure) {
 	if h.Kind == "running" {
 		return true, nil // unhealthy() just saw it running
 	}
@@ -976,6 +998,20 @@ func (rn *run) finish(f *failure) error {
 	defer cancel()
 	if !f.keep {
 		rn.removeCandidate(fctx)
+	}
+	if (rn.gap || rn.stopSent) && !(f.code == CodeCommitFailed && f.keep) {
+		// (An unknown commit outcome leaves both versions as they are: the routes
+		// follow the database, and the resync settles the rest.)
+		// Stop-first: the page goes down and the previous container comes back, on
+		// its own fresh context (stopfirst.go). A candidate that was kept because the
+		// proxy might still point at it is removed once the routes are confirmed.
+		kept := f.keep
+		f = rn.restoreOld(f)
+		if kept && !f.keep {
+			kctx, kcancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
+			rn.removeCandidate(kctx)
+			kcancel()
+		}
 	}
 	if f.noRecord {
 		return errors.New(f.msg)

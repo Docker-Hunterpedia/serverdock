@@ -116,6 +116,16 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// A restart's budget: the stop of the container and its health gate.
+func TestRestartTimeoutIsTheStopPlusTheHealthGate(t *testing.T) {
+	if got := RestartTimeoutSeconds(300, 600); got != (300+15)+(600+30) {
+		t.Errorf("%d", got)
+	}
+	if got := RestartTimeoutSeconds(0, 5); got != 15+35 {
+		t.Errorf("%d", got)
+	}
+}
+
 func TestTimeoutDerivedFromSettings(t *testing.T) {
 	max := Settings{Strategy: StrategyBlueGreen, HealthTimeoutS: 600, DrainS: 300, StopGraceS: 300}
 	if got, err := TimeoutSeconds(max); err != nil || got != 1945 {

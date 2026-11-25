@@ -40,6 +40,8 @@ type fakeProxy struct {
 	onApply  func(routes []agentops.Route)
 	// failN fails the first failN calls with fail (then succeeds).
 	failN int
+	// failIf, if set, fails the call whose route list it says an error for.
+	failIf func(routes []agentops.Route) error
 }
 
 func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route, retryFailed bool) (agentops.ApplyResult, error) {
@@ -66,6 +68,12 @@ func (f *fakeProxy) ProxyApply(ctx context.Context, routes []agentops.Route, ret
 	if err := ctx.Err(); err != nil { // a real call whose context ends mid-call fails
 		f.mu.Unlock()
 		return agentops.ApplyResult{}, err
+	}
+	if f.failIf != nil {
+		if err := f.failIf(routes); err != nil {
+			f.mu.Unlock()
+			return agentops.ApplyResult{}, err
+		}
 	}
 	if f.fail != nil {
 		err := f.fail

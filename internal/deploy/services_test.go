@@ -896,6 +896,9 @@ func TestServiceActionRiskAndScopeTable(t *testing.T) {
 		"services.retry_port": {actions.RiskMutate, actions.ScopeAdmin},
 		// Step 8a: queuing a deploy and cancelling one (write scope, like update).
 		"services.deploy": {actions.RiskMutate, actions.ScopeWrite}, "deploys.cancel": {actions.RiskMutate, actions.ScopeWrite},
+		// Step 9: run again, run an earlier version, restart (write scope, like deploy).
+		"services.redeploy": {actions.RiskMutate, actions.ScopeWrite}, "services.rollback": {actions.RiskMutate, actions.ScopeWrite},
+		"services.restart": {actions.RiskMutate, actions.ScopeWrite},
 	}
 	for name, w := range want {
 		info, ok := g.reg.Lookup(name)

@@ -1016,6 +1016,84 @@
         ],
         "type": "object"
       },
+      "ServicesRedeployInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesRedeployOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "deploy": {
+            "description": "the deploy's number within the service",
+            "type": "integer"
+          },
+          "job": {
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "status": {
+            "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+            "type": "string"
+          },
+          "superseded": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service",
+          "deploy",
+          "job",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ServicesRestartInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesRestartOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "status": {
+            "description": "queued: the restart runs when the scheduler picks it; it causes a short outage (use Redeploy to avoid one)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "job",
+          "status"
+        ],
+        "type": "object"
+      },
       "ServicesRetryPortInput": {
         "additionalProperties": false,
         "properties": {
@@ -1210,6 +1288,54 @@
         "required": [
           "service",
           "applied"
+        ],
+        "type": "object"
+      },
+      "ServicesRollbackInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "to": {
+            "description": "the number of an earlier deploy that was once live",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service",
+          "to"
+        ],
+        "type": "object"
+      },
+      "ServicesRollbackOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "deploy": {
+            "description": "the deploy's number within the service",
+            "type": "integer"
+          },
+          "job": {
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "status": {
+            "description": "queued: the deploy runs when the scheduler picks it; poll deploys.get",
+            "type": "string"
+          },
+          "superseded": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service",
+          "deploy",
+          "job",
+          "status"
         ],
         "type": "object"
       },
@@ -4745,6 +4871,370 @@
         "x-sd-session-only": false
       }
     },
+    "/api/v1/actions/services.redeploy": {
+      "post": {
+        "operationId": "services.redeploy",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesRedeployInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesRedeployOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Run the live version's image again without rebuilding: a new deploy with a new address and the service's strategy. It also recreates a container that went missing.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.restart": {
+      "post": {
+        "operationId": "services.restart",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesRestartInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesRestartOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restart the live version's container. It causes a short outage (Redeploy avoids one); the address and route stay.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
     "/api/v1/actions/services.retry_port": {
       "post": {
         "operationId": "services.retry_port",
@@ -4923,6 +5413,188 @@
         "x-sd-removes-access": false,
         "x-sd-risk": "mutate",
         "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.rollback": {
+      "post": {
+        "operationId": "services.rollback",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesRollbackInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesRollbackOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Run an earlier version again (only a deploy that was once live), pinned to its image.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
         "x-sd-sensitive": false,
         "x-sd-session-only": false
       }

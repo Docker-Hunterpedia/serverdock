@@ -48,6 +48,9 @@ type itTarget struct {
 	name  string
 	url   string
 	check func(status int, body string) string
+	// checkResp, when set, is used instead of check and also sees the headers (the
+	// maintenance page's Retry-After).
+	checkResp func(status int, h http.Header, body string) string
 }
 
 // itLoad runs POST load on every target, over keep-alive and over new connections
@@ -128,7 +131,13 @@ func (l *itLoad) hit(cli *http.Client, tg itTarget, c *itCounter) {
 		return
 	}
 	c.body(strings.TrimSpace(string(b)))
-	if why := tg.check(resp.StatusCode, strings.TrimSpace(string(b))); why != "" {
+	why := ""
+	if tg.checkResp != nil {
+		why = tg.checkResp(resp.StatusCode, resp.Header, string(b))
+	} else {
+		why = tg.check(resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if why != "" {
 		c.bad.Add(1)
 		l.anomaly(fmt.Sprintf("%s (%s): %s", tg.name, c.class, why))
 		l.firstBad.CompareAndSwap(nil, fmt.Sprintf("%s (%s): %s", tg.name, c.class, why))
@@ -254,9 +263,9 @@ func TestBlueGreenSwitchWithZeroNon2xx(t *testing.T) {
 		return ""
 	}
 	load := startLoad([]itTarget{
-		{"deploying app", "http://127.0.0.1:" + strconv.Itoa(portA) + "/cgi-bin/id", deploying},
-		{"second app", "http://127.0.0.1:" + strconv.Itoa(portB) + "/cgi-bin/id", only("app-B")},
-		{"panel", "https://127.0.0.1:" + strconv.Itoa(g.panelPort) + "/", only("panel")},
+		{"deploying app", "http://127.0.0.1:" + strconv.Itoa(portA) + "/cgi-bin/id", deploying, nil},
+		{"second app", "http://127.0.0.1:" + strconv.Itoa(portB) + "/cgi-bin/id", only("app-B"), nil},
+		{"panel", "https://127.0.0.1:" + strconv.Itoa(g.panelPort) + "/", only("panel"), nil},
 	})
 	time.Sleep(300 * time.Millisecond) // the load is flowing before the deploy starts
 
