@@ -235,6 +235,9 @@ func (q storeQueue) EnqueueDeploy(ctx context.Context, n jobs.NewDeploy) (jobs.E
 func (q storeQueue) Enqueue(ctx context.Context, n jobs.NewJob) (int64, error) {
 	return q.js.Enqueue(ctx, n)
 }
+func (q storeQueue) EnqueueDelete(ctx context.Context, n jobs.NewDelete) (jobs.Deleted, error) {
+	return q.js.EnqueueDelete(ctx, n)
+}
 func (q storeQueue) CancelDeploy(context.Context, int64, string, []string) (string, error) {
 	return "", errors.New("not used")
 }

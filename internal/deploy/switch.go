@@ -61,6 +61,9 @@ type RouteControl interface {
 	SetOverride(ctx context.Context, service int64, o Override) error
 	ClearOverride(ctx context.Context, service int64) error
 	CommitRoutes(ctx context.Context, service int64, commit func() error) error
+	// DeleteRoutes runs a service delete's database delete as the mutate of the
+	// no-retry apply (delete.go).
+	DeleteRoutes(ctx context.Context, mutate func() error) error
 }
 
 func (rn *run) trace(event string) {
@@ -514,13 +517,18 @@ func (rn *run) afterCommit(ctx context.Context) *failure {
 	if !rn.stopFirst { // stop-first has no drain: the previous container stopped before the new one started
 		pausePoint("drain:before")
 		rn.trace("drain")
-		if rn.drain() {
+		shutdown, cut := rn.drain()
+		if shutdown {
 			return &failure{code: CodeShutdown, msg: "ServerDock was stopped while the previous version was draining"}
 		}
-		secs := rn.snap.DrainS
+		detail := fmt.Sprintf("waited %d seconds for open requests to finish", rn.snap.DrainS)
+		if cut {
+			detail = "cut short: the service is being deleted"
+			rn.warn("the drain was cut short because the service is being deleted")
+		}
 		rn.soft("the drain stage", func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'ok', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ?`,
-				rn.now(), fmt.Sprintf("waited %d seconds for open requests to finish", secs), rn.deploy, StageDrain)
+				rn.now(), detail, rn.deploy, StageDrain)
 			return err
 		})
 		pausePoint("drain:after")
@@ -545,29 +553,44 @@ func (rn *run) afterCommit(ctx context.Context) *failure {
 }
 
 // drain waits exactly drain_s (Caddy's reload grace is 10 s, and drain_s is never
-// below it). It is a bounded wait during a deploy: one timer, no goroutine. Only a
-// shutdown ends it early (it returns true: the deploy is left as it is, committed,
-// and the boot pass settles it); a supersede, a cancel or a session revoke closes
-// the job's context but cannot reach the drain. Step 9 adds the queued delete that
-// cuts it short.
-func (rn *run) drain() (shutdown bool) {
+// below it). It is a bounded wait during a deploy: one timer, no goroutine. A
+// shutdown ends it early (shutdown: the deploy is left as it is, committed, and the
+// boot pass settles it); so does a queued service delete (cut: the rest of the wait
+// is skipped and the previous container is stopped with its normal grace, then the
+// delete runs). A supersede, a cancel or a session revoke closes the job's context
+// but cannot reach the drain.
+func (rn *run) drain() (shutdown, cut bool) {
 	t := time.NewTimer(time.Duration(rn.snap.DrainS) * rn.r.cfg.DrainUnit)
 	defer t.Stop()
 	done := rn.jobCtx.Done()
-	stop := rn.stopChan() // a shutdown even when an earlier cancel hid ErrShutdown
+	stop := rn.stopChan()  // a shutdown even when an earlier cancel hid ErrShutdown
+	del := rn.deleteChan() // a delete even when an earlier cancel hid its reason
 	for {
 		select {
 		case <-t.C:
-			return false
+			return false, false
 		case <-stop:
-			return true
+			return true, false
+		case <-del:
+			return false, true
 		case <-done:
-			if errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown) {
-				return true
+			var cc jobs.CancelCause
+			switch {
+			case errors.Is(context.Cause(rn.jobCtx), jobs.ErrShutdown):
+				return true, false
+			case errors.As(context.Cause(rn.jobCtx), &cc) && cc.Reason == jobs.ReasonDeleted:
+				return false, true
 			}
 			done = nil // another cancel: not cancellable now, keep waiting
 		}
 	}
+}
+
+func (rn *run) deleteChan() <-chan struct{} {
+	if rn.r.cfg.DeleteSignal == nil {
+		return nil
+	}
+	return rn.r.cfg.DeleteSignal(rn.job.ID)
 }
 
 // oldContainers finds the containers of the previous deploy: a fresh container_list

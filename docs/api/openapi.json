@@ -668,6 +668,47 @@
         ],
         "type": "object"
       },
+      "ServicesDeleteInput": {
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "ServicesDeleteOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "type": "integer"
+          },
+          "flagged": {
+            "type": "integer"
+          },
+          "job": {
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          },
+          "status": {
+            "description": "queued: the delete runs when the service's running work has ended; queued deploys and restarts of it were cancelled",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "job",
+          "status"
+        ],
+        "type": "object"
+      },
       "ServicesDeployInput": {
         "additionalProperties": false,
         "properties": {
@@ -4320,6 +4361,194 @@
         ],
         "x-sd-removes-access": false,
         "x-sd-risk": "mutate",
+        "x-sd-scope": "admin",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/services.delete": {
+      "post": {
+        "operationId": "services.delete",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "the exact target of the action",
+            "in": "header",
+            "name": "SD-Confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesDeleteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ServicesDeleteOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Delete a service: cancel its queued work, stop and remove its containers, delete its deploy logs and records (and its project if it was the last service). Needs fresh two-factor confirmation and the exact \u003cproject\u003e/\u003cservice\u003e as Confirm; API tokens are always denied.",
+        "tags": [
+          "services"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "destructive",
         "x-sd-scope": "admin",
         "x-sd-sensitive": false,
         "x-sd-session-only": false

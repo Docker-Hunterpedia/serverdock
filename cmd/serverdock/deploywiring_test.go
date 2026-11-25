@@ -460,13 +460,13 @@ func TestServerRegistryHasTheServiceActions(t *testing.T) {
 	addrs, stop := startServer(t, serverConfig{Data: newData(t), ControlSocket: shortSock(t), DockerSocket: sock})
 	defer stop()
 	for _, n := range []string{"projects.list", "services.list", "services.get", "services.create", "services.update", "services.set_source",
-		"services.set_public_port", "services.retry_port", "system.exposure"} {
+		"services.set_public_port", "services.retry_port", "system.exposure", "services.delete", "services.restart", "services.redeploy", "services.rollback"} {
 		if _, ok := addrs.reg.Lookup(n); !ok {
 			t.Errorf("%s is not registered", n)
 		}
 	}
-	if _, ok := addrs.reg.Lookup("services.delete"); ok {
-		t.Error("services.delete is step 9's")
+	if info, _ := addrs.reg.Lookup("services.delete"); info.Risk != actions.RiskDestructive {
+		t.Errorf("services.delete: %+v", info)
 	}
 	// This server runs with --proxy=false: a public port is refused, clearly.
 	admin := actions.UserActor("1", actions.ScopeAdmin, time.Now().Add(time.Hour))

@@ -69,6 +69,8 @@ func (d *svcDeps) restart(ctx context.Context, c actions.Call, in ServiceRefIn) 
 		MaxAttempts: 1, TimeoutS: jobs.RestartTimeoutSeconds(r.graceS, r.timeoutS),
 	})
 	switch {
+	case errors.Is(err, jobs.ErrServiceDeleting):
+		return RestartOut{}, actions.Conflict("the service is being deleted")
 	case errors.Is(err, jobs.ErrActorSessionGone):
 		return RestartOut{}, &actions.DeniedError{Reason: SessionGoneMessage}
 	case errors.Is(err, jobs.ErrInvalid):

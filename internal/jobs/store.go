@@ -157,7 +157,22 @@ func insertJob(ctx context.Context, tx *sql.Tx, n NewJob, now time.Time) (int64,
 	return res.LastInsertId()
 }
 
-// Enqueue adds a job (restart, delete). It also prunes old finished jobs.
+// ReasonDeleted is the cancel reason of the jobs a queued service delete cancels or
+// flags (the deploy that reads it ends its drain at once).
+const ReasonDeleted = "the service is being deleted"
+
+// ErrServiceDeleting is returned when work is queued for a service that has a
+// delete queued or running.
+var ErrServiceDeleting = errors.New("jobs: the service is being deleted")
+
+func deletePending(ctx context.Context, tx *sql.Tx, lock string) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE lock_key = ? AND kind = 'service_delete' AND state IN ('queued', 'running')`, lock).Scan(&n)
+	return n > 0, err
+}
+
+// Enqueue adds a job (restart, delete). It also prunes old finished jobs. Work for
+// a service whose delete is pending is refused (ErrServiceDeleting).
 func (s *Store) Enqueue(ctx context.Context, n NewJob) (int64, error) {
 	if err := n.validate(); err != nil {
 		return 0, err
@@ -165,6 +180,13 @@ func (s *Store) Enqueue(ctx context.Context, n NewJob) (int64, error) {
 	var id int64
 	now := s.now()
 	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		if n.Kind != KindServiceDelete {
+			if pending, err := deletePending(ctx, tx, n.LockKey); err != nil {
+				return err
+			} else if pending {
+				return ErrServiceDeleting
+			}
+		}
 		if err := pruneFinished(ctx, tx, now); err != nil {
 			return err
 		}
@@ -234,6 +256,11 @@ func (s *Store) EnqueueDeploy(ctx context.Context, n NewDeploy) (Enqueued, error
 	var out Enqueued
 	err = s.st.WriteTx(ctx, func(tx *sql.Tx) error {
 		out = Enqueued{}
+		if pending, err := deletePending(ctx, tx, lock); err != nil {
+			return err
+		} else if pending {
+			return ErrServiceDeleting
+		}
 		if n.InTx != nil {
 			if err := n.InTx(ctx, tx); err != nil {
 				return err
@@ -275,6 +302,100 @@ func (s *Store) EnqueueDeploy(ctx context.Context, n NewDeploy) (Enqueued, error
 	})
 	if err != nil {
 		return Enqueued{}, err
+	}
+	return out, nil
+}
+
+// NewDelete is a service delete to queue.
+type NewDelete struct {
+	ServiceID  int64
+	Target     string // "<project>/<service>": the Confirm value and the audit target
+	Actor      Actor
+	StopGraceS int // derives timeout_s
+}
+
+// Deleted is the result of EnqueueDelete.
+type Deleted struct {
+	JobID int64
+	// Cancelled are the queued deploy and restart jobs of the service that were ended
+	// (their deploys are cancelled); CancelRunning are the running ones, flagged with
+	// ReasonDeleted (the caller closes their in-memory cancel).
+	Cancelled     []int64
+	CancelRunning []int64
+}
+
+// EnqueueDelete queues a service delete in one transaction: every queued deploy or
+// restart job of the service is cancelled, a running one is flagged
+// (cancel_requested, reason ReasonDeleted), and the delete job is inserted. The
+// delete job's Confirm is the target: the policy checked it before this ran.
+func (s *Store) EnqueueDelete(ctx context.Context, n NewDelete) (Deleted, error) {
+	if n.ServiceID <= 0 || n.Target == "" || len(n.Target) > 256 {
+		return Deleted{}, invalid("a delete needs a service and its target")
+	}
+	if n.StopGraceS < 0 || n.StopGraceS > 300 {
+		return Deleted{}, invalid("stop_grace_s must be 0..300")
+	}
+	if err := n.Actor.validate(); err != nil {
+		return Deleted{}, err
+	}
+	lock := LockKey(n.ServiceID)
+	now := s.now()
+	var out Deleted
+	err := s.st.WriteTx(ctx, func(tx *sql.Tx) error {
+		out = Deleted{}
+		if pending, err := deletePending(ctx, tx, lock); err != nil {
+			return err
+		} else if pending {
+			return ErrServiceDeleting
+		}
+		if err := pruneFinished(ctx, tx, now); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id, state FROM jobs WHERE lock_key = ? AND state IN ('queued', 'running') ORDER BY id`, lock)
+		if err != nil {
+			return err
+		}
+		type jr struct {
+			id    int64
+			state string
+		}
+		var list []jr
+		for rows.Next() {
+			var j jr
+			if err := rows.Scan(&j.id, &j.state); err != nil {
+				rows.Close()
+				return err
+			}
+			list = append(list, j)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, j := range list {
+			if j.state == StateQueued {
+				if _, err := s.cancelTx(ctx, tx, j.id, ReasonDeleted); err != nil {
+					return err
+				}
+				out.Cancelled = append(out.Cancelled, j.id)
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested = 1, cancel_reason = ? WHERE id = ? AND state = 'running'`, ReasonDeleted, j.id); err != nil {
+				return err
+			}
+			out.CancelRunning = append(out.CancelRunning, j.id)
+		}
+		payload, _ := json.Marshal(struct {
+			Service int64  `json:"service"`
+			Target  string `json:"target"`
+		}{n.ServiceID, n.Target})
+		out.JobID, err = insertJob(ctx, tx, NewJob{Kind: KindServiceDelete, LockKey: lock, Actor: n.Actor, Confirm: n.Target, Payload: payload,
+			MaxAttempts: 1, TimeoutS: DeleteTimeoutSeconds(n.StopGraceS)}, now)
+		return err
+	})
+	if err != nil {
+		return Deleted{}, err
 	}
 	return out, nil
 }

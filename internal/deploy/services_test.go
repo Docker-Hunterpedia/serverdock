@@ -815,6 +815,7 @@ func TestTokenScopesForServiceActions(t *testing.T) {
 	denied("read", readTok, "services.set_source", web(m{"image_ref": "redis"}))
 	denied("read", readTok, "services.set_public_port", web(m{"public_port": 9000}))
 	denied("read", readTok, "services.retry_port", web(nil))
+	denied("read", readTok, "services.delete", web(nil))
 
 	// write: update (health, tag), not the rest.
 	allowed("write", writeTok, "services.update", web(m{"health": m{"kind": "http", "path": "/up"}}))
@@ -824,6 +825,7 @@ func TestTokenScopesForServiceActions(t *testing.T) {
 	denied("write", writeTok, "services.set_source", web(m{"image_ref": "nginx:1.28"}))
 	denied("write", writeTok, "services.set_public_port", web(m{"public_port": 9000}))
 	denied("write", writeTok, "services.retry_port", web(nil))
+	denied("write", writeTok, "services.delete", web(nil))
 	// A write token cannot change the repository through update (and nor can anyone).
 	_, err := callAs[any](g, writeTok, "services.update", web(m{"image_ref": "evil.example/miner:1"}))
 	wantKind(t, err, actions.ErrInvalidInput)
@@ -861,23 +863,25 @@ func TestTokenScopesForServiceActions(t *testing.T) {
 	denied("mcp", mcp, "services.update", web(m{"strategy": "blue_green"}))
 	denied("mcp", mcp, "services.create", createIn("m1"))
 
-	// No token can delete: there is no such action yet, and when step 9 adds it
-	// the registry's own rule (destructive: user session only, fresh 2FA, typed
-	// target) already refuses every token. Both must hold for every service action.
-	for _, tok := range []actions.Actor{readTok, writeTok, adminTok} {
-		if _, err := callAs[any](g, tok, "services.delete", web(nil)); err == nil {
-			t.Error("a token ran services.delete")
-		}
+	// No token can delete: services.delete is destructive, so the registry refuses
+	// every token (read, write and admin) with ErrDenied, whatever the input, and
+	// nothing is written. Asserted against the real action (plan 0004 Revision 10).
+	if info, ok := g.reg.Lookup("services.delete"); !ok || info.Risk != actions.RiskDestructive || info.Scope != actions.ScopeAdmin {
+		t.Fatalf("services.delete: %+v %v", info, ok)
 	}
+	for _, tok := range []actions.Actor{readTok, writeTok, adminTok} {
+		denied("a token", tok, "services.delete", web(nil))
+	}
+	denied("mcp", mcp, "services.delete", web(nil))
 	for _, info := range g.reg.List() {
 		if !strings.HasPrefix(info.Name, "services.") {
 			continue
 		}
-		if info.Risk == actions.RiskDestructive && (info.Scope < actions.ScopeAdmin || info.Name == "services.delete" && info.System != "") {
+		if info.Risk == actions.RiskDestructive && (info.Scope < actions.ScopeAdmin || info.System != "") {
 			t.Errorf("%s is destructive with scope %v / system %q", info.Name, info.Scope, info.System)
 		}
 		if info.JobOnly || info.ConsoleOnly {
-			t.Errorf("%s is job-only or console-only: step 7 queues no job", info.Name)
+			t.Errorf("%s is job-only or console-only", info.Name)
 		}
 	}
 }
@@ -899,6 +903,8 @@ func TestServiceActionRiskAndScopeTable(t *testing.T) {
 		// Step 9: run again, run an earlier version, restart (write scope, like deploy).
 		"services.redeploy": {actions.RiskMutate, actions.ScopeWrite}, "services.rollback": {actions.RiskMutate, actions.ScopeWrite},
 		"services.restart": {actions.RiskMutate, actions.ScopeWrite},
+		// Step 9: delete is destructive, admin scope, fresh 2FA and Confirm; no token may run it.
+		"services.delete": {actions.RiskDestructive, actions.ScopeAdmin},
 	}
 	for name, w := range want {
 		info, ok := g.reg.Lookup(name)

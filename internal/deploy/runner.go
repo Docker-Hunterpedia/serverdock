@@ -64,7 +64,13 @@ type RunnerConfig struct {
 	// (*jobs.Scheduler.Stopping). It is independent of the job's cancel cause, which
 	// keeps only the first cause (a supersede hides a later shutdown).
 	Stopping func() <-chan struct{}
-	KeepLog  func(ctx context.Context, deploy int64, container string) error
+	// DeleteSignal returns the channel a queued service delete closes for a running
+	// job (*jobs.Scheduler.DeleteSignal): a deploy in its drain stops waiting.
+	DeleteSignal func(job int64) <-chan struct{}
+	// LogRoot is DATA/deploy-logs: a service delete removes <LogRoot>/<service id>.
+	// Empty means no deploy logs are kept on this server.
+	LogRoot string
+	KeepLog func(ctx context.Context, deploy int64, container string) error
 }
 
 // Runner runs the jobs of the scheduler (jobs.RunFunc). Every run, and every
@@ -179,11 +185,23 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 		action = "jobs.run_deploy"
 	case jobs.KindRestart:
 		action = "jobs.run_restart"
+	case jobs.KindServiceDelete:
+		action = "jobs.run_service_delete"
 	default:
-		// The delete job is the second half of step 9.
-		return fmt.Errorf("deploy: jobs of kind %q are not supported yet", j.Kind)
+		return fmt.Errorf("deploy: jobs of kind %q are not supported", j.Kind)
 	}
 	in, _ := json.Marshal(RunDeployIn{Job: j.ID})
+	if j.Kind == jobs.KindServiceDelete {
+		// The target (the Confirm value) is in the job's payload.
+		var p struct {
+			Service int64  `json:"service"`
+			Target  string `json:"target"`
+		}
+		if err := agent.DecodeArgs(j.Payload, &p); err != nil {
+			return errors.New("the delete job has no target")
+		}
+		in, _ = json.Marshal(RunDeleteIn{Job: j.ID, Service: p.Target})
+	}
 	reqID := jobs.RequestID(j.ID, j.Attempt)
 	rebuilt, err := j.RebuildActor(r.cfg.Inv)
 	if err != nil {
@@ -213,11 +231,25 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 		return err
 	}
 	_, err = r.cfg.Inv.InvokeAs(ctx, actor, action, in, actions.Options{Confirm: j.Confirm, RequestID: reqID})
+	var de *actions.DeniedError
+	if j.Kind == jobs.KindServiceDelete && errors.As(err, &de) && de.Code == "mfa_required" {
+		// The 5-minute fresh-2FA window passed while the service was stopping: nothing
+		// was deleted, and the user is told to confirm again.
+		return confirmAgainError{}
+	}
 	return err
 }
 
 // RegisterJobActions registers the JobOnly actions the runner invokes.
 func RegisterJobActions(reg *actions.Registry, r *Runner) {
+	actions.Register(reg, actions.Def[RunDeleteIn, RunDeleteOut]{
+		Name: "jobs.run_service_delete", Summary: "Run a queued service delete (only the job runner can invoke this, as the actor that queued it; fresh two-factor confirmation is checked again).",
+		Risk: actions.RiskDestructive, Scope: actions.ScopeAdmin, JobOnly: true,
+		Target: func(in RunDeleteIn) string { return in.Service },
+		Execute: func(ctx context.Context, c actions.Call, in RunDeleteIn) (RunDeleteOut, error) {
+			return r.runDelete(ctx, c, in.Job)
+		},
+	})
 	actions.Register(reg, actions.Def[RunRestartIn, RunRestartOut]{
 		Name: "jobs.run_restart", Summary: "Run a queued restart (only the job runner can invoke this, as the actor that queued it).",
 		Risk: actions.RiskMutate, Scope: actions.ScopeWrite, JobOnly: true,

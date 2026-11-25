@@ -70,3 +70,9 @@ func (s Settings) String() string {
 func RestartTimeoutSeconds(stopGraceS, healthTimeoutS int) int {
 	return (stopGraceS + stopExtraS) + (healthTimeoutS + restartExtraS)
 }
+
+// DeleteTimeoutSeconds is jobs.timeout_s of a service delete: a generous bound for
+// the stop and removal of a few containers (each stop_grace_s + 15 s, the removal
+// 30 s) plus the rows. The watchdog is not enforced for deletes; this is the
+// recorded budget.
+func DeleteTimeoutSeconds(stopGraceS int) int { return 120 + 3*(stopGraceS+stopExtraS+stopRemoveS) }

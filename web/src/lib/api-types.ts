@@ -191,6 +191,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actions/services.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete a service: cancel its queued work, stop and remove its containers, delete its deploy logs and records (and its project if it was the last service). Needs fresh two-factor confirmation and the exact <project>/<service> as Confirm; API tokens are always denied. */
+        post: operations["services.delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actions/services.deploy": {
         parameters: {
             query?: never;
@@ -823,6 +840,19 @@ export interface components {
                     message: string;
                 }[];
             };
+        };
+        ServicesDeleteInput: {
+            /** @description <project>/<service> */
+            service: string;
+        };
+        ServicesDeleteOutput: {
+            cancelled?: number;
+            flagged?: number;
+            job: number;
+            /** @description <project>/<service> */
+            service: string;
+            /** @description queued: the delete runs when the service's running work has ended; queued deploys and restarts of it were cancelled */
+            status: string;
         };
         ServicesDeployInput: {
             /** @description another tag or digest of the service's current repository (changing the repository needs services.set_source) */
@@ -2506,6 +2536,125 @@ export interface operations {
                         /** @enum {string} */
                         audit: "recorded" | "unrecorded" | "not_audited";
                         data?: components["schemas"]["ServicesCreateOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "services.delete": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+                /** @description the exact target of the action */
+                "SD-Confirm": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesDeleteInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["ServicesDeleteOutput"];
                         plan?: {
                             steps?: string[];
                             summary?: string;

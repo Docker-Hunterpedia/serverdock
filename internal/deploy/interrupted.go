@@ -92,6 +92,14 @@ func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now
 					}
 				}
 			}
+			if j.kind == jobs.KindServiceDelete {
+				// Every step of a delete is idempotent: the service is flagged and the
+				// user deletes it again.
+				if _, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = (SELECT json_extract(payload_json, '$.service') FROM jobs WHERE id = ?)`,
+					AttentionDeleteInterrupted, j.id); err != nil {
+					return err
+				}
+			}
 			var e any
 			if jobErr != "" {
 				e = jobErr

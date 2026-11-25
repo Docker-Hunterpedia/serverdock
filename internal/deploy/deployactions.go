@@ -23,6 +23,7 @@ const SessionGoneMessage = "your session was signed out; sign in again"
 type DeployQueue interface {
 	EnqueueDeploy(ctx context.Context, n jobs.NewDeploy) (jobs.Enqueued, error)
 	Enqueue(ctx context.Context, n jobs.NewJob) (int64, error)
+	EnqueueDelete(ctx context.Context, n jobs.NewDelete) (jobs.Deleted, error)
 	CancelDeploy(ctx context.Context, id int64, reason string, forbidden []string) (string, error)
 }
 
@@ -135,6 +136,8 @@ func (d *svcDeps) queueDeploy(ctx context.Context, c actions.Call, r svcRow, ima
 		Actor: jobs.ActorOf(c.Actor), InTx: setImage,
 	})
 	switch {
+	case errors.Is(err, jobs.ErrServiceDeleting):
+		return DeployOut{}, actions.Conflict("the service is being deleted")
 	case errors.Is(err, jobs.ErrActorSessionGone):
 		return DeployOut{}, &actions.DeniedError{Reason: SessionGoneMessage}
 	case errors.Is(err, jobs.ErrInvalid):
@@ -243,6 +246,8 @@ func (d *svcDeps) queueFrom(ctx context.Context, c actions.Call, r svcRow, kind 
 		Actor: jobs.ActorOf(c.Actor), InTx: check,
 	})
 	switch {
+	case errors.Is(err, jobs.ErrServiceDeleting):
+		return DeployOut{}, actions.Conflict("the service is being deleted")
 	case errors.Is(err, jobs.ErrActorSessionGone):
 		return DeployOut{}, &actions.DeniedError{Reason: SessionGoneMessage}
 	case errors.Is(err, jobs.ErrInvalid):
@@ -409,6 +414,13 @@ func registerDeployActions(r *actions.Registry, d *svcDeps) {
 		Risk: actions.RiskMutate, Scope: actions.ScopeWrite, Target: func(in RollbackIn) string { return in.Service },
 		Execute: func(ctx context.Context, c actions.Call, in RollbackIn) (DeployOut, error) {
 			return d.rollback(ctx, c, in)
+		},
+	})
+	actions.Register(r, actions.Def[ServiceRefIn, DeleteOut]{
+		Name: "services.delete", Summary: "Delete a service: cancel its queued work, stop and remove its containers, delete its deploy logs and records (and its project if it was the last service). Needs fresh two-factor confirmation and the exact <project>/<service> as Confirm; API tokens are always denied.",
+		Risk: actions.RiskDestructive, Scope: actions.ScopeAdmin, Target: refTarget,
+		Execute: func(ctx context.Context, c actions.Call, in ServiceRefIn) (DeleteOut, error) {
+			return d.delete(ctx, c, in)
 		},
 	})
 	actions.Register(r, actions.Def[ServiceRefIn, RestartOut]{

@@ -356,6 +356,15 @@ func (r *Routes) CommitRoutes(ctx context.Context, service int64, commit func() 
 	})
 }
 
+// DeleteRoutes is ApplyRoutesNoRetry for a service delete (step 9): the database
+// delete is the mutate, so the service's route goes with its rows under one hold of
+// the route lock. Deleting an exposed service changes the set of public ports, so
+// the apply reloads Caddy (a documented reload case); another service's failed port
+// is not retried.
+func (r *Routes) DeleteRoutes(ctx context.Context, mutate func() error) error {
+	return r.ApplyRoutesNoRetry(ctx, mutate)
+}
+
 // hasFailed reports whether the last successful apply left ports unopened.
 func (r *Routes) hasFailed() bool {
 	r.statusMu.Lock()

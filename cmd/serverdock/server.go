@@ -504,6 +504,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// the actor that queued it (never as the system).
 	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: reg.SystemInvoker(), Refresh: authStore, Locks: &deploy.ServiceLocks{}, Log: log,
 		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Routes: routes, Stopping: sched.Stopping, Net: booter, AppNet: appNet,
+		DeleteSignal: sched.DeleteSignal, LogRoot: filepath.Join(cfg.Data, "deploy-logs"),
 		Instance: installID, Policy: cfg.policyOptions()})
 	deploy.RegisterJobActions(reg, runner)
 	srv := api.New(api.Config{

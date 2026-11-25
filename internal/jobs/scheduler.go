@@ -67,10 +67,11 @@ type Scheduler struct {
 	stopped  chan struct{} // closed by stop(): a shutdown signal that does not depend on a job's cancel cause
 	stopOne  sync.Once
 	running  map[int64]context.CancelCauseFunc
-	active   int              // workers started and not finished (running is removed earlier, before the result is recorded)
-	pending  map[int64]string // cancels that arrived during a pick (picking), before the picked job was registered; emptied when that pick ends
-	picking  bool             // dispatch is between Pick and registering its worker (one pick at a time)
-	wake     time.Time        // when the timer fires; zero when it is stopped
+	cut      map[int64]chan struct{} // closed when a service delete asks the running job to cut its drain short
+	active   int                     // workers started and not finished (running is removed earlier, before the result is recorded)
+	pending  map[int64]string        // cancels that arrived during a pick (picking), before the picked job was registered; emptied when that pick ends
+	picking  bool                    // dispatch is between Pick and registering its worker (one pick at a time)
+	wake     time.Time               // when the timer fires; zero when it is stopped
 	wg       sync.WaitGroup
 }
 
@@ -104,7 +105,7 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 	return &Scheduler{
 		cfg: cfg, bootID: hex.EncodeToString(b[:]),
 		notify: make(chan struct{}, 1), gate: make(chan struct{}), stopped: make(chan struct{}),
-		running: map[int64]context.CancelCauseFunc{}, pending: map[int64]string{},
+		running: map[int64]context.CancelCauseFunc{}, cut: map[int64]chan struct{}{}, pending: map[int64]string{},
 	}, nil
 }
 
@@ -209,6 +210,34 @@ func (s *Scheduler) Cancel(ctx context.Context, id int64, reason string) error {
 	return nil
 }
 
+// EnqueueDelete queues a service delete (see Store.EnqueueDelete), closes the
+// in-memory cancel (and the drain-cut signal) of the running jobs it flagged, and
+// wakes the scheduler.
+func (s *Scheduler) EnqueueDelete(ctx context.Context, n NewDelete) (Deleted, error) {
+	out, err := s.cfg.Store.EnqueueDelete(ctx, n)
+	if err != nil {
+		return out, err
+	}
+	for _, id := range out.CancelRunning {
+		s.cancelRunning(id, ReasonDeleted)
+	}
+	s.Notify()
+	return out, nil
+}
+
+// DeleteSignal returns a channel that is closed when a service delete asks the
+// running job to stop waiting (a deploy in its drain skips the rest of it). A
+// running job's context carries only its FIRST cancel cause, so the drain cannot
+// rely on that. It returns nil for a job that is not running.
+func (s *Scheduler) DeleteSignal(id int64) <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, ok := s.cut[id]; ok {
+		return ch
+	}
+	return nil
+}
+
 // CancelDeploy is Cancel for a deploy job, refused with ErrStageNotCancellable when
 // the deploy is in one of the forbidden stages. The check and the flag are one
 // transaction (Store.cancelDeploy). It returns the job's state after the cancel:
@@ -280,9 +309,22 @@ func (s *Scheduler) CancelSessionJobs(ctx context.Context, sessions []string, re
 	return count, nil
 }
 
+func (s *Scheduler) closeCutLocked(id int64) {
+	if ch, ok := s.cut[id]; ok {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}
+}
+
 func (s *Scheduler) cancelRunning(id int64, reason string) {
 	s.mu.Lock()
 	cancel := s.running[id]
+	if reason == ReasonDeleted {
+		s.closeCutLocked(id)
+	}
 	if cancel == nil && s.picking {
 		// Possibly picked an instant ago and not registered yet: dispatch checks
 		// this set when it registers the worker, so the cancel is never lost.
@@ -412,11 +454,18 @@ func (s *Scheduler) dispatch(ctx context.Context) (storeFailed bool, since time.
 			return false, since
 		}
 		s.running[j.ID] = cancel
+		s.cut[j.ID] = make(chan struct{})
 		s.active++
 		if reason, ok := s.pending[j.ID]; ok {
 			cancel(CancelCause{Reason: reason}) // a cancel that raced the pick: the worker starts already cancelled
+			if reason == ReasonDeleted {
+				s.closeCutLocked(j.ID)
+			}
 		} else if j.CancelRequested {
 			cancel(CancelCause{Reason: j.CancelReason})
+			if j.CancelReason == ReasonDeleted {
+				s.closeCutLocked(j.ID)
+			}
 		}
 		// One pick at a time: any other entry is a cancel for a job that already
 		// finished, so the whole set is dropped with this pick.
@@ -448,6 +497,7 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	// end drops it.
 	s.mu.Lock()
 	delete(s.running, j.ID)
+	delete(s.cut, j.ID)
 	s.mu.Unlock()
 	// The bookkeeping must survive the job's own cancellation.
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)

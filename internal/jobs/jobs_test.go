@@ -1262,3 +1262,105 @@ func TestCancelDeployRefusesAnEndedDeploy(t *testing.T) {
 		t.Error("the cancel flag was set")
 	}
 }
+
+// A queued delete cancels the service's queued deploys and restarts in the same
+// transaction, flags the running job (cancel reason: deleted) and closes its
+// drain-cut signal; later work for the service is refused, and another delete too.
+func TestEnqueueDeleteCancelsQueuedFlagsRunningAndRefusesNewWork(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	svc, other := e.service(t, "web"), e.service(t, "other")
+	started := make(chan int64, 1)
+	var cause atomic.Value
+	s, _ := start(t, e, func(ctx context.Context, j Job) error {
+		if j.Kind == KindServiceDelete {
+			return nil
+		}
+		started <- j.ID
+		<-ctx.Done()
+		cause.Store(context.Cause(ctx))
+		return ctx.Err()
+	}, nil)
+	s.OpenGate()
+	running, err := s.EnqueueDeploy(ctx, deploy(svc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	signal := s.DeleteSignal(running.JobID)
+	if signal == nil {
+		t.Fatal("no delete signal for a running job")
+	}
+	select {
+	case <-signal:
+		t.Fatal("the signal was closed before a delete")
+	default:
+	}
+	// Queued behind the running one: a restart and, for another service, a deploy.
+	restart, err := s.Enqueue(ctx, NewJob{Kind: KindRestart, LockKey: LockKey(svc), Actor: testActor, Payload: json.RawMessage(`{}`), TimeoutS: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDeploy, err := s.EnqueueDeploy(ctx, deploy(other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.EnqueueDelete(ctx, NewDelete{ServiceID: svc, Target: "p/web", Actor: testActor, StopGraceS: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Cancelled) != 1 || out.Cancelled[0] != restart || len(out.CancelRunning) != 1 || out.CancelRunning[0] != running.JobID {
+		t.Fatalf("%+v", out)
+	}
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the drain-cut signal was not closed")
+	}
+	waitFor(t, "the flagged job to end", func() bool { return e.state(t, running.JobID) == StateCancelled })
+	var cc CancelCause
+	if c, _ := cause.Load().(error); !errors.As(c, &cc) || cc.Reason != ReasonDeleted {
+		t.Errorf("cancel cause %v", c)
+	}
+	if got := e.state(t, restart); got != StateCancelled {
+		t.Errorf("the queued restart is %s", got)
+	}
+	// The delete job: the target is its Confirm, the payload names the service.
+	var kind, confirm, payload string
+	var timeout int
+	e.st.R.QueryRow(`SELECT kind, confirm, payload_json, timeout_s FROM jobs WHERE id = ?`, out.JobID).Scan(&kind, &confirm, &payload, &timeout)
+	if kind != KindServiceDelete || confirm != "p/web" || timeout != DeleteTimeoutSeconds(10) || !strings.Contains(payload, `"service":`+fmt.Sprint(svc)) {
+		t.Errorf("delete job: %s %q %d %s", kind, confirm, timeout, payload)
+	}
+	waitFor(t, "the delete job to run", func() bool { return e.state(t, out.JobID) == StateSucceeded })
+	// The other service is untouched.
+	_ = otherDeploy
+	// A delete that is pending (or running) refuses new work and a second delete.
+	e.exec(t, `UPDATE jobs SET state = 'queued', finished_at = NULL WHERE id = ?`, out.JobID)
+	if _, err := s.EnqueueDeploy(ctx, deploy(svc)); !errors.Is(err, ErrServiceDeleting) {
+		t.Errorf("deploy: %v", err)
+	}
+	if _, err := s.Enqueue(ctx, job(LockKey(svc))); !errors.Is(err, ErrServiceDeleting) {
+		t.Errorf("restart: %v", err)
+	}
+	if _, err := s.EnqueueDelete(ctx, NewDelete{ServiceID: svc, Target: "p/web", Actor: testActor}); !errors.Is(err, ErrServiceDeleting) {
+		t.Errorf("second delete: %v", err)
+	}
+	if _, err := s.EnqueueDeploy(ctx, deploy(other)); err != nil {
+		t.Errorf("another service: %v", err)
+	}
+}
+
+func TestEnqueueDeleteValidates(t *testing.T) {
+	e := newEnv(t)
+	for _, bad := range []NewDelete{
+		{ServiceID: 0, Target: "p/web", Actor: testActor},
+		{ServiceID: 1, Target: "", Actor: testActor},
+		{ServiceID: 1, Target: "p/web", Actor: testActor, StopGraceS: 301},
+		{ServiceID: 1, Target: "p/web", Actor: Actor{Kind: "system", ID: "x", Blob: "x"}},
+	} {
+		if _, err := e.js.EnqueueDelete(context.Background(), bad); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+}

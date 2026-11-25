@@ -420,6 +420,7 @@ type rrig struct {
 	refresh *fakeRefresh
 	svc     int64
 	svcs    map[string]int64
+	clk     func() time.Time // the registry's clock
 }
 
 type rigOpt func(*RunnerConfig)
@@ -432,7 +433,9 @@ func newRRig(t *testing.T, opts ...rigOpt) *rrig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &rrig{t: t, st: st, ops: newFakeOps(), net: &fakeNet{status: NetStatus{State: NetOK}}, px: &fakeProxy{}, reg: actions.New(al, log), svcs: map[string]int64{}}
+	g := &rrig{t: t, st: st, ops: newFakeOps(), net: &fakeNet{status: NetStatus{State: NetOK}}, px: &fakeProxy{}, svcs: map[string]int64{}, clk: time.Now}
+	// The registry's clock is the rig's, so a test can let the fresh-2FA window pass.
+	g.reg = actions.New(al, log, actions.WithClock(func() time.Time { return g.clk() }))
 	g.routes = NewRoutes(st, g.px, log)
 	g.js = jobs.NewStore(st, nil)
 	g.refresh = &fakeRefresh{}
@@ -445,6 +448,12 @@ func newRRig(t *testing.T, opts ...rigOpt) *rrig {
 				return nil
 			}
 			return g.sched.Stopping()
+		},
+		DeleteSignal: func(job int64) <-chan struct{} {
+			if g.sched == nil {
+				return nil
+			}
+			return g.sched.DeleteSignal(job)
 		}}
 	for _, o := range opts {
 		o(&cfg)

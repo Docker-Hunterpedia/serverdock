@@ -306,6 +306,9 @@ func (failingQueue) EnqueueDeploy(context.Context, jobs.NewDeploy) (jobs.Enqueue
 func (failingQueue) Enqueue(context.Context, jobs.NewJob) (int64, error) {
 	return 0, errors.New("disk full")
 }
+func (failingQueue) EnqueueDelete(context.Context, jobs.NewDelete) (jobs.Deleted, error) {
+	return jobs.Deleted{}, errors.New("disk full")
+}
 func (failingQueue) CancelDeploy(context.Context, int64, string, []string) (string, error) {
 	return "", errors.New("x")
 }
