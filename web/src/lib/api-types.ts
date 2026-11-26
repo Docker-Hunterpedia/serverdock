@@ -967,6 +967,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -980,7 +994,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */
@@ -1040,6 +1054,20 @@ export interface components {
             };
             /** @description the image the next deploy uses */
             image_ref: string;
+            /** @description the newest deploy of any kind and result; null when the service was never deployed */
+            last_deploy?: {
+                /** @description yes, no or unknown: did the previous version keep serving? */
+                app_safe?: string;
+                created_at: string;
+                finished_at?: string;
+                image_ref?: string;
+                /** @description deploy, redeploy or rollback */
+                kind: string;
+                number: number;
+                reason_code?: string;
+                /** @description queued, running, succeeded, failed, cancelled or superseded */
+                status: string;
+            } | null;
             name: string;
             needs_attention?: string;
             project: string;
@@ -1053,7 +1081,7 @@ export interface components {
             routes_stale: boolean;
             /** @description <project>/<service>: the name every service action takes */
             service: string;
-            /** @description not_deployed, running, restarting, stopped, missing or unknown */
+            /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
             state: string;
             stop_grace_s: number;
             /** @description blue_green or stop_first */
@@ -1081,6 +1109,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -1094,7 +1136,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */
@@ -1164,6 +1206,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -1177,7 +1233,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */
@@ -1242,6 +1298,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -1255,7 +1325,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */
@@ -1302,6 +1372,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -1315,7 +1399,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */
@@ -1376,6 +1460,20 @@ export interface components {
                 };
                 /** @description the image the next deploy uses */
                 image_ref: string;
+                /** @description the newest deploy of any kind and result; null when the service was never deployed */
+                last_deploy?: {
+                    /** @description yes, no or unknown: did the previous version keep serving? */
+                    app_safe?: string;
+                    created_at: string;
+                    finished_at?: string;
+                    image_ref?: string;
+                    /** @description deploy, redeploy or rollback */
+                    kind: string;
+                    number: number;
+                    reason_code?: string;
+                    /** @description queued, running, succeeded, failed, cancelled or superseded */
+                    status: string;
+                } | null;
                 name: string;
                 needs_attention?: string;
                 project: string;
@@ -1389,7 +1487,7 @@ export interface components {
                 routes_stale: boolean;
                 /** @description <project>/<service>: the name every service action takes */
                 service: string;
-                /** @description not_deployed, running, restarting, stopped, missing or unknown */
+                /** @description not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished) */
                 state: string;
                 stop_grace_s: number;
                 /** @description blue_green or stop_first */

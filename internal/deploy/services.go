@@ -156,16 +156,31 @@ type ServiceOut struct {
 	DrainS        int       `json:"drain_s"`
 	StopGraceS    int       `json:"stop_grace_s"`
 	// State is what the control plane sees now: not_deployed, running, restarting,
-	// stopped, missing, or unknown (the first container list has not finished).
-	State          string    `json:"state" doc:"not_deployed, running, restarting, stopped, missing or unknown"`
-	ActiveDeploy   *int      `json:"active_deploy" doc:"the number of the live deploy, if any"`
-	NeedsAttention string    `json:"needs_attention,omitempty"`
-	RoutesStale    bool      `json:"routes_stale" doc:"true while the proxy may not match the desired routes (the last apply failed); Try again"`
-	RoutesReady    bool      `json:"routes_ready" doc:"false until the first container list has finished: no app route is served before that"`
-	RouteError     string    `json:"route_error,omitempty" doc:"set when the proxy could not open the public port"`
-	Warnings       []Warning `json:"warnings"`
-	CreatedAt      string    `json:"created_at"`
-	UpdatedAt      string    `json:"updated_at"`
+	// exited, missing, or unknown (the events stream is down, or the first resync
+	// has not finished).
+	State          string         `json:"state" doc:"not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)"`
+	ActiveDeploy   *int           `json:"active_deploy" doc:"the number of the live deploy, if any"`
+	LastDeploy     *LastDeployOut `json:"last_deploy" doc:"the newest deploy of any kind and result; null when the service was never deployed"`
+	NeedsAttention string         `json:"needs_attention,omitempty"`
+	RoutesStale    bool           `json:"routes_stale" doc:"true while the proxy may not match the desired routes (the last apply failed); Try again"`
+	RoutesReady    bool           `json:"routes_ready" doc:"false until the first container list has finished: no app route is served before that"`
+	RouteError     string         `json:"route_error,omitempty" doc:"set when the proxy could not open the public port"`
+	Warnings       []Warning      `json:"warnings"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
+}
+
+// LastDeployOut is the newest deploy of a service, enough for a list row and the
+// Overview (deploys.get has the rest).
+type LastDeployOut struct {
+	Number     int    `json:"number"`
+	Kind       string `json:"kind" doc:"deploy, redeploy or rollback"`
+	Status     string `json:"status" doc:"queued, running, succeeded, failed, cancelled or superseded"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	AppSafe    string `json:"app_safe,omitempty" doc:"yes, no or unknown: did the previous version keep serving?"`
+	ImageRef   string `json:"image_ref,omitempty"`
+	CreatedAt  string `json:"created_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
 }
 
 // ServicesOut is the output of services.list.
@@ -562,9 +577,11 @@ func RegisterServiceActions(r *actions.Registry, deps ServiceDeps) {
 
 const serviceCols = `s.id, p.name, s.name, s.image_ref, s.container_port, s.public_port, s.health_kind, s.health_path,
 	s.health_timeout_s, s.health_passes, s.strategy, s.drain_s, s.stop_grace_s,
-	s.active_deploy_id, d.number, d.ip, s.needs_attention, s.created_at, s.updated_at`
+	s.active_deploy_id, d.number, d.ip, s.needs_attention, s.created_at, s.updated_at,
+	ld.number, ld.kind, ld.status, ld.reason_code, ld.app_safe, json_extract(ld.snapshot_json, '$.image_ref'), ld.created_at, ld.finished_at`
 
-const serviceFrom = ` FROM services s JOIN projects p ON p.id = s.project_id LEFT JOIN deploys d ON d.id = s.active_deploy_id`
+const serviceFrom = ` FROM services s JOIN projects p ON p.id = s.project_id LEFT JOIN deploys d ON d.id = s.active_deploy_id
+	LEFT JOIN deploys ld ON ld.id = (SELECT x.id FROM deploys x WHERE x.service_id = s.id ORDER BY x.number DESC LIMIT 1)`
 
 // svcRow is a service row.
 type svcRow struct {
@@ -579,6 +596,14 @@ type svcRow struct {
 	activeDeploy, activeNumber sql.NullInt64
 	activeIP, attention        sql.NullString
 	created, updated           string
+	last                       lastRow
+}
+
+// lastRow is the newest deploy of a service (every field null when there is none).
+type lastRow struct {
+	number                                      sql.NullInt64
+	kind, status, reasonCode, appSafe, imageRef sql.NullString
+	created, finished                           sql.NullString
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -586,7 +611,8 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanService(s rowScanner) (svcRow, error) {
 	var r svcRow
 	err := s.Scan(&r.id, &r.project, &r.name, &r.imageRef, &r.containerPort, &r.publicPort, &r.healthKind, &r.healthPath,
-		&r.timeoutS, &r.passes, &r.strategy, &r.drainS, &r.graceS, &r.activeDeploy, &r.activeNumber, &r.activeIP, &r.attention, &r.created, &r.updated)
+		&r.timeoutS, &r.passes, &r.strategy, &r.drainS, &r.graceS, &r.activeDeploy, &r.activeNumber, &r.activeIP, &r.attention, &r.created, &r.updated,
+		&r.last.number, &r.last.kind, &r.last.status, &r.last.reasonCode, &r.last.appSafe, &r.last.imageRef, &r.last.created, &r.last.finished)
 	return r, err
 }
 
@@ -626,6 +652,11 @@ func (d *svcDeps) out(r svcRow) ServiceOut {
 		RoutesReady: d.Routes.Ready(), RoutesStale: d.Routes.Stale(), Warnings: []Warning{}, CreatedAt: r.created, UpdatedAt: r.updated,
 	}
 	o.State = d.state(r)
+	if r.last.number.Valid {
+		o.LastDeploy = &LastDeployOut{Number: int(r.last.number.Int64), Kind: r.last.kind.String, Status: r.last.status.String,
+			ReasonCode: r.last.reasonCode.String, AppSafe: r.last.appSafe.String, ImageRef: r.last.imageRef.String,
+			CreatedAt: r.last.created.String, FinishedAt: r.last.finished.String}
+	}
 	if r.publicPort.Valid {
 		port := int(r.publicPort.Int64)
 		o.RouteError = d.Routes.BindStatus(port)
@@ -654,7 +685,7 @@ func (d *svcDeps) state(r svcRow) string {
 		return "not_deployed"
 	}
 	if !d.Routes.Ready() || d.Routes.State().Unknown(r.id) || (d.StreamUp != nil && !d.StreamUp()) {
-		return "unknown"
+		return ServiceUnknown
 	}
 	seen := false
 	for _, c := range d.Routes.State().snapshot() {
@@ -665,16 +696,16 @@ func (d *svcDeps) state(r svcRow) string {
 		if c.IP != "" && c.IP == r.activeIP.String {
 			switch c.State {
 			case StateRunning:
-				return "running"
+				return ServiceRunning
 			case StateRestarting:
-				return "restarting"
+				return ServiceRestarting
 			}
 		}
 	}
 	if seen {
-		return "stopped"
+		return ServiceExited
 	}
-	return "missing"
+	return ServiceMissing
 }
 
 func (d *svcDeps) projects(ctx context.Context) (ProjectsOut, error) {

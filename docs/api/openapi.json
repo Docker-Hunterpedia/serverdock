@@ -894,6 +894,49 @@
                 "description": "the image the next deploy uses",
                 "type": "string"
               },
+              "last_deploy": {
+                "additionalProperties": false,
+                "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                "properties": {
+                  "app_safe": {
+                    "description": "yes, no or unknown: did the previous version keep serving?",
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "finished_at": {
+                    "type": "string"
+                  },
+                  "image_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "deploy, redeploy or rollback",
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "queued, running, succeeded, failed, cancelled or superseded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "kind",
+                  "status",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -927,7 +970,7 @@
                 "type": "string"
               },
               "state": {
-                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                 "type": "string"
               },
               "stop_grace_s": {
@@ -1139,6 +1182,49 @@
             "description": "the image the next deploy uses",
             "type": "string"
           },
+          "last_deploy": {
+            "additionalProperties": false,
+            "description": "the newest deploy of any kind and result; null when the service was never deployed",
+            "properties": {
+              "app_safe": {
+                "description": "yes, no or unknown: did the previous version keep serving?",
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "finished_at": {
+                "type": "string"
+              },
+              "image_ref": {
+                "type": "string"
+              },
+              "kind": {
+                "description": "deploy, redeploy or rollback",
+                "type": "string"
+              },
+              "number": {
+                "type": "integer"
+              },
+              "reason_code": {
+                "type": "string"
+              },
+              "status": {
+                "description": "queued, running, succeeded, failed, cancelled or superseded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "kind",
+              "status",
+              "created_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -1172,7 +1258,7 @@
             "type": "string"
           },
           "state": {
-            "description": "not_deployed, running, restarting, stopped, missing or unknown",
+            "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
             "type": "string"
           },
           "stop_grace_s": {
@@ -1282,6 +1368,49 @@
                   "description": "the image the next deploy uses",
                   "type": "string"
                 },
+                "last_deploy": {
+                  "additionalProperties": false,
+                  "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                  "properties": {
+                    "app_safe": {
+                      "description": "yes, no or unknown: did the previous version keep serving?",
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "finished_at": {
+                      "type": "string"
+                    },
+                    "image_ref": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "deploy, redeploy or rollback",
+                      "type": "string"
+                    },
+                    "number": {
+                      "type": "integer"
+                    },
+                    "reason_code": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "description": "queued, running, succeeded, failed, cancelled or superseded",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "kind",
+                    "status",
+                    "created_at"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
                 "name": {
                   "type": "string"
                 },
@@ -1315,7 +1444,7 @@
                   "type": "string"
                 },
                 "state": {
-                  "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                  "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                   "type": "string"
                 },
                 "stop_grace_s": {
@@ -1558,6 +1687,49 @@
                 "description": "the image the next deploy uses",
                 "type": "string"
               },
+              "last_deploy": {
+                "additionalProperties": false,
+                "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                "properties": {
+                  "app_safe": {
+                    "description": "yes, no or unknown: did the previous version keep serving?",
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "finished_at": {
+                    "type": "string"
+                  },
+                  "image_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "deploy, redeploy or rollback",
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "queued, running, succeeded, failed, cancelled or superseded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "kind",
+                  "status",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -1591,7 +1763,7 @@
                 "type": "string"
               },
               "state": {
-                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                 "type": "string"
               },
               "stop_grace_s": {
@@ -1814,6 +1986,49 @@
                 "description": "the image the next deploy uses",
                 "type": "string"
               },
+              "last_deploy": {
+                "additionalProperties": false,
+                "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                "properties": {
+                  "app_safe": {
+                    "description": "yes, no or unknown: did the previous version keep serving?",
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "finished_at": {
+                    "type": "string"
+                  },
+                  "image_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "deploy, redeploy or rollback",
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "queued, running, succeeded, failed, cancelled or superseded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "kind",
+                  "status",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -1847,7 +2062,7 @@
                 "type": "string"
               },
               "state": {
-                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                 "type": "string"
               },
               "stop_grace_s": {
@@ -2016,6 +2231,49 @@
                 "description": "the image the next deploy uses",
                 "type": "string"
               },
+              "last_deploy": {
+                "additionalProperties": false,
+                "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                "properties": {
+                  "app_safe": {
+                    "description": "yes, no or unknown: did the previous version keep serving?",
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "finished_at": {
+                    "type": "string"
+                  },
+                  "image_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "deploy, redeploy or rollback",
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "queued, running, succeeded, failed, cancelled or superseded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "kind",
+                  "status",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -2049,7 +2307,7 @@
                 "type": "string"
               },
               "state": {
-                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                 "type": "string"
               },
               "stop_grace_s": {
@@ -2278,6 +2536,49 @@
                 "description": "the image the next deploy uses",
                 "type": "string"
               },
+              "last_deploy": {
+                "additionalProperties": false,
+                "description": "the newest deploy of any kind and result; null when the service was never deployed",
+                "properties": {
+                  "app_safe": {
+                    "description": "yes, no or unknown: did the previous version keep serving?",
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "finished_at": {
+                    "type": "string"
+                  },
+                  "image_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "deploy, redeploy or rollback",
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "queued, running, succeeded, failed, cancelled or superseded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "number",
+                  "kind",
+                  "status",
+                  "created_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -2311,7 +2612,7 @@
                 "type": "string"
               },
               "state": {
-                "description": "not_deployed, running, restarting, stopped, missing or unknown",
+                "description": "not_deployed, running, restarting, exited, missing or unknown (the events stream is down or the first resync has not finished)",
                 "type": "string"
               },
               "stop_grace_s": {

@@ -647,7 +647,7 @@ func TestServiceStateFollowsTheStateMap(t *testing.T) {
 	if s := g.get("p/web"); s.State != "missing" {
 		t.Errorf("no container: %q", s.State)
 	}
-	for state, want := range map[string]string{StateRunning: "running", StateRestarting: "restarting", "exited": "stopped"} {
+	for state, want := range map[string]string{StateRunning: "running", StateRestarting: "restarting", "exited": "exited"} {
 		if err := g.r.SetContainer(context.Background(), up(svc, id, 1, state, ip)); err != nil {
 			t.Fatal(err)
 		}
@@ -659,7 +659,7 @@ func TestServiceStateFollowsTheStateMap(t *testing.T) {
 	if err := g.r.SetContainer(context.Background(), up(svc, id, 1, StateRunning, "10.250.1.9")); err != nil {
 		t.Fatal(err)
 	}
-	if s := g.get("p/web"); s.State != "stopped" {
+	if s := g.get("p/web"); s.State != "exited" {
 		t.Errorf("wrong address: %q", s.State)
 	}
 }
@@ -1198,4 +1198,28 @@ func (c *ctxPorts) ContainerPorts(ctx context.Context) (agentops.PortsResult, er
 		<-ctx.Done()
 	}
 	return agentops.PortsResult{}, ctx.Err()
+}
+
+// last_deploy is the newest deploy by number, whatever its result, and null before
+// the first one; the live deploy and the last deploy can differ.
+func TestServiceLastDeployIsTheNewestByNumber(t *testing.T) {
+	g := newSvcRig(t)
+	g.create("p", "web", m{})
+	if s := g.get("p/web"); s.LastDeploy != nil {
+		t.Fatalf("a service never deployed has no last deploy: %+v", s.LastDeploy)
+	}
+	var svc int64
+	_ = g.st.R.QueryRow(`SELECT id FROM services WHERE name = 'web'`).Scan(&svc)
+	live := addDeploy(t, g.st, svc, 1, "succeeded", "10.250.1.2")
+	mustExec(t, g.st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, live, svc)
+	mustExec(t, g.st, `INSERT INTO deploys(service_id, number, kind, snapshot_json, status, reason_code, app_safe, actor_kind, actor_id, created_at, finished_at)
+		VALUES (?, 2, 'deploy', '{"image_ref":"img:2"}', 'failed', 'health', 'yes', 'user', '1', 'x', 'f')`, svc)
+	s := g.get("p/web")
+	if s.ActiveDeploy == nil || *s.ActiveDeploy != 1 {
+		t.Errorf("active deploy: %v", s.ActiveDeploy)
+	}
+	want := LastDeployOut{Number: 2, Kind: "deploy", Status: "failed", ReasonCode: "health", AppSafe: "yes", ImageRef: "img:2", CreatedAt: "x", FinishedAt: "f"}
+	if s.LastDeploy == nil || *s.LastDeploy != want {
+		t.Errorf("last deploy %+v, want %+v", s.LastDeploy, want)
+	}
 }
