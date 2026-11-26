@@ -70,6 +70,13 @@ func startFakeEngine(t *testing.T, networks string) (string, *fakeEngine) {
 		nets := fe.networks
 		fe.mu.Unlock()
 		switch {
+		case r.Method == "GET" && path == "events":
+			// The reconciler's stream (step 10): open, no events, until the client leaves.
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
 		case r.Method == "GET" && path == "containers/json":
 			if fe.listFails.Load() {
 				http.Error(w, "boom", http.StatusInternalServerError)
@@ -340,8 +347,9 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 // Boot order (plan 0004 step 7, Revision 9): the panel alone first (the server is
 // ready and serving), then network_ensure with the recorded subnet (the network
-// is created with the app subnet and inter-container traffic off), then Sync,
-// which lists the containers and opens the route gate.
+// is created with the app subnet and inter-container traffic off), and the first
+// resync (the reconciler's, step 10: the event stream first, then the list), which
+// opens the route gate.
 func TestServerBootCreatesTheAppNetworkThenOpensTheRouteGate(t *testing.T) {
 	sock, fe := startFakeEngine(t, `[]`)
 	data := newData(t)
@@ -356,9 +364,12 @@ func TestServerBootCreatesTheAppNetworkThenOpensTheRouteGate(t *testing.T) {
 	id, _ := readMeta(t, data, "install_id")
 	name := agentops.NetworkName(id)
 	paths := fe.sawPaths()
-	create, list := indexOf(paths, "POST /networks/create"), indexOf(paths, "GET /containers/json")
-	if create < 0 || list < 0 || create > list {
-		t.Fatalf("network_ensure (%d) must come before the first container list (%d): %v", create, list, paths)
+	// Since step 10 the reconciler owns the first list and the Booter owns network_ensure;
+	// neither waits for the other (a deploy ensures the network itself before it
+	// allocates an address), so the order of the two is not fixed: both must happen.
+	create, list, events := indexOf(paths, "POST /networks/create"), indexOf(paths, "GET /containers/json"), indexOf(paths, "GET /events")
+	if create < 0 || list < 0 || events < 0 || events > list {
+		t.Fatalf("network_ensure (%d), the first container list (%d) and the event stream (%d, which must be open before the list): %v", create, list, events, paths)
 	}
 	fe.mu.Lock()
 	body := fe.created[name]

@@ -140,8 +140,8 @@ func TestRealServerQueuingFromASignedOutSessionSaysSignInAgain(t *testing.T) {
 	}
 }
 
-// The scheduler dispatches nothing until the boot has listed the containers (the
-// interim start gate), then picks the job up.
+// The scheduler dispatches nothing until the reconciler's first resync has finished
+// (the start gate), then picks the job up.
 func TestRealServerSchedulerStartsOnlyAfterTheBootSucceeds(t *testing.T) {
 	sock, fe := startFakeEngine(t, `[]`)
 	fe.listFails.Store(true)

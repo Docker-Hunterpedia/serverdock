@@ -551,6 +551,7 @@ func TestAllocatorRefusesANetworkWithAnotherSubnetThanRecorded(t *testing.T) {
 }
 
 func TestTwoConcurrentAllocationsNeverShareAnAddress(t *testing.T) {
+	defer lockCheckExempt()() // the test interleaves two allocators on one goroutine
 	ctx := context.Background()
 	st := openStore(t)
 	s1, s2 := addService(t, st, "a"), addService(t, st, "b")

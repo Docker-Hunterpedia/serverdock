@@ -127,7 +127,7 @@ func TestIntegrationServiceActionsAgainstDockerAndCaddy(t *testing.T) {
 
 	st := openStore(t)
 	routes := NewRoutes(st, cl, nil)
-	booter := NewBooter(BootConfig{Instance: inst, AppNet: staticSubnet{netip.MustParsePrefix(subnet)}, Net: cl, Routes: routes, Src: cl, SyncRoutes: true})
+	booter := NewBooter(BootConfig{Instance: inst, AppNet: staticSubnet{netip.MustParsePrefix(subnet)}, Net: cl, Routes: routes, Sync: syncVia(routes, cl), SyncRoutes: true})
 	al, err := audit.New(st, quiet)
 	if err != nil {
 		t.Fatal(err)

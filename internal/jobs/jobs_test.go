@@ -745,6 +745,55 @@ func TestAPanickingJobFailsAndTheSchedulerSurvives(t *testing.T) {
 	waitFor(t, "the next job to run", func() bool { return e.state(t, b) == StateSucceeded })
 }
 
+// OnDone runs after the result is recorded (the deploy package asks for the
+// per-service resync there), for a success and a failure alike, and a panic in it
+// does not stop the scheduler.
+func TestOnDoneRunsAfterTheResultIsRecorded(t *testing.T) {
+	e := newEnv(t)
+	type seen struct {
+		lock, state string
+	}
+	var mu sync.Mutex
+	var got []seen
+	s, _ := start(t, e, func(_ context.Context, j Job) error {
+		if j.LockKey == "service:2" {
+			return errors.New("fails")
+		}
+		return nil
+	}, func(c *Config) {
+		c.OnDone = func(j Job) {
+			var state string
+			_ = e.st.R.QueryRow(`SELECT state FROM jobs WHERE id = ?`, j.ID).Scan(&state)
+			mu.Lock()
+			got = append(got, seen{j.LockKey, state})
+			mu.Unlock()
+			if j.LockKey == "service:3" {
+				panic("a bad hook")
+			}
+		}
+	})
+	s.OpenGate()
+	for _, k := range []string{"service:1", "service:2", "service:3"} {
+		if _, err := s.Enqueue(context.Background(), job(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "three results", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 3 })
+	mu.Lock()
+	defer mu.Unlock()
+	for _, g := range got {
+		want := StateSucceeded
+		if g.lock == "service:2" {
+			want = StateFailed
+		}
+		if g.state != want {
+			t.Errorf("%s: the hook saw state %s, want %s (the result must be recorded first)", g.lock, g.state, want)
+		}
+	}
+	d, _ := s.Enqueue(context.Background(), job("service:4"))
+	waitFor(t, "the scheduler to survive the hook's panic", func() bool { return e.state(t, d) == StateSucceeded })
+}
+
 func TestFinishedJobsPrunedOnInsert(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

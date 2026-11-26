@@ -172,6 +172,7 @@ func TestRunDeployIsJobOnly(t *testing.T) {
 }
 
 func TestServiceLocks(t *testing.T) {
+	defer lockCheckExempt()() // the test takes two services' locks on one goroutine to test the lock type
 	var l ServiceLocks
 	un, err := l.Lock(context.Background(), 1)
 	if err != nil {
@@ -250,7 +251,7 @@ func TestResolveInterruptedSettlesJobsOfAnEarlierBoot(t *testing.T) {
 	jobNow := mkJob(third, "running", "this-boot") // this boot's own job is left alone
 	queued := mkJob(addService(t, st, "fourth"), "queued", "")
 
-	n, err := ResolveInterrupted(context.Background(), st, "this-boot", time.Now())
+	n, err := ResolveInterrupted(context.Background(), st, "this-boot", time.Now(), nil)
 	if err != nil || n != 2 {
 		t.Fatalf("%d settled, %v", n, err)
 	}
@@ -297,7 +298,7 @@ func TestResolveInterruptedSettlesJobsOfAnEarlierBoot(t *testing.T) {
 		t.Errorf("a queued job was touched: %s", s)
 	}
 	// Nothing left to do: a second pass settles nothing.
-	if n, err := ResolveInterrupted(context.Background(), st, "this-boot", time.Now()); err != nil || n != 0 {
+	if n, err := ResolveInterrupted(context.Background(), st, "this-boot", time.Now(), nil); err != nil || n != 0 {
 		t.Errorf("second pass: %d %v", n, err)
 	}
 }

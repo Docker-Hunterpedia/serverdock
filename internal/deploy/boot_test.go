@@ -81,7 +81,7 @@ func newBooterAfter(t *testing.T, sync bool, panelUp <-chan struct{}) (*Booter, 
 	en := &fakeEnsurer{s: s}
 	sn := &fakeSubnet{s: s, subnet: "10.250.7.0/24"}
 	src := &fakeSource{seq: &s.seq}
-	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: sn, Net: en, Routes: r, Src: src, SyncRoutes: sync, PanelUp: panelUp})
+	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: sn, Net: en, Routes: r, Sync: syncVia(r, src), SyncRoutes: sync, PanelUp: panelUp})
 	return b, s, en, sn, src, r
 }
 
@@ -237,31 +237,10 @@ func TestIsNetworkMissingMatchesOnlyTheNetworkError(t *testing.T) {
 	}
 }
 
-// OnReady is the interim start gate: it fires only once the first list has
-// filled the state map, and again (harmlessly) after later runs.
-func TestBootOnReadyFiresOnlyAfterTheFirstList(t *testing.T) {
-	s := &bootSeq{}
-	st := openStore(t)
-	r := NewRoutes(st, &fakeProxy{events: &s.seq}, nil)
-	src := &fakeSource{seq: &s.seq, listErr: errors.New("docker down")}
-	var n atomic.Int32
-	b := NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s, subnet: "10.250.7.0/24"}, Net: &fakeEnsurer{s: s},
-		Routes: r, Src: src, SyncRoutes: true, OnReady: func() { n.Add(1) }})
-	if b.Run(context.Background()) == nil || n.Load() != 0 {
-		t.Fatalf("the gate opened with the list failing (%d)", n.Load())
-	}
-	src.listErr = nil
-	if err := b.Run(context.Background()); err != nil || n.Load() != 1 {
-		t.Fatalf("%v opened %d times", err, n.Load())
-	}
-	// With the proxy off there is no list: the network being ensured is the signal.
-	n.Store(0)
-	s2 := &bootSeq{}
-	b2 := NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s2, subnet: "10.250.7.0/24"}, Net: &fakeEnsurer{s: s2},
-		Routes: NewRoutes(openStore(t), &fakeProxy{events: &s2.seq}, nil), Src: &fakeSource{seq: &s2.seq}, SyncRoutes: false, OnReady: func() { n.Add(1) }})
-	if err := b2.Run(context.Background()); err != nil || n.Load() != 1 {
-		t.Fatalf("proxy off: %v opened %d times", err, n.Load())
-	}
+// syncVia is the Booter's Sync of these tests: the plain Routes.Sync over a fake
+// source (on a server it is the reconciler's EnsureSynced).
+func syncVia(r *Routes, src BootSource) func(context.Context) error {
+	return func(ctx context.Context) error { return r.Sync(ctx, src) }
 }
 
 // An app subnet that now overlaps the host: the network is not created (it

@@ -401,7 +401,7 @@ func TestInterruptedDeleteNeedsAttention(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustExec(t, g.st, `UPDATE jobs SET state = 'running', boot_id = 'old', started_at = 'x' WHERE id = ?`, out.JobID)
-	if n, err := ResolveInterrupted(context.Background(), g.st, "new", time.Now()); err != nil || n != 1 {
+	if n, err := ResolveInterrupted(context.Background(), g.st, "new", time.Now(), nil); err != nil || n != 1 {
 		t.Fatalf("%d %v", n, err)
 	}
 	var attention string

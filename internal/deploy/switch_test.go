@@ -829,8 +829,21 @@ func TestShutdownDuringTheDrainWritesTheHonestEnd(t *testing.T) {
 	if r.status != StatusSucceeded || r.code != "warning" || !strings.Contains(r.reason, "stopped during the drain") || strings.Contains(r.reason, "record incomplete") {
 		t.Fatalf("%+v", r)
 	}
-	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now()); err != nil || n != 0 {
+	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now(), nil); err != nil || n != 0 {
 		t.Fatalf("the boot pass found %d jobs (%v), want none", n, err)
+	}
+	// The reason promises it: after a restart the first resync removes the previous
+	// container, and only that one (step 10).
+	rec := NewReconciler(ReconcilerConfig{DB: g.st, Ops: &recOps{fakeOps: g.ops}, Routes: g.routes, Locks: g.runner.cfg.Locks, Act: g.runner.cfg.Inv, Proxy: true})
+	RegisterReconcilerActions(g.reg, rec)
+	if err := rec.fullResync(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if g.alive(oldID) {
+		t.Error("the previous container is still there after the restart's resync")
+	}
+	if g.containerOf(d) == nil || !g.containerOf(d).running {
+		t.Error("the committed version's container was removed by the resync")
 	}
 }
 

@@ -1407,7 +1407,7 @@ func TestShutdownBeforeSwitchRemovesCandidate(t *testing.T) {
 		t.Errorf("the job is %s; a shutdown leaves it running for the boot pass", s)
 	}
 	// The boot pass then settles it.
-	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now()); err != nil || n != 1 {
+	if n, err := ResolveInterrupted(context.Background(), g.st, "next-boot", time.Now(), nil); err != nil || n != 1 {
 		t.Fatalf("%d %v", n, err)
 	}
 }
@@ -1610,7 +1610,7 @@ func TestRouteCallsAreOnlyInTheSwitchFile(t *testing.T) {
 // behaviour is tested by hooks_on_test.go, which only compiles with -tags testhooks.)
 func TestDefaultBuildHasNoTestHooks(t *testing.T) {
 	if hooksCompiled {
-		t.Fatal("the test hooks are compiled into this build")
+		t.Skip("a -tags testhooks build has the hooks by design (hooks_on_test.go covers it)")
 	}
 	t.Setenv("SERVERDOCK_TESTHOOK_PAUSE", "pull:before,health:before")
 	t.Setenv("SERVERDOCK_TESTHOOK_DIR", t.TempDir())

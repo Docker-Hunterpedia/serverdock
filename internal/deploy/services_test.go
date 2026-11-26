@@ -1148,7 +1148,7 @@ func TestActionBeforeThePanelIsUpStartsNoBoot(t *testing.T) {
 	s := &bootSeq{}
 	en := &fakeEnsurer{s: s}
 	booter = NewBooter(BootConfig{Instance: bootInstance, AppNet: &fakeSubnet{s: s, subnet: "10.250.7.0/24"}, Net: en, Routes: g.r,
-		Src: &fakeSource{seq: &s.seq}, SyncRoutes: true, PanelUp: panelUp})
+		Sync: syncVia(g.r, &fakeSource{seq: &s.seq}), SyncRoutes: true, PanelUp: panelUp})
 	g.create("p", "web", m{"container_port": 80})
 	// ensureRoutes waits for the panel, bounded by EnsureBound (100 ms here).
 	raw, _ := json.Marshal(m{"service": "p/web", "public_port": 9000})
