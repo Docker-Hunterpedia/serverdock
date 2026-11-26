@@ -151,8 +151,11 @@ func registerServiceActions(reg *actions.Registry, st *store.Store, now func() t
 	st.W.Exec(`INSERT OR IGNORE INTO projects(id, name, created_at) VALUES (1, 'p', 'x')`)
 	st.W.Exec(`INSERT OR IGNORE INTO services(id, project_id, name, image_ref, container_port, health_kind, health_timeout_s, health_passes, strategy, drain_s, stop_grace_s, created_at, updated_at)
 		VALUES (1, 1, 'x', 'nginx:1', 80, 'tcp', 60, 3, 'blue_green', 10, 10, 'x', 'x')`)
+	st.W.Exec(`INSERT OR IGNORE INTO deploys(id, service_id, number, kind, snapshot_json, status, actor_kind, actor_id, created_at)
+		VALUES (1, 1, 1, 'deploy', '{}', 'failed', 'user', '1', 'x')`)
 	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{DB: st, Routes: deploy.NewRoutes(st, stubApplier{}, nil), ReservedPorts: []int{8443},
 		Exposure: stubPorts{}, Now: now})
+	deploy.RegisterDeployReadActions(reg, deploy.DeployReadDeps{DB: st})
 }
 
 // ---- helpers --------------------------------------------------------------------------------
@@ -254,8 +257,10 @@ func validInput(name string) string {
 		return `{"service":"p/x"}`
 	case "services.rollback":
 		return `{"service":"p/x","to":1}`
-	case "deploys.cancel":
+	case "deploys.cancel", "deploys.get", "deploys.log":
 		return `{"service":"p/x","number":1}`
+	case "deploys.list":
+		return `{"service":"p/x"}`
 	case "services.create":
 		return `{"project":"p","name":"n","image_ref":"nginx"}`
 	case "services.update":

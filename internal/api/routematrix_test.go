@@ -559,6 +559,10 @@ func TestServiceActionsRouteMatrix(t *testing.T) {
 		{"services.retry_port", `{"service":"p/nosuch"}`, actions.ScopeAdmin, 404, "not_found"},
 		{"services.deploy", `{"service":"p/nosuch"}`, actions.ScopeWrite, 404, "not_found"},
 		{"deploys.cancel", `{"service":"p/nosuch","number":1}`, actions.ScopeWrite, 404, "not_found"},
+		{"deploys.list", `{"service":"p/x"}`, actions.ScopeRead, 200, ""},
+		{"deploys.get", `{"service":"p/x","number":1}`, actions.ScopeRead, 200, ""},
+		// Container output can hold credentials: a read token is refused (403), a write token is not.
+		{"deploys.log", `{"service":"p/x","number":1}`, actions.ScopeWrite, 200, ""},
 	}
 	before := dumpServices(t, f)
 	for _, a := range acts {

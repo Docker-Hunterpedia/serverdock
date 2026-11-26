@@ -331,6 +331,323 @@
         ],
         "type": "object"
       },
+      "DeploysGetInput": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "description": "the deploy's number",
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "number"
+        ],
+        "type": "object"
+      },
+      "DeploysGetOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "cancellable": {
+            "description": "deploys.cancel would take effect now (false inside switch, commit, drain and stop_old, once a cancel was asked, and after the end)",
+            "type": "boolean"
+          },
+          "deploy": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "description": "this is the service's live deploy",
+                "type": "boolean"
+              },
+              "app_safe": {
+                "description": "yes, no or unknown: did the previous version keep serving?",
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "finished_at": {
+                "type": "string"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "image_ref": {
+                "type": "string"
+              },
+              "kind": {
+                "description": "deploy, redeploy or rollback",
+                "type": "string"
+              },
+              "log_kept": {
+                "description": "a deploy log file exists (read it with deploys.log)",
+                "type": "boolean"
+              },
+              "number": {
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "reason_code": {
+                "type": "string"
+              },
+              "repo_digest": {
+                "type": "string"
+              },
+              "stage": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "status": {
+                "description": "queued, running, succeeded, failed, cancelled or superseded",
+                "type": "string"
+              },
+              "was_live": {
+                "description": "the deploy committed once: it can be rolled back to",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "number",
+              "kind",
+              "status",
+              "active",
+              "was_live",
+              "log_kept",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "progress": {
+            "additionalProperties": false,
+            "description": "the pull's latest progress, only while the deploy is pulling",
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "bytes_total": {
+                "type": "integer"
+              },
+              "layers": {
+                "type": "integer"
+              },
+              "layers_done": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "layers",
+              "layers_done",
+              "bytes",
+              "bytes_total"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "service": {
+            "type": "string"
+          },
+          "stages": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "detail": {
+                  "type": "string"
+                },
+                "finished_at": {
+                  "type": "string"
+                },
+                "stage": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "state": {
+                  "description": "pending, running, ok, failed or skipped",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stage",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "service",
+          "deploy",
+          "stages",
+          "cancellable"
+        ],
+        "type": "object"
+      },
+      "DeploysListInput": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "how many deploys, newest first (1 to 200; default 50)",
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "DeploysListOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "deploys": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "active": {
+                  "description": "this is the service's live deploy",
+                  "type": "boolean"
+                },
+                "app_safe": {
+                  "description": "yes, no or unknown: did the previous version keep serving?",
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "finished_at": {
+                  "type": "string"
+                },
+                "image_id": {
+                  "type": "string"
+                },
+                "image_ref": {
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "deploy, redeploy or rollback",
+                  "type": "string"
+                },
+                "log_kept": {
+                  "description": "a deploy log file exists (read it with deploys.log)",
+                  "type": "boolean"
+                },
+                "number": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "reason_code": {
+                  "type": "string"
+                },
+                "repo_digest": {
+                  "type": "string"
+                },
+                "stage": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "status": {
+                  "description": "queued, running, succeeded, failed, cancelled or superseded",
+                  "type": "string"
+                },
+                "was_live": {
+                  "description": "the deploy committed once: it can be rolled back to",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "number",
+                "kind",
+                "status",
+                "active",
+                "was_live",
+                "log_kept",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "deploys"
+        ],
+        "type": "object"
+      },
+      "DeploysLogInput": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "description": "the deploy's number",
+            "type": "integer"
+          },
+          "service": {
+            "description": "\u003cproject\u003e/\u003cservice\u003e",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "number"
+        ],
+        "type": "object"
+      },
+      "DeploysLogOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "kept": {
+            "description": "false: there is no log; message says why",
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "text": {
+            "description": "the log (at most 1 MiB), cleaned of control and bidirectional characters; show it as plain text",
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "service",
+          "number",
+          "kept"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -3997,6 +4314,552 @@
         ],
         "x-sd-removes-access": false,
         "x-sd-risk": "mutate",
+        "x-sd-scope": "write",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/deploys.get": {
+      "post": {
+        "operationId": "deploys.get",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploysGetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/DeploysGetOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "One deploy: its stages, the live progress of its image pull, and whether it can be cancelled now.",
+        "tags": [
+          "deploys"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/deploys.list": {
+      "post": {
+        "operationId": "deploys.list",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploysListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/DeploysListOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List a service's deploys, newest first: status, stage, reason, whether it was once live, whether a log is kept.",
+        "tags": [
+          "deploys"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
+        "x-sd-scope": "read",
+        "x-sd-sensitive": false,
+        "x-sd-session-only": false
+      }
+    },
+    "/api/v1/actions/deploys.log": {
+      "post": {
+        "operationId": "deploys.log",
+        "parameters": [
+          {
+            "description": "1: report what the action would do, run nothing (only for actions with a dry run)",
+            "in": "header",
+            "name": "SD-Dry-Run",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploysLogInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "audit": {
+                      "enum": [
+                        "recorded",
+                        "unrecorded",
+                        "not_audited"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/DeploysLogOutput"
+                    },
+                    "plan": {
+                      "properties": {
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "audit"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The action ran (or, with SD-Dry-Run, its plan)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (invalid_input)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (denied, mfa_required, confirm, csrf or origin)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (unknown_action or not_found)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (conflict)."
+          },
+          "421": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (misdirected)."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (rate_limited)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (action_failed)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error (audit_unavailable, busy or unavailable)."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The log of a deploy: its stages and the tail of its container's output (at most 1 MiB, cleaned). Container output can hold credentials, so an API token needs write scope; MCP never gets it.",
+        "tags": [
+          "deploys"
+        ],
+        "x-sd-removes-access": false,
+        "x-sd-risk": "read",
         "x-sd-scope": "write",
         "x-sd-sensitive": false,
         "x-sd-session-only": false

@@ -157,6 +157,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actions/deploys.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** One deploy: its stages, the live progress of its image pull, and whether it can be cancelled now. */
+        post: operations["deploys.get"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/deploys.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List a service's deploys, newest first: status, stage, reason, whether it was once live, whether a log is kept. */
+        post: operations["deploys.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/actions/deploys.log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The log of a deploy: its stages and the tail of its container's output (at most 1 MiB, cleaned). Container output can hold credentials, so an API token needs write scope; MCP never gets it. */
+        post: operations["deploys.log"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actions/projects.list": {
         parameters: {
             query?: never;
@@ -745,6 +796,106 @@ export interface components {
             number: number;
             service: string;
             status: string;
+        };
+        DeploysGetInput: {
+            /** @description the deploy's number */
+            number: number;
+            /** @description <project>/<service> */
+            service: string;
+        };
+        DeploysGetOutput: {
+            /** @description deploys.cancel would take effect now (false inside switch, commit, drain and stop_old, once a cancel was asked, and after the end) */
+            cancellable: boolean;
+            deploy: {
+                /** @description this is the service's live deploy */
+                active: boolean;
+                /** @description yes, no or unknown: did the previous version keep serving? */
+                app_safe?: string;
+                created_at: string;
+                finished_at?: string;
+                image_id?: string;
+                image_ref?: string;
+                /** @description deploy, redeploy or rollback */
+                kind: string;
+                /** @description a deploy log file exists (read it with deploys.log) */
+                log_kept: boolean;
+                number: number;
+                reason?: string;
+                reason_code?: string;
+                repo_digest?: string;
+                stage?: string;
+                started_at?: string;
+                /** @description queued, running, succeeded, failed, cancelled or superseded */
+                status: string;
+                /** @description the deploy committed once: it can be rolled back to */
+                was_live: boolean;
+            };
+            /** @description the pull's latest progress, only while the deploy is pulling */
+            progress?: {
+                bytes: number;
+                bytes_total: number;
+                layers: number;
+                layers_done: number;
+                status?: string;
+            } | null;
+            service: string;
+            stages: {
+                detail?: string;
+                finished_at?: string;
+                stage: string;
+                started_at?: string;
+                /** @description pending, running, ok, failed or skipped */
+                state: string;
+            }[];
+        };
+        DeploysListInput: {
+            /** @description how many deploys, newest first (1 to 200; default 50) */
+            limit?: number;
+            /** @description <project>/<service> */
+            service: string;
+        };
+        DeploysListOutput: {
+            deploys: {
+                /** @description this is the service's live deploy */
+                active: boolean;
+                /** @description yes, no or unknown: did the previous version keep serving? */
+                app_safe?: string;
+                created_at: string;
+                finished_at?: string;
+                image_id?: string;
+                image_ref?: string;
+                /** @description deploy, redeploy or rollback */
+                kind: string;
+                /** @description a deploy log file exists (read it with deploys.log) */
+                log_kept: boolean;
+                number: number;
+                reason?: string;
+                reason_code?: string;
+                repo_digest?: string;
+                stage?: string;
+                started_at?: string;
+                /** @description queued, running, succeeded, failed, cancelled or superseded */
+                status: string;
+                /** @description the deploy committed once: it can be rolled back to */
+                was_live: boolean;
+            }[];
+            service: string;
+        };
+        DeploysLogInput: {
+            /** @description the deploy's number */
+            number: number;
+            /** @description <project>/<service> */
+            service: string;
+        };
+        DeploysLogOutput: {
+            /** @description false: there is no log; message says why */
+            kept: boolean;
+            message?: string;
+            number: number;
+            service: string;
+            /** @description the log (at most 1 MiB), cleaned of control and bidirectional characters; show it as plain text */
+            text?: string;
+            truncated?: boolean;
         };
         Error: {
             error: {
@@ -2302,6 +2453,357 @@ export interface operations {
                         /** @enum {string} */
                         audit: "recorded" | "unrecorded" | "not_audited";
                         data?: components["schemas"]["DeploysCancelOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "deploys.get": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploysGetInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["DeploysGetOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "deploys.list": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploysListInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["DeploysListOutput"];
+                        plan?: {
+                            steps?: string[];
+                            summary?: string;
+                        };
+                        request_id: string;
+                    };
+                };
+            };
+            /** @description Error (invalid_input). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unauthenticated, token_expired, idle_expired, absolute_expired or revoked). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (denied, mfa_required, confirm, csrf or origin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (unknown_action or not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (conflict). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (misdirected). */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (rate_limited). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (action_failed). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Error (audit_unavailable, busy or unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "deploys.log": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1: report what the action would do, run nothing (only for actions with a dry run) */
+                "SD-Dry-Run"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploysLogInput"];
+            };
+        };
+        responses: {
+            /** @description The action ran (or, with SD-Dry-Run, its plan). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        audit: "recorded" | "unrecorded" | "not_audited";
+                        data?: components["schemas"]["DeploysLogOutput"];
                         plan?: {
                             steps?: string[];
                             summary?: string;
