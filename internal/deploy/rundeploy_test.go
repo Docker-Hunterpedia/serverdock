@@ -448,6 +448,7 @@ type rrig struct {
 	svc     int64
 	svcs    map[string]int64
 	clk     func() time.Time // the registry's clock
+	onDone  func(jobs.Job)   // the scheduler's OnDone, if a test sets it
 }
 
 type rigOpt func(*RunnerConfig)
@@ -507,7 +508,7 @@ func (g *rrig) service(name string) int64 {
 // start runs the scheduler (the gate is open unless hold is set).
 func (g *rrig) start(hold bool) {
 	g.t.Helper()
-	sched, err := jobs.NewScheduler(jobs.Config{Store: g.js, Run: g.runner.Run, RetryDelay: func(int) time.Duration { return 10 * time.Millisecond }})
+	sched, err := jobs.NewScheduler(jobs.Config{Store: g.js, Run: g.runner.Run, OnDone: g.onDone, RetryDelay: func(int) time.Duration { return 10 * time.Millisecond }})
 	if err != nil {
 		g.t.Fatal(err)
 	}

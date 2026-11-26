@@ -15,6 +15,7 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
+	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
@@ -76,11 +77,16 @@ type ReconcilerConfig struct {
 	Log     *slog.Logger
 
 	// Tunables (zero means the default; tests shorten them).
-	BackoffMin     time.Duration // 1 s
-	BackoffMax     time.Duration // 30 s
-	Rand           func() float64
-	HealthInterval time.Duration // 1 s between health checks of a restarted previous version
-	NewTimer       func(d time.Duration) (c <-chan time.Time, stop func() bool)
+	BackoffMin time.Duration // 1 s
+	BackoffMax time.Duration // 30 s
+	Rand       func() float64
+	// Since is when this process started: raiseAppSafe only raises deploys that ended
+	// after it. Zero means no limit (tests).
+	Since time.Time
+	// Audit, if set, receives the corrected outcome of a deploy whose commit turned out
+	// to have happened (nil: no audit row).
+	Audit    audit.Appender
+	NewTimer func(d time.Duration) (c <-chan time.Time, stop func() bool)
 	// MaxQueued bounds the distinct container ids buffered between two passes (the
 	// ones beyond it make the next pass a full resync).
 	MaxQueued int
@@ -119,9 +125,6 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 	}
 	if cfg.Rand == nil {
 		cfg.Rand = rand.Float64
-	}
-	if cfg.HealthInterval == 0 {
-		cfg.HealthInterval = time.Second
 	}
 	if cfg.MaxQueued == 0 {
 		cfg.MaxQueued = 4096
@@ -162,11 +165,13 @@ func (rc *Reconciler) EnsureSynced(ctx context.Context) error {
 }
 
 // ResyncService asks for the per-service resync of service (a job for it finished).
-// It never blocks and never waits for anything; the reconciler's own goroutine
-// runs it, after whatever it is doing. Requests made while the stream is down are
-// dropped: the full resync after the reconnect covers every service.
+// It never blocks and never waits for anything; the reconciler's own goroutine runs
+// it, after whatever it is doing, and a request made during a resync or while the
+// stream is down is kept (the set is bounded) and runs once the connection is up
+// again: the full resync does not make it redundant, because the job may have ended
+// after that resync listed the containers.
 func (rc *Reconciler) ResyncService(service int64) {
-	if service < 1 || !rc.up.Load() {
+	if service < 1 {
 		return
 	}
 	rc.svcMu.Lock()
@@ -295,8 +300,24 @@ func (q *eventQueue) take() (ids []queued, overflow bool) {
 	}
 	overflow = q.overflow
 	q.order, q.overflow = nil, false
-	clear(q.ids)
+	if len(q.ids) > 256 {
+		q.ids = map[string]int64{} // a map that grew keeps its buckets: start small again
+	} else {
+		clear(q.ids)
+	}
 	return ids, overflow
+}
+
+// markOverflow makes the next take report an overflow (a resync that could not look at
+// what was buffered asks for a full one).
+func (q *eventQueue) markOverflow() {
+	q.mu.Lock()
+	q.overflow = true
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (q *eventQueue) reset() { q.take() }
@@ -371,9 +392,27 @@ func (rc *Reconciler) session(ctx context.Context) (reached bool, err error) {
 		return false, ctx.Err()
 	}
 	first := !rc.synced.Load()
-	if err := rc.fullResync(cctx, first); err != nil {
+	markSynced := func() {
+		rc.synced.Store(true)
+		rc.firstMu.Do(func() {
+			close(rc.first)
+			if rc.cfg.OpenGate != nil {
+				rc.cfg.OpenGate()
+			}
+		})
+	}
+	// The start gate opens as soon as the state is loaded and the routes are applied;
+	// the slow half of the resync (removals, starts) follows and delays nothing.
+	applied, err := rc.fullResync(cctx, first, markSynced)
+	if err != nil {
 		join()
 		return false, err
+	}
+	if !applied {
+		// The routes were not applied (or the buffered events overflowed): end the
+		// connection so that the back-off retries (it climbs: never a hot loop).
+		join()
+		return false, errors.New("the resync did not finish: the routes were not applied")
 	}
 	// Events buffered during the list and the rules: re-inspect them one by one.
 	if err := rc.drain(cctx); err != nil {
@@ -381,13 +420,6 @@ func (rc *Reconciler) session(ctx context.Context) (reached bool, err error) {
 		return false, err
 	}
 	rc.up.Store(true)
-	rc.synced.Store(true)
-	rc.firstMu.Do(func() {
-		close(rc.first)
-		if rc.cfg.OpenGate != nil {
-			rc.cfg.OpenGate()
-		}
-	})
 	for {
 		select {
 		case <-rc.q.wake:
@@ -421,7 +453,7 @@ func (rc *Reconciler) drain(ctx context.Context) error {
 	for ctx.Err() == nil {
 		ids, overflow := rc.q.take()
 		if overflow {
-			if err := rc.fullResync(ctx, false); err != nil {
+			if _, err := rc.fullResync(ctx, false, nil); err != nil {
 				return err
 			}
 			continue
@@ -436,6 +468,22 @@ func (rc *Reconciler) drain(ctx context.Context) error {
 		}
 	}
 	return ctx.Err()
+}
+
+// drainIDs handles the buffered ids (not a full resync): the part of drain that a
+// resync runs between its apply and its removals. It reports an overflow instead of
+// acting on it.
+func (rc *Reconciler) drainIDs(ctx context.Context) (overflow bool, err error) {
+	ids, overflow := rc.q.take()
+	if overflow {
+		return true, nil
+	}
+	for _, e := range ids {
+		if err := rc.handle(ctx, e); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // handle is the event handler: inspect the container (never trust event order) and

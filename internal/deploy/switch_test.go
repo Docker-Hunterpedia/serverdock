@@ -836,7 +836,7 @@ func TestShutdownDuringTheDrainWritesTheHonestEnd(t *testing.T) {
 	// container, and only that one (step 10).
 	rec := NewReconciler(ReconcilerConfig{DB: g.st, Ops: &recOps{fakeOps: g.ops}, Routes: g.routes, Locks: g.runner.cfg.Locks, Act: g.runner.cfg.Inv, Proxy: true})
 	RegisterReconcilerActions(g.reg, rec)
-	if err := rec.fullResync(context.Background(), true); err != nil {
+	if _, err := rec.fullResync(context.Background(), true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if g.alive(oldID) {

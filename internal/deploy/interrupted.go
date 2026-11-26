@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
@@ -158,5 +159,28 @@ func resolveIntent(ctx context.Context, st *store.Store, aud audit.Appender, j s
 	if !j.ok {
 		intent.Result, intent.Error = audit.ResultError, j.errText
 	}
-	_, _ = aud.Append(context.WithoutCancel(ctx), intent)
+	if _, err := aud.Append(context.WithoutCancel(ctx), intent); err != nil {
+		slog.Warn("the audit outcome of an interrupted job could not be written; its intent stays unknown", "request_id", j.reqID, "err", err.Error())
+	}
+}
+
+// correctIntent gives the run of a deploy whose commit turned out to have happened a
+// later "ok" outcome: its intent was resolved "error" when the deploy was ended failed
+// (an unknown commit outcome), and the latest outcome decides (audit.IntentStatus).
+func correctIntent(ctx context.Context, st *store.Store, aud audit.Appender, log *slog.Logger, deploy int64) {
+	var id int64
+	var e audit.Entry
+	err := st.R.QueryRowContext(ctx, `SELECT a.id, a.actor_kind, a.actor_id, a.action, a.target, a.risk, a.args_json, a.request_id
+		FROM audit_log a JOIN jobs j ON a.request_id = j.request_id JOIN deploys d ON d.job_id = j.id
+		WHERE d.id = ? AND a.phase = ? AND a.action = 'jobs.run_deploy' AND
+		COALESCE((SELECT o.result FROM audit_log o WHERE o.phase = ? AND o.intent_id = a.id ORDER BY o.id DESC LIMIT 1), '') = ?
+		ORDER BY a.id DESC LIMIT 1`, deploy, audit.PhaseIntent, audit.PhaseOutcome, audit.ResultError).
+		Scan(&id, &e.ActorKind, &e.ActorID, &e.Action, &e.Target, &e.Risk, &e.ArgsJSON, &e.RequestID)
+	if err != nil {
+		return // no intent, or its outcome is not an error
+	}
+	e.Executor, e.Phase, e.IntentID, e.Result = "system", audit.PhaseOutcome, id, audit.ResultOK
+	if _, err := aud.Append(context.WithoutCancel(ctx), e); err != nil {
+		log.Warn("the corrected audit outcome of a committed deploy could not be written", "deploy", deploy, "err", err.Error())
+	}
 }

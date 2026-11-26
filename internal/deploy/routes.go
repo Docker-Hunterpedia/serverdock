@@ -106,6 +106,35 @@ type StateMap struct {
 	// timeout error: their state is not known until an operation (or, from step 10,
 	// an event) for them succeeds. At most one entry per service (100); no timer.
 	unknown map[int64]struct{}
+	// deleteFailed holds the services whose delete failed in this process (the same
+	// fact as needs_attention = delete_interrupted, kept in memory in case that write
+	// failed too): the reconciler never starts their containers.
+	deleteFailed map[int64]struct{}
+}
+
+// MarkDeleteFailed records that a delete of the service failed.
+func (s *StateMap) MarkDeleteFailed(service int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteFailed == nil {
+		s.deleteFailed = map[int64]struct{}{}
+	}
+	s.deleteFailed[service] = struct{}{}
+}
+
+// ClearDeleteFailed forgets MarkDeleteFailed (a delete of the service finished).
+func (s *StateMap) ClearDeleteFailed(service int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.deleteFailed, service)
+}
+
+// DeleteFailed reports whether a delete of the service failed in this process.
+func (s *StateMap) DeleteFailed(service int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.deleteFailed[service]
+	return ok
 }
 
 // MarkUnknown records that an operation for the service ended in a docker or
@@ -159,14 +188,29 @@ func (s *StateMap) replace(all []Container) {
 	s.ready = true
 }
 
-// replaceKeepGate replaces the map without opening the boot gate (the embedded
-// proxy is off: there is no route to apply, so the gate stays closed).
-func (s *StateMap) replaceKeepGate(all []Container) {
+// replaceKeeping replaces the map with all, but keeps what the map already holds for
+// the services in keep: a job holds their lock and tracks its candidate itself, and the
+// list that all came from was taken before that. A listed container of such a service
+// is added only if the map does not know it. opens says whether the boot gate opens
+// (it does not when the embedded proxy is off).
+func (s *StateMap) replaceKeeping(all []Container, keep map[int64]bool, opens bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.by
 	s.by = make(map[string]Container, len(all))
+	for id, c := range old {
+		if keep[c.Service] {
+			s.by[id] = c
+		}
+	}
 	for _, c := range all {
+		if _, ok := s.by[c.ID]; ok && keep[c.Service] {
+			continue
+		}
 		s.by[c.ID] = c
+	}
+	if opens {
+		s.ready = true
 	}
 }
 
@@ -532,14 +576,16 @@ func (r *Routes) send(ctx context.Context, retry bool) error {
 // the decision recorded in Revision 16: only "Try again" and the first boot Sync
 // retry). The error is an apply error: the map is loaded either way, so the boot
 // gate is open when Load returns (ErrRoutesNotReady cannot happen after it).
-func (r *Routes) Load(ctx context.Context, all []Container, retry bool) error {
-	return r.apply(ctx, func() error { r.state.replace(all); return nil }, retry, false)
+func (r *Routes) Load(ctx context.Context, all []Container, retry bool, keep map[int64]bool) error {
+	return r.apply(ctx, func() error { r.state.replaceKeeping(all, keep, true); return nil }, retry, false)
 }
 
 // LoadStateOnly replaces the state map and applies nothing, leaving the boot gate
 // closed: the embedded proxy is off, there are no routes, and a route call must keep
 // answering ErrRoutesNotReady.
-func (r *Routes) LoadStateOnly(all []Container) { r.state.replaceKeepGate(all) }
+func (r *Routes) LoadStateOnly(all []Container, keep map[int64]bool) {
+	r.state.replaceKeeping(all, keep, false)
+}
 
 // ReplaceService replaces one service's entries (a per-service resync after a job)
 // and applies, never asking for a retry of failed ports.

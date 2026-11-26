@@ -133,7 +133,7 @@ func newRecRig(t *testing.T, mod func(*recRig, *ReconcilerConfig)) *recRig {
 	g := newRRig(t)
 	r := &recRig{rrig: g, rops: &recOps{fakeOps: g.ops}}
 	cfg := ReconcilerConfig{DB: g.st, Ops: r.rops, Routes: g.routes, Locks: g.runner.cfg.Locks, Act: g.runner.cfg.Inv, Proxy: true,
-		OpenGate: func() { r.gates.Add(1) }, HealthInterval: time.Millisecond, NewTimer: r.timer, Rand: func() float64 { return 1 }}
+		OpenGate: func() { r.gates.Add(1) }, NewTimer: r.timer, Rand: func() float64 { return 1 }}
 	if mod != nil {
 		mod(r, &cfg)
 	}
@@ -190,6 +190,14 @@ func (r *recRig) put(svc, dep int64, attempt int, ip string, running bool) strin
 	return id
 }
 
+// runningC reads a container's running flag under the fake's lock.
+func (r *recRig) runningC(id string) bool {
+	r.ops.mu.Lock()
+	defer r.ops.mu.Unlock()
+	c := r.ops.cs[id]
+	return c != nil && c.running
+}
+
 func (r *recRig) exists(id string) bool { return r.ops.find(id) != nil }
 
 func (r *recRig) auditRows() int {
@@ -221,7 +229,7 @@ func (r *recRig) attention(svc int64) string {
 
 func (r *recRig) resync(first bool) {
 	r.t.Helper()
-	if err := r.rec.fullResync(context.Background(), first); err != nil {
+	if _, err := r.rec.fullResync(context.Background(), first, nil); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -398,7 +406,10 @@ func TestWatcherTakesOnlyTheRouteLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlock()
-	g.ops.find(id).running = false
+	c := g.ops.find(id)
+	g.ops.mu.Lock()
+	c.running = false
+	g.ops.mu.Unlock()
 	g.rops.emit("die", id, g.svc)
 	g.until("the event is handled while the service lock is held", func() bool {
 		c, ok := g.routes.State().Get(id)
@@ -466,7 +477,9 @@ func TestEventsDuringListAreReinspected(t *testing.T) {
 				if id != first && inspects[id] == 1 && g.rops.cur != nil {
 					// The second container is being inspected: the first one dies now,
 					// after its own inspect, and its event arrives during the pass.
-					g.ops.find(first).running = false
+					// (restarting, not exited: a stopped active container is started again by rule 3)
+					c := g.ops.find(first)
+					c.running, c.restar = false, true
 					go g.rops.emit("die", first, 1)
 				}
 			}
@@ -479,7 +492,7 @@ func TestEventsDuringListAreReinspected(t *testing.T) {
 		f := first
 		mu.Unlock()
 		c, ok := g.routes.State().Get(f)
-		return ok && c.State == "exited"
+		return ok && c.State == StateRestarting
 	})
 	mu.Lock()
 	defer mu.Unlock()
@@ -857,6 +870,10 @@ func TestResyncSettlesVersionsKeptAfterAConfirmedApply(t *testing.T) {
 		}
 	}
 	g.resync(true)
+	// The order is the rule: the apply that does not name the candidate, then its removal, then the start.
+	if a, r, st := g.seq.index("apply"), g.seq.index("remove"), g.seq.index("start"); a < 0 || r < 0 || st < 0 || a > r || r > st {
+		t.Errorf("order %v: want apply, remove, start", g.seq.all())
+	}
 	if g.exists(candID) {
 		t.Error("the kept candidate is still there")
 	}
@@ -881,16 +898,16 @@ func TestVersionsKeptWaitsForAConfirmedApply(t *testing.T) {
 	cand2 := candID
 	g.px.fail = errors.New("proxy down")
 	g.resync(false)
-	if !g.exists(cand2) || g.ops.find(oldID).running {
-		t.Fatalf("with an unconfirmed apply: candidate exists=%v, previous running=%v", g.exists(cand2), g.ops.find(oldID).running)
+	if !g.exists(cand2) || g.runningC(oldID) {
+		t.Fatalf("with an unconfirmed apply: candidate exists=%v, previous running=%v", g.exists(cand2), g.runningC(oldID))
 	}
 	if a := g.attention(g.svc); a != AttentionVersionsKept {
 		t.Errorf("needs_attention %q", a)
 	}
 	g.px.fail = nil
 	g.resync(false)
-	if g.exists(cand2) || !g.ops.find(oldID).running || g.attention(g.svc) != "" {
-		t.Errorf("after the apply was confirmed: candidate exists=%v previous running=%v attention=%q", g.exists(cand2), g.ops.find(oldID).running, g.attention(g.svc))
+	if g.exists(cand2) || !g.runningC(oldID) || g.attention(g.svc) != "" {
+		t.Errorf("after the apply was confirmed: candidate exists=%v previous running=%v attention=%q", g.exists(cand2), g.runningC(oldID), g.attention(g.svc))
 	}
 }
 
@@ -984,7 +1001,7 @@ func TestRule3SkipsAServiceFlaggedDeleteInterrupted(t *testing.T) {
 	_, id := g.activeDeploy(g.svc, 1, "10.250.0.2", false)
 	mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionDeleteInterrupted, g.svc)
 	g.resync(true)
-	if g.ops.find(id).running || g.ops.count("start") != 0 {
+	if g.runningC(id) || g.ops.count("start") != 0 {
 		t.Error("a service whose delete was interrupted had its container started")
 	}
 	if a := g.attention(g.svc); a != AttentionDeleteInterrupted {
@@ -1109,10 +1126,6 @@ func TestBootPassOfACommittedDeployResolvesItsIntentOK(t *testing.T) {
 
 // ---- fail closed ----
 
-type errQuerier struct{}
-
-func (errQuerier) QueryRowContext(context.Context, string, ...any) *sql.Row { return nil }
-
 func TestServiceVersionsKeptFailsClosed(t *testing.T) {
 	g := newRecRig(t, nil)
 	// A closed database: the read fails, and the answer is an error, never "not flagged".
@@ -1185,4 +1198,232 @@ func TestEventQueueIsBounded(t *testing.T) {
 		t.Error("take did not empty the queue")
 	}
 	_ = agent.CodeNotFound
+}
+
+// ---- review round 1 ----
+
+// Two versions never run: the stopped active container is started only after every
+// container of another deploy is gone (the kill -9 in the stop-first gap leaves the
+// candidate running), and if one cannot be removed the active container stays stopped.
+func TestActiveContainerIsNeverStartedBesideARunningCandidate(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	_, oldID := g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+	cand := g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	var overlap atomic.Int32
+	g.ops.onCall = func(op, _ string) {
+		if op == "start" && g.exists(cand) && g.runningC(cand) {
+			overlap.Add(1)
+		}
+	}
+	g.resync(true)
+	if overlap.Load() != 0 {
+		t.Fatal("the active container was started while the candidate still ran")
+	}
+	if g.exists(cand) || !g.runningC(oldID) {
+		t.Errorf("candidate exists=%v, previous running=%v", g.exists(cand), g.runningC(oldID))
+	}
+
+	// The candidate cannot be removed: nothing is started.
+	g2 := newRecRig(t, nil)
+	g2.expose(g2.svc, 9000)
+	_, old2 := g2.activeDeploy(g2.svc, 1, "10.250.0.2", false)
+	cand2 := g2.put(g2.svc, addDeploy(t, g2.st, g2.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	g2.ops.stopErrFn = func(id string) error {
+		if id == cand2 {
+			return opErr(agent.CodeDocker, "stuck")
+		}
+		return nil
+	}
+	g2.resync(true)
+	if g2.runningC(old2) || g2.ops.count("start") != 0 {
+		t.Error("the previous version was started although the candidate could not be removed")
+	}
+	// And the action refuses by itself while another version runs.
+	d, _ := g2.activeDeploy(g2.svc, 3, "10.250.0.4", false)
+	raw, _ := json.Marshal(FinishDeployIn{Service: g2.svc, Deploy: d})
+	if _, err := g2.runner.cfg.Inv.Invoke(context.Background(), ActionFinishDeploy, raw, actions.Options{}); err == nil || !strings.Contains(err.Error(), "another version") {
+		t.Errorf("finish_deploy beside a running version: %v", err)
+	}
+	// remove_container refuses the live deploy's container, whatever called it.
+	live := g2.put(g2.svc, d, 1, "10.250.0.4", true)
+	rm, _ := json.Marshal(RemoveContainerIn{Container: live, Service: g2.svc, Deploy: d, Grace: 1})
+	if _, err := g2.runner.cfg.Inv.Invoke(context.Background(), ActionRemoveContainer, rm, actions.Options{}); err == nil || !g2.exists(live) {
+		t.Errorf("remove_container removed the live deploy's container: %v", err)
+	}
+}
+
+// A versions_kept service whose candidate is slow to stop delays nothing: the other
+// apps are routed and the scheduler's start gate opens at once; the slow part runs after.
+func TestSlowVersionsKeptDoesNotDelayRoutesOrTheStartGate(t *testing.T) {
+	g := newRecRig(t, nil)
+	_, _, oldID, candID := g.stopFirstKept(AttentionVersionsKept)
+	other := g.service("other")
+	g.expose(other, 9001)
+	g.activeDeploy(other, 1, "10.250.0.9", true)
+	block := make(chan struct{})
+	g.ops.onCall = func(op, what string) {
+		if op == "stop" && strings.HasPrefix(candID, what) {
+			<-block
+		}
+	}
+	g.run()
+	defer close(block) // runs before the run's own clean-up (LIFO)
+	g.until("the start gate opened with the slow removal still pending", func() bool { return g.gates.Load() == 1 })
+	found := false
+	for _, r := range g.px.last() {
+		if r.Port == 9001 && r.Upstream == "10.250.0.9:8080" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the other app is not routed: %+v", g.px.last())
+	}
+	if !g.exists(candID) || g.runningC(oldID) {
+		t.Error("the slow settling finished early (the test did not hold it)")
+	}
+	block <- struct{}{} // let the removal go (the hook reads once per stop)
+	g.until("the previous version runs and the flag is clear", func() bool { return g.runningC(oldID) && g.attention(g.svc) == "" })
+}
+
+// A job's tracked candidate survives a full resync that could not get the service's lock.
+func TestATrackedCandidateSurvivesAFullResync(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	cand := Container{ID: strings.Repeat("c", 64), Service: g.svc, Deploy: 99, State: StateRunning, IP: "10.250.0.3"}
+	g.routes.Track(cand) // what the runner does at start; the container is not in the resync's list
+	unlock, err := g.runner.cfg.Locks.Lock(context.Background(), g.svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.resync(false)
+	if _, ok := g.routes.State().Get(cand.ID); !ok {
+		t.Error("the candidate of a running job was wiped from the state map")
+	}
+	unlock()
+	g.resync(false) // no job holds the lock now: the list is the truth
+	if _, ok := g.routes.State().Get(cand.ID); ok {
+		t.Error("an entry of a free service survived a resync that did not list it")
+	}
+}
+
+// A request for a service's resync made while the stream is down is kept and runs after
+// the reconnect (here through the scheduler's OnDone, as in the server).
+func TestAResyncRequestMadeWhileTheStreamIsDownIsKept(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.onDone = func(j jobs.Job) { g.rec.ResyncService(ServiceOfJob(j)) }
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	g.run()
+	g.waitUp()
+	g.rops.mu.Lock()
+	g.rops.openErr = errors.New("down")
+	g.rops.mu.Unlock()
+	g.rops.drop(errors.New("gone"))
+	g.until("down", func() bool { return !g.rec.Up() })
+	g.start(false)
+	_, job := g.deploy(g.svc)
+	g.wait(job)
+	g.rec.svcMu.Lock()
+	_, kept := g.rec.svcWant[g.svc]
+	g.rec.svcMu.Unlock()
+	if !kept {
+		t.Fatal("the request made while the stream was down was dropped")
+	}
+	g.rops.mu.Lock()
+	g.rops.openErr = nil
+	g.rops.mu.Unlock()
+	g.waitUp()
+	g.until("the request was taken", func() bool {
+		g.rec.svcMu.Lock()
+		defer g.rec.svcMu.Unlock()
+		return len(g.rec.svcWant) == 0
+	})
+}
+
+// The API shows ◌ unknown while the events stream is down, not a state last seen.
+func TestServiceStateIsUnknownThroughTheAPIWhileTheStreamIsDown(t *testing.T) {
+	var up atomic.Bool
+	up.Store(true)
+	g := newSvcRig(t, func(d *ServiceDeps) { d.StreamUp = up.Load })
+	g.create("p", "web", m{"container_port": 80, "public_port": 9000})
+	var svc int64
+	_ = g.st.R.QueryRow(`SELECT id FROM services WHERE name = 'web'`).Scan(&svc)
+	id := addDeploy(t, g.st, svc, 1, "succeeded", "10.250.1.2")
+	mustExec(t, g.st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, id, svc)
+	open(t, g.r, up2(svc, id))
+	if s := g.get("p/web"); s.State != "running" {
+		t.Fatalf("stream up: %q", s.State)
+	}
+	up.Store(false)
+	if s := g.get("p/web"); s.State != "unknown" {
+		t.Errorf("stream down: %q, want unknown", s.State)
+	}
+}
+
+func up2(svc, dep int64) Container {
+	return Container{ID: cid(1), Service: svc, Deploy: dep, State: StateRunning, IP: "10.250.1.2"}
+}
+
+// A service whose delete failed in this process is never restarted, even if its flag could not be written.
+func TestRule3SkipsAServiceWhoseDeleteFailedInMemory(t *testing.T) {
+	g := newRecRig(t, nil)
+	_, id := g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+	g.routes.State().MarkDeleteFailed(g.svc)
+	g.resync(true)
+	if g.runningC(id) {
+		t.Error("started a container of a service whose delete failed")
+	}
+	g.routes.State().ClearDeleteFailed(g.svc)
+	g.resync(false)
+	if !g.runningC(id) {
+		t.Error("not started once the marker was cleared")
+	}
+}
+
+// A commit that turned out to have happened corrects the audit outcome of its run.
+func TestUnknownCommitOutcomeThatCommittedCorrectsItsAuditOutcome(t *testing.T) {
+	var al *audit.Logger
+	g := newRecRig(t, func(r *recRig, c *ReconcilerConfig) {
+		var err error
+		if al, err = audit.New(r.st, nil); err != nil {
+			t.Fatal(err)
+		}
+		c.Audit = al
+	})
+	d, job := g.deploy(g.svc)
+	mustExec(t, g.st, `UPDATE jobs SET state = 'failed', request_id = 'job-1-a1' WHERE id = ?`, job)
+	mustExec(t, g.st, `UPDATE deploys SET status = 'failed', reason_code = 'commit_failed', committed_at = 'x' WHERE id = ?`, d)
+	mustExec(t, g.st, `UPDATE services SET active_deploy_id = ? WHERE id = ?`, d, g.svc)
+	id, err := al.Append(context.Background(), audit.Entry{ActorKind: "user", ActorID: "u1", Executor: "system", Action: "jobs.run_deploy", Target: "job:1", Risk: "mutate",
+		Phase: audit.PhaseIntent, Result: audit.ResultPending, ArgsJSON: `{"job":1}`, RequestID: "job-1-a1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := al.Append(context.Background(), audit.Entry{ActorKind: "user", ActorID: "u1", Executor: "system", Action: "jobs.run_deploy", Target: "job:1", Risk: "mutate",
+		Phase: audit.PhaseOutcome, IntentID: id, Result: audit.ResultError, Error: "unknown commit", ArgsJSON: `{"job":1}`, RequestID: "job-1-a1"}); err != nil {
+		t.Fatal(err)
+	}
+	g.put(g.svc, d, 1, "10.250.0.5", true)
+	g.resync(true)
+	if st, err := al.IntentStatus(context.Background(), id); err != nil || st != audit.StatusOK {
+		t.Errorf("intent status %s %v, want ok", st, err)
+	}
+	g.resync(false) // nothing more to correct
+	var n int
+	g.st.R.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE phase = 'outcome' AND intent_id = ?`, id).Scan(&n)
+	if n != 2 {
+		t.Errorf("%d outcome rows, want 2 (the error and its correction)", n)
+	}
+}
+
+// The log tail is reported kept only when a hook ran.
+func TestRemoveContainerReportsLogKeptOnlyWhenAHookKeptIt(t *testing.T) {
+	g := newRecRig(t, nil)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.3")
+	id := g.put(g.svc, d, 1, "10.250.0.3", true)
+	out, err := g.rec.removeContainer(context.Background(), RemoveContainerIn{Container: id, Service: g.svc, Deploy: d, Grace: 0})
+	if err != nil || !out.Removed || out.LogKept {
+		t.Errorf("%+v %v", out, err)
+	}
 }

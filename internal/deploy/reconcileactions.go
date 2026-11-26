@@ -50,7 +50,8 @@ func (in RemoveContainerIn) Validate() error {
 // RemoveContainerOut is the output of reconciler.remove_container.
 type RemoveContainerOut struct {
 	Removed bool `json:"removed"`
-	// LogKept is false when the deploy's log tail could not be kept (the removal goes on).
+	// LogKept is true only when the deploy's log tail was kept; false also when it was
+	// not attempted (no hook until step 11) or could not be kept (the removal goes on).
 	LogKept bool `json:"log_kept"`
 }
 
@@ -105,14 +106,20 @@ func RegisterReconcilerActions(reg *actions.Registry, rc *Reconciler) {
 // volume), and forget it. The agent refuses any container that is not this
 // install's, so a look-alike is never touched.
 func (rc *Reconciler) removeContainer(ctx context.Context, in RemoveContainerIn) (RemoveContainerOut, error) {
-	out := RemoveContainerOut{LogKept: true}
+	var out RemoveContainerOut
+	// The deploy must not be the service's live one, whatever called this.
+	var active sql.NullInt64
+	if err := rc.cfg.DB.R.QueryRowContext(ctx, `SELECT active_deploy_id FROM services WHERE id = ?`, in.Service).Scan(&active); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return out, errors.New("the service could not be read")
+	}
+	if active.Valid && active.Int64 == in.Deploy {
+		return out, errors.New("the container belongs to the service's live deploy")
+	}
 	if rc.cfg.KeepLog != nil {
 		var exists bool
 		if err := rc.cfg.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM deploys WHERE id = ?)`, in.Deploy).Scan(&exists); err == nil && exists {
 			kctx, cancel := context.WithTimeout(ctx, recordBound)
-			if err := rc.cfg.KeepLog(kctx, in.Deploy, in.Container); err != nil {
-				out.LogKept = false
-			}
+			out.LogKept = rc.cfg.KeepLog(kctx, in.Deploy, in.Container) == nil
 			cancel()
 		}
 	}
@@ -156,8 +163,10 @@ func (rc *Reconciler) finishDeploy(ctx context.Context, in FinishDeployIn) (Fini
 		return out, fmt.Errorf("listing containers: %s", opText(err, "Docker did not answer"))
 	}
 	svc, dep := strconv.FormatInt(in.Service, 10), strconv.FormatInt(in.Deploy, 10)
+	type cand struct{ id string }
+	var toStart []cand
 	for _, c := range list.Containers {
-		if c.Unowned || c.Labels.Service != svc || c.Labels.Deploy != dep {
+		if c.Unowned || c.Labels.Service != svc {
 			continue
 		}
 		st, err := rc.cfg.Ops.ContainerInspect(ctx, c.ID)
@@ -167,11 +176,23 @@ func (rc *Reconciler) finishDeploy(ctx context.Context, in FinishDeployIn) (Fini
 		if err != nil {
 			return out, fmt.Errorf("inspecting a container: %s", opText(err, "Docker did not answer"))
 		}
-		if !st.Owned || st.Running || st.Restarting {
+		if !st.Owned {
 			continue
 		}
+		if c.Labels.Deploy != dep {
+			if st.Running || st.Restarting {
+				// Two versions must never run: refuse, whatever flag or caller said so.
+				return out, errors.New("another version of the service is running")
+			}
+			continue
+		}
+		if !st.Running && !st.Restarting {
+			toStart = append(toStart, cand{c.ID})
+		}
+	}
+	for _, c := range toStart {
 		sctx, cancel := context.WithTimeout(ctx, RemoveBound)
-		err = rc.cfg.Ops.ContainerStart(sctx, c.ID)
+		err = rc.cfg.Ops.ContainerStart(sctx, c.id)
 		cancel()
 		if err != nil {
 			return out, fmt.Errorf("the container could not be started: %s", opText(err, "Docker did not answer"))

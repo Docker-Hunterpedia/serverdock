@@ -467,6 +467,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// the reconciler opens it after its first resync (plan 0004 step 10).
 	// runner and rec are set below, before the scheduler runs; a finished job asks the
 	// reconciler for the per-service resync of its service.
+	processStart := time.Now()
 	jobStore := jobs.NewStore(st, nil)
 	var runner *deploy.Runner
 	var rec *deploy.Reconciler
@@ -502,7 +503,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword, Jobs: sched})
 	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
 		DB: st, Routes: routes, Boot: booter.Run, NoProxy: !cfg.Proxy, Policy: cfg.policyOptions(), ReservedPorts: reserved,
-		Exposure: opsClient, Jobs: sched, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
+		Exposure: opsClient, Jobs: sched, StreamUp: func() bool { return rec.Up() }, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
 	})
 	// The one-time system invoker belongs to the deploy runner: it runs each job as
 	// the actor that queued it (never as the system).
@@ -511,7 +512,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	inv := reg.SystemInvoker()
 	locks := &deploy.ServiceLocks{}
 	rec = deploy.NewReconciler(deploy.ReconcilerConfig{DB: st, Ops: opsClient, Routes: routes, Locks: locks, Act: inv, Proxy: cfg.Proxy,
-		OpenGate: sched.OpenGate, PanelUp: panelUp, Log: log})
+		OpenGate: sched.OpenGate, PanelUp: panelUp, Since: processStart, Audit: auditLog, Log: log})
 	deploy.RegisterReconcilerActions(reg, rec)
 	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: inv, Refresh: authStore, Locks: locks, Log: log,
 		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Routes: routes, Stopping: sched.Stopping, Net: booter, AppNet: appNet,

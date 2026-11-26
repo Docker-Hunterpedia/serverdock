@@ -171,6 +171,7 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 	}
 	ctx = context.WithoutCancel(ctx)
 	fail := func(msg string) (RunDeleteOut, error) {
+		r.cfg.Tracker.State().MarkDeleteFailed(p.Service) // also in memory, in case the flag cannot be written
 		r.setAttention(p.Service, AttentionDeleteInterrupted)
 		// The "not running" override of step 0 must not outlive a failed delete: the
 		// service's rows and its active deploy's address are still held, so the routes
@@ -267,6 +268,7 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 			r.cfg.Log.Warn("the proxy did not confirm the routes after a service delete", "service", p.Service, "err", err.Error())
 		}
 	}
+	r.cfg.Tracker.State().ClearDeleteFailed(p.Service)
 	out.Status = "deleted"
 	return out, nil
 }

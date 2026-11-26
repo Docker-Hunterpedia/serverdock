@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -59,7 +60,7 @@ var blueGreenKillStages = []killStage{
 
 var stopFirstKillStages = []killStage{
 	{"pull:before", false}, {"check:before", false}, {"maintenance:before", false}, {"stop_old_first:before", false}, {"start:before", false},
-	{"health:before", false}, {"switch:before", false}, {"commit:before", false}, {"commit:after", true}, {"stop_old:before", true},
+	{"start:after", false}, {"health:before", false}, {"switch:before", false}, {"commit:before", false}, {"commit:after", true}, {"stop_old:before", true},
 }
 
 func TestKillNineBlueGreen(t *testing.T) { runKillSuite(t, "blue_green", blueGreenKillStages) }
@@ -170,6 +171,10 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 	if _, err := p2.Wait(10 * time.Second); err != nil {
 		t.Fatal(err)
 	}
+	var twoVersions func() []string
+	if strategy == "stop_first" {
+		twoVersions = k.watchTwoVersions()
+	}
 	p3 := k.server()
 	got := k.answer(120 * time.Second)
 	outage := time.Since(killedAt)
@@ -205,10 +210,52 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 		}
 		k.waitFor("app_safe raised to yes", 30*time.Second, func() bool { return k.appSafe(2) == "yes" })
 	}
+	if twoVersions != nil {
+		if seen := twoVersions(); len(seen) > 0 {
+			t.Errorf("two versions of a stop-first service ran at the same time: %v", seen)
+		}
+	}
 	if n := k.jobState(2); n != map[bool]string{true: "succeeded", false: "failed"}[st.committed] {
 		t.Errorf("deploy B's job is %s", n)
 	}
 	k.checkAudit()
+}
+
+// watchTwoVersions samples docker ps from now until the returned function is called
+// (it then returns what it saw): a stop-first service must never have containers of two
+// deploys running at once, not even for a moment while the restarted server settles.
+func (k *killRig) watchTwoVersions() func() []string {
+	stop := make(chan struct{})
+	done := make(chan []string, 1)
+	go func() {
+		var seen []string
+		for {
+			select {
+			case <-stop:
+				done <- seen
+				return
+			default:
+			}
+			out := k.docker("ps", "--filter", "label=serverdock.instance="+k.instance, "--filter", "status=running", "--format", `{{.ID}} {{.Label "serverdock.deploy"}}`)
+			deploys := map[string]bool{}
+			for _, l := range strings.Split(out, "\n") {
+				if f := strings.Fields(l); len(f) == 2 {
+					deploys[f[1]] = true
+				}
+			}
+			if len(deploys) > 1 {
+				seen = append(seen, strings.ReplaceAll(out, "\n", "; "))
+			}
+		}
+	}()
+	var once sync.Once
+	var res []string
+	end := func() []string {
+		once.Do(func() { close(stop); res = <-done })
+		return res
+	}
+	k.t.Cleanup(func() { end() })
+	return end
 }
 
 // ---- seeding and reading ----

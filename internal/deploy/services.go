@@ -49,6 +49,10 @@ type ServiceDeps struct {
 	// Sync): the actions call it before applying a route so that a Docker that was
 	// down at start does not leave every later change "not applied". Nil in tests.
 	Boot func(ctx context.Context) error
+	// StreamUp reports whether the reconciler's events stream is open and resynced
+	// (Reconciler.Up); while it is not, no service state is known (◌ unknown). Nil in
+	// tests that have no reconciler: the stream is then taken as up.
+	StreamUp func() bool
 	// NoProxy is true under --proxy=false: there is no embedded proxy to serve an
 	// app, so setting a public port is refused with a clear message instead of
 	// being saved and never applied.
@@ -644,7 +648,7 @@ func (d *svcDeps) state(r svcRow) string {
 	if !r.activeDeploy.Valid {
 		return "not_deployed"
 	}
-	if !d.Routes.Ready() || d.Routes.State().Unknown(r.id) {
+	if !d.Routes.Ready() || d.Routes.State().Unknown(r.id) || (d.StreamUp != nil && !d.StreamUp()) {
 		return "unknown"
 	}
 	seen := false

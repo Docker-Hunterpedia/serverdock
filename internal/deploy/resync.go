@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sort"
 	"strconv"
 	"time"
@@ -24,26 +23,28 @@ import (
 // TryLock, and a busy service is skipped (the per-service resync after its job
 // covers it).
 //
-// For each service whose lock it got (settle, before the routes are applied):
+// Per pass, in this order:
 //
+//	settle (fast, under the service's TryLock, before the routes are applied):
 //	 0. the service's in-memory override is dropped (no job is using it);
 //	 1. an active deploy marked failed whose commit unknown-outcome in fact
-//	    committed is finished (succeeded), and its versions_kept flag cleared;
-//	 2. versions_kept is settled (stop-first kept two versions): the kept candidate
-//	    is removed only after a confirmed apply that does not reference it, then the
-//	    previous version is started and health-gated, then the flag is cleared;
-//	 3. a stopped active container is started again (rule 3 of the plan), unless the
-//	    service is flagged delete_interrupted; previous_version_down and versions_kept
-//	    are cleared when it comes back up;
-//	 4. the app_safe of the service's newest failed deploy is raised to yes when the
-//	    old version is seen running.
+//	    committed is finished (succeeded), its flags cleared, and its audit
+//	    outcome corrected;
+//	 2. the app_safe of the service's newest failed deploy is raised to yes when
+//	    the old version is seen running.
+//	apply: the state map is loaded (keeping the entries of every service whose lock
+//	    was not got) and the routes applied (rule 4).
+//	finish (slow, under the TryLock again, only after that apply succeeded):
+//	 3. every container of another deploy than the active one (an orphan, a kept
+//	    candidate, the candidate of an interrupted deploy) is removed (rule 2), and
+//	    ONLY when none is left a stopped active container is started (rule 3), so two
+//	    versions never run; previous_version_down and versions_kept are cleared when it
+//	    runs, and previous_version_down is set when it does not come up (or is gone).
 //
-// Then, once, the state map is loaded and the routes applied (rule 4), and only after
-// that apply has succeeded does the sweep remove the orphans (rule 2: every container
-// of this install whose service does not exist or whose deploy is not the service's
-// active one). Routing first means an orphan's stop grace never extends an outage, and
-// the apply that precedes a removal never names the container. A pass that changes
-// nothing runs no action, so it writes no audit row.
+// Routing first means no slow step (a stop grace, a start) delays any app or the
+// scheduler's start gate, and a removal always follows a confirmed apply that never
+// names the container. There is no health gate here: events keep the state honest
+// after the start. A pass that changes nothing runs no action, so it writes no audit row.
 
 // rcItem is one container of this install as the resync saw it.
 type rcItem struct {
@@ -78,8 +79,11 @@ type pass struct {
 	items []*rcItem
 	svcs  map[int64]*rsvc
 	// applied: the routes of this pass were applied (or there is no proxy), so the
-	// sweep may remove orphans.
+	// finish half may remove and start containers.
 	applied bool
+	// skipped: services whose lock was not got (a job holds it) or that have a job
+	// running in the database: their state-map entries are kept as they are.
+	skipped map[int64]bool
 }
 
 func (rc *Reconciler) collect(ctx context.Context, only int64) ([]*rcItem, error) {
@@ -153,17 +157,18 @@ func (rc *Reconciler) loadServices(ctx context.Context, only int64) (map[int64]*
 // loaded and the routes applied. first is true only for the first one after a start
 // (the only one that retries failed ports; the decision for later resyncs is
 // recorded in Revision 16: no retry, so a taken port cannot make every resync
-// reload Caddy).
-func (rc *Reconciler) fullResync(ctx context.Context, first bool) error {
+// reload Caddy). applied reports whether the routes were applied (nothing is removed
+// or started otherwise).
+func (rc *Reconciler) fullResync(ctx context.Context, first bool, onApplied func()) (applied bool, err error) {
 	items, err := rc.collect(ctx, 0)
 	if err != nil {
-		return err
+		return false, err
 	}
 	svcs, err := rc.loadServices(ctx, 0)
 	if err != nil {
-		return fmt.Errorf("reading the services: %w", err)
+		return false, fmt.Errorf("reading the services: %w", err)
 	}
-	p := &pass{rc: rc, ctx: ctx, first: first, items: items, svcs: svcs}
+	p := &pass{rc: rc, ctx: ctx, first: first, items: items, svcs: svcs, skipped: map[int64]bool{}}
 	seen := map[int64]bool{}
 	var ids []int64
 	for id := range svcs {
@@ -179,41 +184,62 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool) error {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 		p.settle(id)
 	}
-	// Rule 4: the state map is loaded and the routes applied BEFORE any orphan is
-	// removed, so the apps are routed as soon as their containers run (an orphan's
-	// stop grace never extends an outage), and a removal always follows a confirmed apply.
+	// Rule 4: the state map is loaded and the routes applied BEFORE any slow step. The
+	// services whose lock was not got keep their entries: the list was taken before a job
+	// (which holds the lock) may have tracked its candidate.
 	all := p.containers(0)
 	if rc.cfg.Proxy {
-		err = rc.cfg.Routes.Load(ctx, all, first)
+		err = rc.cfg.Routes.Load(ctx, all, first, p.skipped)
 	} else {
-		rc.cfg.Routes.LoadStateOnly(all)
+		rc.cfg.Routes.LoadStateOnly(all, p.skipped)
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	// The state is known (and the gate open) whether or not the apply worked: the
+	// resync counts as done for the scheduler's start gate, and the slow half below
+	// never delays it.
+	if onApplied != nil {
+		onApplied()
 	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// The state is known and the gate is open; the routes are marked stale and
-		// the next apply sends again. Nothing is removed on this pass.
-		rc.cfg.Log.Warn("the app routes could not be applied after the resync; no orphan is removed yet", "err", err.Error())
-	} else {
-		p.applied = true
+		// The routes are marked stale and the session ends right after, so the back-off
+		// retries. Nothing is removed or started on this pass.
+		rc.cfg.Log.Warn("the app routes could not be applied after the resync; nothing is removed or started yet", "err", err.Error())
+		return false, nil
+	}
+	p.applied = true
+	// What happened during the list and the rules is looked at before anything is removed.
+	overflow, derr := rc.drainIDs(ctx)
+	if derr != nil {
+		return false, derr
+	}
+	if overflow {
+		rc.q.markOverflow() // the next drain is a full resync
+		return false, nil
 	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return false, ctx.Err()
 		}
-		p.sweep(id)
+		p.finish(id)
 	}
-	// The sweep removed containers: the map must not keep them.
-	return nil
+	return true, nil
 }
 
-// serviceResync is the resync of one service after a job for it finished.
+// serviceResync is the resync of one service after a job for it finished. The lock is
+// held from the list to the end (service lock, then the route lock inside the apply:
+// the allowed order), so a job cannot start between the list and the state it replaces.
 func (rc *Reconciler) serviceResync(ctx context.Context, service int64) error {
+	unlock, ok := rc.cfg.Locks.TryLock(service)
+	if !ok {
+		return nil // another job holds it: that job's own resync follows
+	}
+	defer unlock()
 	items, err := rc.collect(ctx, service)
 	if err != nil {
 		return err
@@ -222,8 +248,8 @@ func (rc *Reconciler) serviceResync(ctx context.Context, service int64) error {
 	if err != nil {
 		return fmt.Errorf("reading the service: %w", err)
 	}
-	p := &pass{rc: rc, ctx: ctx, items: items, svcs: svcs}
-	p.settle(service)
+	p := &pass{rc: rc, ctx: ctx, items: items, svcs: svcs, skipped: map[int64]bool{}}
+	p.settleLocked(service)
 	cs := p.containers(service)
 	if rc.cfg.Proxy {
 		err := rc.cfg.Routes.ReplaceService(ctx, service, cs)
@@ -233,13 +259,20 @@ func (rc *Reconciler) serviceResync(ctx context.Context, service int64) error {
 		case ctx.Err() != nil:
 			return ctx.Err()
 		default:
-			rc.cfg.Log.Warn("the app routes could not be applied after a service resync; no orphan is removed yet", "service", service, "err", err.Error())
+			rc.cfg.Log.Warn("the app routes could not be applied after a service resync; nothing is removed or started yet", "service", service, "err", err.Error())
 		}
 	} else {
 		rc.cfg.Routes.ReplaceServiceStateOnly(service, cs)
 		p.applied = true
 	}
-	p.sweep(service)
+	if !p.applied {
+		return nil
+	}
+	sv := p.svcs[service]
+	if sv == nil {
+		sv = &rsvc{id: service, graceS: 10}
+	}
+	p.finishLocked(sv)
 	return nil
 }
 
@@ -263,49 +296,47 @@ func (p *pass) itemsOf(service int64) []*rcItem {
 	return out
 }
 
-// settle is the first half of the rules for one service, run before the routes are
-// applied (so a service that needs its container started is routed to it, and an
-// orphan's stop grace never delays the apps): the override is dropped, a committed
-// deploy marked failed is finished, versions_kept is settled, a stopped active
-// container is started and app_safe raised. It runs only if the service's lock is free.
+// settle is the fast first half for one service, if its lock is free.
 func (p *pass) settle(id int64) {
-	rc := p.rc
-	unlock, ok := rc.cfg.Locks.TryLock(id)
+	unlock, ok := p.rc.cfg.Locks.TryLock(id)
 	if !ok {
-		rc.cfg.Log.Debug("a job holds the service's lock; its own resync covers it", "service", id)
+		p.skipped[id] = true
+		p.rc.cfg.Log.Debug("a job holds the service's lock; its own resync covers it", "service", id)
 		return
 	}
 	defer unlock()
+	p.settleLocked(id)
+}
+
+// settleLocked: the caller holds the service's lock.
+func (p *pass) settleLocked(id int64) {
+	rc := p.rc
 	sv := p.svcs[id]
 	if sv == nil {
-		return // the service is gone: only the sweep has something to do
+		return // the service is gone: only the finish half has something to do
 	}
-	mine := p.itemsOf(id)
 	rc.cfg.Routes.DropOverride(id) // nothing uses it while we hold the lock
 	busy, err := p.runningJob(id)
 	if err != nil {
+		p.skipped[id] = true
 		rc.cfg.Log.Warn("the service's running job could not be read; nothing is changed for it", "service", id, "err", err.Error())
 		return
 	}
 	if busy.running {
-		return // picked, lock not taken yet: the job's own resync follows
+		p.skipped[id] = true // picked, lock not taken yet: the job's own resync follows
+		return
 	}
 	p.fixCommitted(sv)
-	if sv.attention == AttentionVersionsKept {
-		p.settleKept(sv, mine)
-	} else {
-		p.startStopped(sv, mine)
-	}
-	p.raiseAppSafe(sv, mine)
+	p.raiseAppSafe(sv, p.itemsOf(id))
 }
 
-// sweep is the second half, run after the routes were applied (rule 2 of the plan:
-// the orphans): a container of this install whose service is gone, or whose deploy is
-// not the service's active one, is removed. It needs the apply that came before it to
-// have succeeded (applied): that apply never names such a container, so once the proxy
-// holds it no route can reach it and its address may be handed out again. The service
-// is read again, because a job may have run between the two halves.
-func (p *pass) sweep(id int64) {
+// finish is the slow second half, run after the routes were applied: containers of
+// other deploys are removed, then a stopped active container is started. The apply
+// that came before it never names a container of another deploy, so once the proxy
+// holds it no route can reach one (the proxy is the in-process Caddy: a restart of
+// ServerDock restarts it too, so nothing stale survives a boot). The service is read
+// again, because a job may have run between the two halves.
+func (p *pass) finish(id int64) {
 	rc := p.rc
 	if !p.applied {
 		return
@@ -317,25 +348,37 @@ func (p *pass) sweep(id int64) {
 	defer unlock()
 	fresh, err := rc.loadServices(p.ctx, id)
 	if err != nil {
-		rc.cfg.Log.Warn("a service could not be read; its orphans stay for the next resync", "service", id, "err", err.Error())
+		rc.cfg.Log.Warn("a service could not be read; nothing is removed or started for it", "service", id, "err", err.Error())
 		return
 	}
 	sv := fresh[id]
 	if sv == nil {
 		sv = &rsvc{id: id, graceS: 10} // the service is gone: its containers are orphans
 	}
-	busy, err := p.runningJob(id)
+	p.finishLocked(sv)
+}
+
+func (p *pass) finishLocked(sv *rsvc) {
+	rc := p.rc
+	mine := p.itemsOf(sv.id)
+	busy, err := p.runningJob(sv.id)
 	if err != nil {
-		rc.cfg.Log.Warn("the service's running job could not be read; nothing is removed for it", "service", id, "err", err.Error())
+		rc.cfg.Log.Warn("the service's running job could not be read; nothing is changed for it", "service", sv.id, "err", err.Error())
 		return
 	}
 	if busy.running {
 		// A job is running in the database although its lock was free (it was picked
-		// and has not taken the lock yet): only older attempts are orphans.
-		p.orphans(sv, p.itemsOf(id), &busy)
+		// and has not taken the lock yet): only older attempts are orphans, and nothing is started.
+		p.orphans(sv, mine, &busy)
 		return
 	}
-	p.orphans(sv, p.itemsOf(id), nil)
+	if !p.orphans(sv, mine, nil) {
+		return // another version may still run: the active container is not started
+	}
+	if sv.exists {
+		p.startStopped(sv, mine)
+		p.raiseAppSafe(sv, mine) // the container may have been started just now
+	}
 }
 
 type runningJob struct {
@@ -363,13 +406,15 @@ func (p *pass) runningJob(service int64) (runningJob, error) {
 // fixCommitted: the commit is the point of no return. A deploy whose commit
 // outcome could not be read ended "failed" (both versions kept), and if its commit
 // in fact happened it is the service's active deploy with committed_at set. It is
-// finished here (succeeded), and the flags the failure left are cleared; the
-// previous version is then an orphan like any other.
+// finished here (succeeded), the flags the failure left are cleared, and the audit
+// outcome of its run (left at "error") gets a later "ok" outcome; the previous
+// version is then an orphan like any other.
 func (p *pass) fixCommitted(sv *rsvc) {
 	if sv.active < 1 || sv.activeStatus != StatusFailed || !sv.activeCommitted {
 		return
 	}
 	ctx := p.ctx
+	changed := false
 	err := p.rc.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE deploys SET status = 'succeeded', stage = ?, reason_code = 'warning',
 			reason = 'the commit was recorded although ServerDock could not read it back at the time; ServerDock confirmed it afterwards',
@@ -380,6 +425,7 @@ func (p *pass) fixCommitted(sv *rsvc) {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
 		}
+		changed = true
 		_, err = tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention IN (?, ?)`, sv.id, AttentionPreviousDown, AttentionVersionsKept)
 		return err
 	})
@@ -391,32 +437,20 @@ func (p *pass) fixCommitted(sv *rsvc) {
 	if sv.attention == AttentionVersionsKept || sv.attention == AttentionPreviousDown {
 		sv.attention = ""
 	}
+	if changed && p.rc.cfg.Audit != nil {
+		correctIntent(ctx, p.rc.cfg.DB, p.rc.cfg.Audit, p.rc.cfg.Log, sv.active)
+	}
 	p.rc.cfg.Log.Info("a deploy reported as failed had in fact committed; it is now succeeded", "deploy", sv.active)
 }
 
-// ---- rule 2 of the plan: orphans ----
+// ---- rule 2 of the plan: containers of other deploys ----
 
-// routesConfirmed is the precondition of settleKept's removal of the kept candidate,
-// which happens before the pass's own apply: an apply of the list the database and
-// the state map say must have succeeded. That list never names a container of a deploy that is not the
-// service's active one (the overrides were dropped), so once the proxy holds it no
-// route can reach the container, and its address can be handed out again. Before the
-// boot gate opens nothing was ever applied by this process, so there is nothing to
-// confirm.
-func (p *pass) routesConfirmed() bool {
-	rc := p.rc
-	if !rc.cfg.Proxy || !rc.cfg.Routes.Ready() {
-		return true
-	}
-	err := rc.cfg.Routes.RefreshNoRetry(p.ctx)
-	if err == nil || errors.Is(err, ErrRoutesNotReady) {
-		return true
-	}
-	p.rc.cfg.Log.Warn("the proxy did not confirm the routes, so no container is removed yet", "err", err.Error())
-	return false
-}
-
-func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) {
+// orphans removes every container of the service that is not of its active deploy
+// (every one when the service is gone), except the current attempt of a running job's
+// deploy. It reports whether none of another deploy is left (so starting the active
+// container cannot run two versions).
+func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) bool {
+	clean := true
 	for _, it := range mine {
 		if it.gone || (sv.exists && it.deploy == sv.active) {
 			continue
@@ -424,11 +458,11 @@ func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) {
 		if running != nil && it.deploy == running.deploy && it.attempt >= running.attempt {
 			continue // the current attempt of the deploy whose job is running
 		}
-		if sv.attention == AttentionVersionsKept {
-			continue // settleKept removes it (after its own confirmation), or it stays
+		if !p.remove(sv, it) {
+			clean = false
 		}
-		p.remove(sv, it)
 	}
+	return clean
 }
 
 // remove runs reconciler.remove_container for it; true when the container is gone.
@@ -457,11 +491,14 @@ func (p *pass) noteErr(service int64, err error) {
 // ---- rule 3 of the plan: a stopped active container ----
 
 // startStopped starts the active deploy's container when it exists and none of its
-// containers runs (a crash during stop-first, a Docker restart, a manual stop).
-// A service flagged delete_interrupted is left alone: its delete is finishing.
+// containers runs (a crash during stop-first, a Docker restart, a manual stop), once
+// no other version is left. A service flagged delete_interrupted, or whose delete
+// failed in memory, is left alone: its delete is finishing. The flags
+// previous_version_down and versions_kept are cleared when it runs, and
+// previous_version_down is set when it does not come up (or is gone) after versions_kept.
 func (p *pass) startStopped(sv *rsvc, mine []*rcItem) {
-	if sv.active < 1 || sv.attention == AttentionDeleteInterrupted || sv.attention == AttentionVersionsKept {
-		return // (a service still flagged versions_kept was not settled: never start the previous version beside the candidate)
+	if sv.active < 1 || sv.attention == AttentionDeleteInterrupted || p.rc.cfg.Routes.State().DeleteFailed(sv.id) {
+		return
 	}
 	var act []*rcItem
 	for _, it := range mine {
@@ -469,32 +506,58 @@ func (p *pass) startStopped(sv *rsvc, mine []*rcItem) {
 			act = append(act, it)
 		}
 	}
+	flagged := sv.attention == AttentionPreviousDown || sv.attention == AttentionVersionsKept
 	if len(act) == 0 {
+		if sv.attention == AttentionVersionsKept {
+			p.setAttention(sv, AttentionPreviousDown) // the previous version's container is gone too
+		}
 		return
 	}
-	for _, it := range act {
-		if it.c.State == StateRunning || it.c.State == StateRestarting || it.c.State == "paused" {
-			p.rc.cfg.Routes.State().ClearUnknown(sv.id)
-			return
+	p.refresh(act) // a fresh look: nothing is invoked (and nothing audited) when there is nothing to start
+	up := func() bool {
+		for _, it := range act {
+			if !it.gone && (it.c.State == StateRunning || it.c.State == StateRestarting || it.c.State == "paused") {
+				return true
+			}
 		}
+		return false
 	}
-	if !p.finish(sv) {
+	if up() {
+		p.rc.cfg.Routes.State().ClearUnknown(sv.id)
+		if flagged {
+			p.setAttention(sv, "") // it is up and nothing else runs: the flag is stale
+		}
+		return
+	}
+	if !p.start(sv) {
+		if sv.attention == AttentionVersionsKept {
+			p.setAttention(sv, AttentionPreviousDown)
+		}
 		return
 	}
 	p.refresh(act)
-	for _, it := range act {
-		if !it.gone && (it.c.State == StateRunning || it.c.State == StateRestarting) {
-			// It is up again: a flag that said the previous version was down is stale.
-			if sv.attention == AttentionPreviousDown || sv.attention == AttentionVersionsKept {
-				p.setAttention(sv, "")
-			}
-			return
+	if up() {
+		if flagged {
+			p.setAttention(sv, "")
 		}
+		for _, it := range act {
+			if !it.gone {
+				p.rc.routeAfterStart(p.ctx, it.c) // the route follows at once; events keep it right after that
+			}
+		}
+		return
+	}
+	if sv.attention == AttentionVersionsKept {
+		p.setAttention(sv, AttentionPreviousDown)
 	}
 }
 
-// finish runs reconciler.finish_deploy for the service's active deploy.
-func (p *pass) finish(sv *rsvc) bool {
+func (rc *Reconciler) routeAfterStart(ctx context.Context, c Container) {
+	rc.routeErr(rc.cfg.Routes.SetContainer(ctx, c))
+}
+
+// start runs reconciler.finish_deploy for the service's active deploy.
+func (p *pass) start(sv *rsvc) bool {
 	raw, _ := json.Marshal(FinishDeployIn{Service: sv.id, Deploy: sv.active})
 	if _, err := p.rc.cfg.Act.Invoke(p.ctx, ActionFinishDeploy, raw, actions.Options{}); err != nil {
 		p.noteErr(sv.id, err)
@@ -543,164 +606,11 @@ func (p *pass) setAttention(sv *rsvc, code string) {
 	sv.attention = code
 }
 
-// ---- Revision 15: versions_kept ----
-
-// settleKept settles a service flagged versions_kept (a stop-first deploy ended with
-// its candidate kept next to the stopped previous version). Only after an apply that
-// confirms the proxy holds a list that does not name the candidate is the candidate
-// removed; then the previous version is started and health-gated, and the flag is
-// cleared. If the commit did happen, fixCommitted has already cleared the flag and
-// the candidate is the active deploy (and is kept).
-func (p *pass) settleKept(sv *rsvc, mine []*rcItem) {
-	var cands, olds []*rcItem
-	for _, it := range mine {
-		if it.gone {
-			continue
-		}
-		if it.deploy == sv.active {
-			olds = append(olds, it)
-		} else {
-			cands = append(cands, it)
-		}
-	}
-	if len(cands) > 0 {
-		if !p.routesConfirmed() {
-			return // still flagged: the next resync tries again
-		}
-		for _, it := range cands {
-			if !p.remove(sv, it) {
-				return
-			}
-		}
-	}
-	if len(olds) == 0 {
-		// The previous version's container is gone as well: nothing to start. The
-		// service shows "needs attention" until a deploy commits.
-		p.setAttention(sv, AttentionPreviousDown)
-		return
-	}
-	anyUp := false
-	for _, it := range olds {
-		if it.c.State == StateRunning || it.c.State == StateRestarting {
-			anyUp = true
-		}
-	}
-	if !anyUp {
-		if !p.finish(sv) {
-			return
-		}
-		p.refresh(olds)
-	}
-	reason, unverified := p.gate(sv, olds)
-	switch {
-	case unverified:
-		return // stopping: neither proven nor failed; the flag stays and the next start tries again
-	case reason != "":
-		p.rc.cfg.Log.Warn("the previous version came back but is not healthy", "service", sv.id, "reason", reason)
-		p.setAttention(sv, AttentionPreviousDown)
-	default:
-		p.setAttention(sv, "")
-	}
-}
-
-// gate is the health gate of the previous version's containers: every check
-// inspects them (an exit, a crash loop or an OOM kill fails it at once) and probes
-// the app, until health.passes in a row pass or health_timeout_s runs out. It
-// returns why the version is not healthy ("" if it is); unverified is true when the
-// process is stopping before the gate could finish.
-func (p *pass) gate(sv *rsvc, olds []*rcItem) (reason string, unverified bool) {
-	rc := p.rc
-	h := SnapHealth{Kind: "running", TimeoutS: 30, Passes: 1}
-	port := 0
-	if sv.snapOK {
-		h, port = sv.snap.Health, sv.snap.ContainerPort
-	}
-	if h.TimeoutS < 1 {
-		h.TimeoutS = 30
-	}
-	if h.Passes < 1 {
-		h.Passes = 1
-	}
-	hctx, cancel := context.WithTimeout(p.ctx, time.Duration(h.TimeoutS)*time.Second)
-	defer cancel()
-	ip := sv.activeIP
-	if ip == "" {
-		ip = olds[0].c.IP
-	}
-	target := net.JoinHostPort(ip, strconv.Itoa(port))
-	passes, lastErr := 0, ""
-	for {
-		running := true
-		for _, it := range olds {
-			st, err := rc.cfg.Ops.ContainerInspect(hctx, it.listed.ID)
-			if err != nil {
-				if hctx.Err() == nil && agentops.IsCode(err, agent.CodeNotFound) {
-					return "its container disappeared", false
-				}
-				lastErr, running = "Docker did not answer the inspect", false
-				continue
-			}
-			switch {
-			case st.OOMKilled:
-				return "it was killed for using too much memory", false
-			case st.Restarting:
-				return fmt.Sprintf("it keeps crashing (it restarted after exit code %d)", st.ExitCode), false
-			case !st.Running:
-				return fmt.Sprintf("it exited with code %d", st.ExitCode), false
-			}
-			if c, ok := ContainerFromInspect(st); ok {
-				it.c = c
-			}
-		}
-		ok := false
-		if running {
-			if h.Kind == "running" || port == 0 {
-				ok = true
-			} else {
-				kind := agentops.KindTCP
-				if h.Kind == "http" {
-					kind = agentops.KindHTTP
-				}
-				res, err := rc.cfg.Ops.HealthCheck(hctx, agentops.HealthArgs{Target: target, Kind: kind, Path: h.Path, TimeoutMS: agentops.MaxHealthMS})
-				switch {
-				case err != nil:
-					lastErr = "the check could not run"
-				case !res.OK && res.Status != 0:
-					lastErr = fmt.Sprintf("the app answered HTTP %d", res.Status)
-				case !res.OK:
-					lastErr = res.Err
-				default:
-					ok = true
-				}
-			}
-		}
-		if ok {
-			if passes++; passes >= h.Passes {
-				return "", false
-			}
-		} else {
-			passes = 0
-		}
-		c, stop := rc.cfg.NewTimer(rc.cfg.HealthInterval)
-		select {
-		case <-hctx.Done():
-			stop()
-			if p.ctx.Err() != nil {
-				return "", true
-			}
-			msg := fmt.Sprintf("it was not healthy within %d seconds", h.TimeoutS)
-			if lastErr != "" {
-				msg += " (" + lastErr + ")"
-			}
-			return agent.CleanText(msg, 300), false
-		case <-c:
-		}
-	}
-}
-
-// raiseAppSafe: the newest deploy of the service ended failed with app_safe
-// unknown (the boot pass or the queue's backstop could not see the old version);
-// now that the old version is seen running, it says yes.
+// raiseAppSafe: the newest deploy of the service ended failed with app_safe unknown
+// (the boot pass or the queue's backstop could not see the old version); now that the
+// old version is seen running, it says yes. Only a deploy that ended since this
+// process started (the boot pass's, or a job's since) is raised (ReconcilerConfig.Since):
+// a deploy that failed long ago must not claim afterwards that the app stayed up.
 func (p *pass) raiseAppSafe(sv *rsvc, mine []*rcItem) {
 	if sv.active < 1 {
 		return
@@ -715,14 +625,19 @@ func (p *pass) raiseAppSafe(sv *rsvc, mine []*rcItem) {
 		return
 	}
 	ctx := p.ctx
-	const where = `id = (SELECT MAX(id) FROM deploys WHERE service_id = ?)
+	where := `id = (SELECT MAX(id) FROM deploys WHERE service_id = ?) AND id > ?
 		AND status = 'failed' AND committed_at IS NULL AND app_safe = 'unknown' AND reason_code IN ('interrupted', 'job_failed')`
+	args := []any{sv.id, sv.active}
+	if !p.rc.cfg.Since.IsZero() {
+		where += ` AND finished_at >= ?`
+		args = append(args, jobs.FormatTime(p.rc.cfg.Since))
+	}
 	var one int
-	if err := p.rc.cfg.DB.R.QueryRowContext(ctx, `SELECT 1 FROM deploys WHERE `+where, sv.id).Scan(&one); err != nil {
+	if err := p.rc.cfg.DB.R.QueryRowContext(ctx, `SELECT 1 FROM deploys WHERE `+where, args...).Scan(&one); err != nil {
 		return // nothing to raise (or unreadable: the next pass looks again)
 	}
 	err := p.rc.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE deploys SET app_safe = 'yes' WHERE `+where, sv.id)
+		_, err := tx.ExecContext(ctx, `UPDATE deploys SET app_safe = 'yes' WHERE `+where, args...)
 		return err
 	})
 	if err != nil {

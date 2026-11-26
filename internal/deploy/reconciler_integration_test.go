@@ -23,8 +23,7 @@ import (
 // ops and its events op over a hub session, the real embedded Caddy through Routes).
 func (x *itRunner) reconciler(t *testing.T) *Reconciler {
 	t.Helper()
-	rec := NewReconciler(ReconcilerConfig{DB: x.st, Ops: x.cl, Routes: x.rt, Locks: x.r.cfg.Locks, Act: x.r.cfg.Inv, Proxy: true,
-		HealthInterval: 200 * time.Millisecond})
+	rec := NewReconciler(ReconcilerConfig{DB: x.st, Ops: x.cl, Routes: x.rt, Locks: x.r.cfg.Locks, Act: x.r.cfg.Inv, Proxy: true})
 	RegisterReconcilerActions(x.reg, rec)
 	return rec
 }
@@ -127,7 +126,7 @@ func TestOrphanRemovalRemovesOnlyAnonymousVolumes(t *testing.T) {
 	}
 
 	rec := x.reconciler(t)
-	if err := rec.fullResync(g.ctx, true); err != nil {
+	if _, err := rec.fullResync(g.ctx, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if itDocker(t, "ps", "-aq", "--filter", "id="+orphID) != "" {
