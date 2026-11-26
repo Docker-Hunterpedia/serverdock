@@ -34,8 +34,10 @@ jobs:
       - name: bench trigger script tests
         run: .github/scripts/bench-needed_test.sh
       - run: go test -race ./...
-      - name: test hooks (the tag build that only internal/testbin uses)
-        run: go test -race -tags testhooks -count=1 -run 'TestPausePoint' ./internal/deploy
+      - name: test hooks and the lock-order checker (the tag build that only internal/testbin and this step use)
+        # The whole package, so the checker sees every runner, resync, watcher and
+        # delete test: any lock taken out of order fails the run (TestMain).
+        run: go test -race -tags testhooks -count=1 ./internal/deploy
       - run: go run golang.org/x/vuln/cmd/govulncheck@"${GOVULNCHECK_VERSION}" ./...
 
   # The single-page app (Node is needed here and in `make web` only). Its output,
@@ -200,7 +202,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     permissions:
       contents: read
     env:
@@ -229,6 +231,16 @@ jobs:
       - name: go test -race -tags integration
         # Only packages that have integration-tagged tests; add new ones here.
         run: go test -race -tags integration -count=1 ./internal/agent/dockerapi/... ./internal/agentops/... ./internal/deploy/...
+      - name: go test -race -tags integration, the kill -9 suite (plan 0004 step 10)
+        # The real binary (built with the test hooks by internal/testbin) is killed with
+        # SIGKILL at every blue-green and stop-first stage and started again; -v prints
+        # the OUTAGE lines (SIGKILL to the first 2xx).
+        run: go test -race -tags integration -count=1 -timeout 15m -v -run 'TestKillNine' ./cmd/serverdock
+      - name: go test -race -tags integration, Docker daemon restart (TestDaemonRestartKeepsRoutesCorrect)
+        # Last, and alone: it restarts the daemon (and so stops the registry).
+        env:
+          SD_TEST_DOCKER_RESTART: "1"
+        run: go test -race -tags integration -count=1 -v -run 'TestDaemonRestartKeepsRoutesCorrect' ./internal/deploy
       - name: registry log on failure
         if: failure()
         run: docker logs sd-registry || true

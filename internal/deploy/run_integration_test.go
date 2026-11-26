@@ -61,6 +61,7 @@ type itRunner struct {
 	js  *jobs.Store
 	rt  *Routes
 	svc int64
+	reg *actions.Registry
 }
 
 func newITRunner(t *testing.T, g *switchRig, mod func(*RunnerConfig)) *itRunner {
@@ -82,7 +83,7 @@ func newITRunner(t *testing.T, g *switchRig, mod func(*RunnerConfig)) *itRunner 
 	if mod != nil {
 		mod(&cfg)
 	}
-	return &itRunner{g: g, cc: cc, cl: cl, st: st, r: NewRunner(cfg), js: cfg.Jobs, rt: rt, svc: addService(t, st, "web")}
+	return &itRunner{g: g, cc: cc, cl: cl, st: st, r: NewRunner(cfg), js: cfg.Jobs, rt: rt, svc: addService(t, st, "web"), reg: reg}
 }
 
 // deploy queues a deploy and runs its job through the runner directly (the
