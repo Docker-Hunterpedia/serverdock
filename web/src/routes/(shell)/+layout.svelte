@@ -17,6 +17,7 @@
 
 	const path = $derived(page.url.pathname);
 	const onOverview = $derived(path === '/');
+	const onServices = $derived(path.startsWith('/services'));
 	const onSettings = $derived(path.startsWith('/settings'));
 
 	// Closing the phone menu with Escape returns focus to its button.
@@ -93,6 +94,7 @@
 		<span class="brand side-brand">ServerDock</span>
 		<ul>
 			<li><a href="/" aria-current={onOverview ? 'page' : undefined} onclick={() => closeMenu(false)}>Overview</a></li>
+			<li><a href="/services" aria-current={onServices ? 'page' : undefined} onclick={() => closeMenu(false)}>Services</a></li>
 			<li>
 				<a href="/settings/security" aria-current={onSettings ? 'page' : undefined} onclick={() => closeMenu(false)}>Settings</a>
 			</li>

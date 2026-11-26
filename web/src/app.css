@@ -348,3 +348,29 @@ code,
 .qr-fg {
 	fill: var(--qr-fg);
 }
+
+/* A link that looks like a button (navigation, not an action). */
+a.button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: var(--target);
+	min-width: var(--target);
+	padding: 0.5rem 1rem;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	text-decoration: none;
+}
+.toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem;
+	margin: 0 0 1rem;
+}
+.note {
+	margin: 0 0 1rem;
+	color: var(--muted);
+}

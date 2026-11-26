@@ -9,3 +9,6 @@ export const flash = $state<{ notice?: Notice; audit?: string }>({});
 
 /** True while recovery codes are on screen and not yet marked saved (the nav Sign out asks first). */
 export const guard = $state({ unsavedCodes: false });
+
+/** What the Deploy page shows once after "Create and deploy": the service just created and any warnings (shares_panel_address) the server returned. */
+export const created = $state<{ service?: string; warnings?: { code: string; message: string }[]; port?: number | null }>({});
