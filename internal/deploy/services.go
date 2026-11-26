@@ -49,6 +49,11 @@ type ServiceDeps struct {
 	// Sync): the actions call it before applying a route so that a Docker that was
 	// down at start does not leave every later change "not applied". Nil in tests.
 	Boot func(ctx context.Context) error
+	// Kick asks the reconciler to reconnect now (Reconciler.Kick). ensureRoutes calls it
+	// BEFORE Boot, outside Booter's single-flight: the start-up run may be blocked
+	// waiting for the first resync, and a joiner would otherwise never skip the back-off.
+	// Nil in tests.
+	Kick func()
 	// StreamUp reports whether the reconciler's events stream is open and resynced
 	// (Reconciler.Up); while it is not, no service state is known (◌ unknown). Nil in
 	// tests that have no reconciler: the stream is then taken as up.
@@ -974,6 +979,9 @@ func (d *svcDeps) ensureRoutes(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
+	if d.Kick != nil {
+		d.Kick()
+	}
 	_ = d.Boot(ctx)
 }
 

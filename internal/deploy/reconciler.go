@@ -98,6 +98,7 @@ type Reconciler struct {
 
 	up      atomic.Bool // the events stream is open and the resync after it has finished
 	synced  atomic.Bool // the first resync has finished (never goes back)
+	loaded  atomic.Bool // a Load of the state map and the routes has worked since the start (until then the resync retries failed ports)
 	first   chan struct{}
 	firstMu sync.Once
 
@@ -152,10 +153,7 @@ func (rc *Reconciler) EnsureSynced(ctx context.Context) error {
 	if rc.synced.Load() {
 		return nil
 	}
-	select {
-	case rc.kick <- struct{}{}:
-	default:
-	}
+	rc.Kick()
 	select {
 	case <-rc.first:
 		return nil
@@ -247,6 +245,24 @@ func ServiceOfJob(j jobs.Job) int64 {
 	return id
 }
 
+var (
+	errRoutesNotApplied = errors.New("the app routes were not applied after the resync")
+	errTooManyEvents    = errors.New("too many events during the resync")
+)
+
+// Kick asks for a reconnect now instead of waiting out the back-off (a service action
+// found the routes not ready, for instance because Docker was down at start). It never
+// blocks and does nothing while the stream is up.
+func (rc *Reconciler) Kick() {
+	if rc.up.Load() {
+		return
+	}
+	select {
+	case rc.kick <- struct{}{}:
+	default:
+	}
+}
+
 // ---- the event queue ----
 
 // eventQueue holds the container ids that had an event since the last pass. It is
@@ -306,18 +322,6 @@ func (q *eventQueue) take() (ids []queued, overflow bool) {
 		clear(q.ids)
 	}
 	return ids, overflow
-}
-
-// markOverflow makes the next take report an overflow (a resync that could not look at
-// what was buffered asks for a full one).
-func (q *eventQueue) markOverflow() {
-	q.mu.Lock()
-	q.overflow = true
-	q.mu.Unlock()
-	select {
-	case q.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (q *eventQueue) reset() { q.take() }
@@ -391,7 +395,7 @@ func (rc *Reconciler) session(ctx context.Context) (reached bool, err error) {
 		join()
 		return false, ctx.Err()
 	}
-	first := !rc.synced.Load()
+	first := !rc.loaded.Load()
 	markSynced := func() {
 		rc.synced.Store(true)
 		rc.firstMu.Do(func() {
@@ -412,7 +416,7 @@ func (rc *Reconciler) session(ctx context.Context) (reached bool, err error) {
 		// The routes were not applied (or the buffered events overflowed): end the
 		// connection so that the back-off retries (it climbs: never a hot loop).
 		join()
-		return false, errors.New("the resync did not finish: the routes were not applied")
+		return false, errRoutesNotApplied
 	}
 	// Events buffered during the list and the rules: re-inspect them one by one.
 	if err := rc.drain(cctx); err != nil {
@@ -453,8 +457,12 @@ func (rc *Reconciler) drain(ctx context.Context) error {
 	for ctx.Err() == nil {
 		ids, overflow := rc.q.take()
 		if overflow {
-			if _, err := rc.fullResync(ctx, false, nil); err != nil {
+			applied, err := rc.fullResync(ctx, false, nil)
+			if err != nil {
 				return err
+			}
+			if !applied {
+				return errRoutesNotApplied // the back-off retries
 			}
 			continue
 		}

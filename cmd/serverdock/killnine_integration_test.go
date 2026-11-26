@@ -246,6 +246,7 @@ func (k *killRig) watchTwoVersions() func() []string {
 			if len(deploys) > 1 {
 				seen = append(seen, strings.ReplaceAll(out, "\n", "; "))
 			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	var once sync.Once

@@ -155,7 +155,7 @@ func (rc *Reconciler) finishDeploy(ctx context.Context, in FinishDeployIn) (Fini
 	if !active.Valid || active.Int64 != in.Deploy {
 		return out, errors.New("the deploy is not the service's live one")
 	}
-	if attention.Valid && attention.String == AttentionDeleteInterrupted {
+	if (attention.Valid && attention.String == AttentionDeleteInterrupted) || rc.cfg.Routes.State().DeleteFailed(in.Service) {
 		return out, errors.New("the service is being deleted")
 	}
 	list, err := rc.cfg.Ops.ContainerList(ctx)

@@ -200,18 +200,17 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool, onApplied func
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	// The state is known (and the gate open) whether or not the apply worked: the
-	// resync counts as done for the scheduler's start gate, and the slow half below
-	// never delays it.
-	if onApplied != nil {
-		onApplied()
-	}
 	if err != nil {
-		// The routes are marked stale and the session ends right after, so the back-off
-		// retries. Nothing is removed or started on this pass.
+		// The state is known, so the resync counts as done for the scheduler's start gate;
+		// the routes are marked stale and the session ends right after, so the back-off
+		// retries. Nothing is removed or started on this pass. first stays true until a Load works.
+		if onApplied != nil {
+			onApplied()
+		}
 		rc.cfg.Log.Warn("the app routes could not be applied after the resync; nothing is removed or started yet", "err", err.Error())
 		return false, nil
 	}
+	rc.loaded.Store(true)
 	p.applied = true
 	// What happened during the list and the rules is looked at before anything is removed.
 	overflow, derr := rc.drainIDs(ctx)
@@ -219,8 +218,13 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool, onApplied func
 		return false, derr
 	}
 	if overflow {
-		rc.q.markOverflow() // the next drain is a full resync
-		return false, nil
+		return false, errTooManyEvents // the reconnect's resync starts over
+	}
+	// The state is loaded, the routes applied and the buffered events handled: the start
+	// gate opens; the slow half below delays it not at all. (The service state stays
+	// unknown until the whole resync is done: only then is it settled.)
+	if onApplied != nil {
+		onApplied()
 	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
@@ -449,8 +453,21 @@ func (p *pass) fixCommitted(sv *rsvc) {
 // (every one when the service is gone), except the current attempt of a running job's
 // deploy. It reports whether none of another deploy is left (so starting the active
 // container cannot run two versions).
+//
+// Nothing is removed before the proxy is confirmed, now and under the service's lock,
+// not to hold a route to it: the override is dropped and the route list the database
+// and the state map say is applied (RefreshNoRetry; a list the proxy already holds is
+// not sent again). A job may have switched, failed its revert and kept its candidate
+// since the pass's own apply. If that apply does not succeed nothing is removed and the
+// next resync tries again.
+//
+// A container of a deploy that never committed (the stop-first gap, an interrupted
+// candidate) that stands between a stopped active container and its start is stopped
+// with at most 10 s of grace (the stop call's own parameter): it never served the
+// service's committed traffic, and the outage lasts as long as its stop. Every other
+// orphan gets the service's stop_grace_s.
 func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) bool {
-	clean := true
+	var out []*rcItem
 	for _, it := range mine {
 		if it.gone || (sv.exists && it.deploy == sv.active) {
 			continue
@@ -458,19 +475,80 @@ func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) bool {
 		if running != nil && it.deploy == running.deploy && it.attempt >= running.attempt {
 			continue // the current attempt of the deploy whose job is running
 		}
-		if !p.remove(sv, it) {
+		out = append(out, it)
+	}
+	if len(out) == 0 {
+		return true
+	}
+	if !p.confirmRoutes(sv) {
+		return false
+	}
+	startPending := p.startPending(sv, mine)
+	clean := true
+	for _, it := range out {
+		grace := sv.graceS
+		if !sv.exists {
+			grace = 10
+		}
+		if startPending && p.uncommitted(it.deploy) {
+			grace = min(grace, orphanGraceCap)
+		}
+		if !p.remove(it, grace) {
 			clean = false
 		}
 	}
 	return clean
 }
 
-// remove runs reconciler.remove_container for it; true when the container is gone.
-func (p *pass) remove(sv *rsvc, it *rcItem) bool {
-	grace := sv.graceS
-	if !sv.exists {
-		grace = 10
+// orphanGraceCap is the longest stop grace of a container of an uncommitted deploy that
+// keeps the active container from starting.
+const orphanGraceCap = 10
+
+// confirmRoutes: see orphans. True when the proxy holds a list that names no
+// container of another deploy (or there is no proxy, or nothing was ever applied).
+func (p *pass) confirmRoutes(sv *rsvc) bool {
+	rc := p.rc
+	if sv.exists {
+		rc.cfg.Routes.DropOverride(sv.id)
 	}
+	if !rc.cfg.Proxy || !rc.cfg.Routes.Ready() {
+		return true
+	}
+	err := rc.cfg.Routes.RefreshNoRetry(p.ctx)
+	if err == nil || errors.Is(err, ErrRoutesNotReady) {
+		return true
+	}
+	rc.cfg.Log.Warn("the proxy did not confirm the routes, so no container is removed yet", "service", sv.id, "err", err.Error())
+	return false
+}
+
+// startPending: the service's active deploy has containers and none of them runs.
+func (p *pass) startPending(sv *rsvc, mine []*rcItem) bool {
+	if !sv.exists || sv.active < 1 {
+		return false
+	}
+	any := false
+	for _, it := range mine {
+		if it.gone || it.deploy != sv.active {
+			continue
+		}
+		any = true
+		if it.c.State == StateRunning || it.c.State == StateRestarting || it.c.State == "paused" {
+			return false
+		}
+	}
+	return any
+}
+
+// uncommitted: the deploy's row exists and it never committed.
+func (p *pass) uncommitted(deploy int64) bool {
+	var committed bool
+	err := p.rc.cfg.DB.R.QueryRowContext(p.ctx, `SELECT committed_at IS NOT NULL FROM deploys WHERE id = ?`, deploy).Scan(&committed)
+	return err == nil && !committed
+}
+
+// remove runs reconciler.remove_container for it with grace; true when the container is gone.
+func (p *pass) remove(it *rcItem, grace int) bool {
 	raw, _ := json.Marshal(RemoveContainerIn{Container: it.listed.ID, Service: it.svc, Deploy: it.deploy, Grace: grace})
 	if _, err := p.rc.cfg.Act.Invoke(p.ctx, ActionRemoveContainer, raw, actions.Options{}); err != nil {
 		p.noteErr(it.svc, err)

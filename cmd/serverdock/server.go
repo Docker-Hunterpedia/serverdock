@@ -503,7 +503,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword, Jobs: sched})
 	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
 		DB: st, Routes: routes, Boot: booter.Run, NoProxy: !cfg.Proxy, Policy: cfg.policyOptions(), ReservedPorts: reserved,
-		Exposure: opsClient, Jobs: sched, StreamUp: func() bool { return rec.Up() }, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
+		Exposure: opsClient, Jobs: sched, StreamUp: func() bool { return rec.Up() }, Kick: func() { rec.Kick() }, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
 	})
 	// The one-time system invoker belongs to the deploy runner: it runs each job as
 	// the actor that queued it (never as the system).

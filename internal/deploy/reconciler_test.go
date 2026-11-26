@@ -1429,3 +1429,250 @@ func TestRemoveContainerReportsLogKeptOnlyWhenAHookKeptIt(t *testing.T) {
 		t.Errorf("%+v %v", out, err)
 	}
 }
+
+// ---- review round 2 ----
+
+// A job switched, failed its revert and kept its candidate, then released the lock
+// before the finish half: nothing is removed until a route apply without the candidate
+// has succeeded (the proxy may still route to it, and its address would be freed).
+func TestNothingIsRemovedUntilARouteApplyUnderTheLockSucceeds(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	g.resync(true)
+	cand := addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3")
+	candID := g.put(g.svc, cand, 1, "10.250.0.3", true)
+	// The job: its candidate is tracked and routed to by an override; the revert's apply fails.
+	cc, _ := ContainerFromInspectForTest(g, candID)
+	g.routes.Track(cc)
+	if err := g.routes.SetOverride(context.Background(), g.svc, Override{Kind: OverrideUpstream, Deploy: cand, IP: "10.250.0.3", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	g.px.fail = errors.New("proxy down")
+	if err := g.routes.ClearOverride(context.Background(), g.svc); err == nil {
+		t.Fatal("the revert's apply was expected to fail")
+	}
+	// The pass's own apply came earlier; the finish half runs now, the lock being free.
+	items, err := g.rec.collect(context.Background(), g.svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcs, _ := g.rec.loadServices(context.Background(), g.svc)
+	p := &pass{rc: g.rec, ctx: context.Background(), items: items, svcs: svcs, skipped: map[int64]bool{}, applied: true}
+	p.finish(g.svc)
+	if !g.exists(candID) {
+		t.Fatal("the candidate was removed although the proxy could not confirm a list without it")
+	}
+	g.px.fail = nil
+	items, _ = g.rec.collect(context.Background(), g.svc)
+	p = &pass{rc: g.rec, ctx: context.Background(), items: items, svcs: svcs, skipped: map[int64]bool{}, applied: true}
+	p.finish(g.svc)
+	if g.exists(candID) {
+		t.Error("the candidate stayed although the apply was confirmed")
+	}
+	if last := g.px.last(); len(last) != 1 || last[0].Upstream != "10.250.0.2:8080" {
+		t.Errorf("routes %+v", last)
+	}
+}
+
+func ContainerFromInspectForTest(g *recRig, id string) (Container, bool) {
+	st, err := g.ops.ContainerInspect(context.Background(), id)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return ContainerFromInspect(st)
+}
+
+// An interrupted stop-first deploy whose start stage had begun flags the service
+// versions_kept at the boot pass, so a restart queued behind the (early) start gate is
+// refused and no second version runs; the resync then settles it.
+func TestInterruptedStopFirstCandidateFlagsTheServiceAndRefusesAQueuedRestart(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	_, oldID := g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+	d, j := g.deploy(g.svc, func(s *Snapshot) { s.Strategy = "stop_first" })
+	mustExec(t, g.st, `UPDATE jobs SET state = 'running', boot_id = 'old', request_id = 'job-1-a1' WHERE id = ?`, j)
+	mustExec(t, g.st, `UPDATE deploys SET status = 'running' WHERE id = ?`, d)
+	mustExec(t, g.st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'start', 'running')`, d)
+	candID := g.put(g.svc, d, 1, "10.250.0.3", true)
+	if n, err := ResolveInterrupted(context.Background(), g.st, "new", time.Now(), nil); err != nil || n != 1 {
+		t.Fatalf("%d %v", n, err)
+	}
+	if a := g.attention(g.svc); a != AttentionVersionsKept {
+		t.Fatalf("needs_attention %q, want versions_kept", a)
+	}
+	// A restart queued before the gate opened is refused at run time and touches nothing.
+	payload, _ := json.Marshal(restartPayload{Service: g.svc})
+	rj, err := g.js.Enqueue(context.Background(), jobs.NewJob{Kind: jobs.KindRestart, LockKey: jobs.LockKey(g.svc), Actor: jobs.ActorOf(actions.TokenActor("1", actions.ScopeWrite)), Payload: payload, MaxAttempts: 1, TimeoutS: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.runner.runRestart(context.Background(), actions.Call{}, rj); err == nil || !strings.Contains(err.Error(), "two versions") {
+		t.Fatalf("restart: %v", err)
+	}
+	if g.ops.count("restart") != 0 || g.runningC(oldID) || !g.runningC(candID) {
+		t.Error("the refused restart changed a container")
+	}
+	// The resync settles it: candidate removed, previous version started, flag cleared; never both running.
+	var overlap atomic.Int32
+	g.ops.onCall = func(op, _ string) {
+		if op == "start" && g.runningC(candID) {
+			overlap.Add(1)
+		}
+	}
+	g.resync(true)
+	if overlap.Load() != 0 || g.exists(candID) || !g.runningC(oldID) || g.attention(g.svc) != "" {
+		t.Errorf("overlap=%d candidate=%v previous running=%v attention=%q", overlap.Load(), g.exists(candID), g.runningC(oldID), g.attention(g.svc))
+	}
+	// Not flagged: a blue-green deploy, a deploy that never started, another reason on the service.
+	for name, setup := range map[string]func(*recRig, int64, int64){
+		"start pending": func(g *recRig, d, j int64) {
+			mustExec(t, g.st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'start', 'pending')`, d)
+		},
+		"delete interrupted": func(g *recRig, d, j int64) {
+			mustExec(t, g.st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'start', 'running')`, d)
+			mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionDeleteInterrupted, g.svc)
+		},
+		"blue green": func(g *recRig, d, j int64) {
+			mustExec(t, g.st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'start', 'running')`, d)
+		},
+	} {
+		h := newRecRig(t, nil)
+		strategy := "stop_first"
+		if name == "blue green" {
+			strategy = "blue_green"
+		}
+		d2, j2 := h.deploy(h.svc, func(s *Snapshot) { s.Strategy = strategy })
+		mustExec(t, h.st, `UPDATE jobs SET state = 'running', boot_id = 'old' WHERE id = ?`, j2)
+		mustExec(t, h.st, `UPDATE deploys SET status = 'running' WHERE id = ?`, d2)
+		setup(h, d2, j2)
+		if _, err := ResolveInterrupted(context.Background(), h.st, "new", time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if name == "delete interrupted" {
+			want = AttentionDeleteInterrupted
+		}
+		if a := h.attention(h.svc); a != want {
+			t.Errorf("%s: needs_attention %q, want %q", name, a, want)
+		}
+	}
+}
+
+// The grace cap applies only to a container of an uncommitted deploy that keeps the
+// active container from starting.
+func TestGraceCapAppliesOnlyToTheCandidateThatBlocksTheStart(t *testing.T) {
+	grace := func(setup func(g *recRig)) int {
+		g := newRecRig(t, nil)
+		mustExec(t, g.st, `UPDATE services SET stop_grace_s = 30 WHERE id = ?`, g.svc)
+		var got atomic.Int32
+		got.Store(-1)
+		g.ops.stopGraceFn = func(gr int) { got.Store(int32(gr)) }
+		setup(g)
+		g.resync(true)
+		return int(got.Load())
+	}
+	// 1. stopped active container + uncommitted candidate: capped at 10.
+	if gr := grace(func(g *recRig) {
+		g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+		g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	}); gr != 10 {
+		t.Errorf("blocking candidate: grace %d, want 10", gr)
+	}
+	// 2. running active container + stray uncommitted deploy container: the service's 30.
+	if gr := grace(func(g *recRig) {
+		g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+		g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	}); gr != 30 {
+		t.Errorf("nothing waits for the removal: grace %d, want 30", gr)
+	}
+	// 3. stopped active container + the old version of a committed deploy: the service's 30.
+	if gr := grace(func(g *recRig) {
+		g.activeDeploy(g.svc, 2, "10.250.0.2", false)
+		old := addDeploy(t, g.st, g.svc, 1, "succeeded", "10.250.0.3")
+		mustExec(t, g.st, `UPDATE deploys SET committed_at = 'x' WHERE id = ?`, old)
+		g.put(g.svc, old, 1, "10.250.0.3", true)
+	}); gr != 30 {
+		t.Errorf("a committed old version: grace %d, want 30", gr)
+	}
+	// 4. a lower stop grace is never raised.
+	g := newRecRig(t, nil)
+	mustExec(t, g.st, `UPDATE services SET stop_grace_s = 3 WHERE id = ?`, g.svc)
+	var got atomic.Int32
+	g.ops.stopGraceFn = func(gr int) { got.Store(int32(gr)) }
+	g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+	g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	g.resync(true)
+	if got.Load() != 3 {
+		t.Errorf("grace %d, want the service's 3", got.Load())
+	}
+}
+
+// finish_deploy refuses for a service whose delete failed in this process.
+func TestFinishDeployRefusesAServiceWhoseDeleteFailedInMemory(t *testing.T) {
+	g := newRecRig(t, nil)
+	d, id := g.activeDeploy(g.svc, 1, "10.250.0.2", false)
+	g.routes.State().MarkDeleteFailed(g.svc)
+	raw, _ := json.Marshal(FinishDeployIn{Service: g.svc, Deploy: d})
+	if _, err := g.runner.cfg.Inv.Invoke(context.Background(), ActionFinishDeploy, raw, actions.Options{}); err == nil || g.runningC(id) {
+		t.Errorf("finish_deploy started it: %v", err)
+	}
+}
+
+// A deploy that failed before this process started is not raised to app_safe yes.
+func TestRaiseAppSafeIgnoresADeployThatFinishedBeforeSince(t *testing.T) {
+	g := newRecRig(t, func(r *recRig, c *ReconcilerConfig) { c.Since = time.Now().Add(time.Hour) })
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	d2 := addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3")
+	mustExec(t, g.st, `UPDATE deploys SET reason_code = 'job_failed', app_safe = 'unknown', finished_at = ? WHERE id = ?`, jobs.FormatTime(time.Now()), d2)
+	g.resync(true)
+	if r := g.row(d2); r.appSafe != "unknown" {
+		t.Errorf("app_safe %q for a deploy that ended before Since", r.appSafe)
+	}
+	g2 := newRecRig(t, func(r *recRig, c *ReconcilerConfig) { c.Since = time.Now().Add(-time.Hour) })
+	g2.activeDeploy(g2.svc, 1, "10.250.0.2", true)
+	d3 := addDeploy(t, g2.st, g2.svc, 2, "failed", "10.250.0.3")
+	mustExec(t, g2.st, `UPDATE deploys SET reason_code = 'job_failed', app_safe = 'unknown', finished_at = ? WHERE id = ?`, jobs.FormatTime(time.Now()), d3)
+	g2.resync(true)
+	if r := g2.row(d3); r.appSafe != "yes" {
+		t.Errorf("app_safe %q for a deploy that ended after Since", r.appSafe)
+	}
+}
+
+// A failed first Load keeps retrying failed ports (first stays true until a Load works);
+// an overflow during the resync ends it with its own error.
+func TestFirstStaysTrueUntilALoadWorksAndOverflowHasItsOwnError(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	g.px.fail = errors.New("down")
+	applied, err := g.rec.fullResync(context.Background(), true, nil)
+	if err != nil || applied || g.rec.loaded.Load() {
+		t.Fatalf("applied=%v err=%v loaded=%v", applied, err, g.rec.loaded.Load())
+	}
+	g.px.fail = nil
+	if applied, err := g.rec.fullResync(context.Background(), true, nil); err != nil || !applied || !g.rec.loaded.Load() {
+		t.Fatalf("applied=%v err=%v", applied, err)
+	}
+	// An overflow buffered during the resync.
+	for i := 0; i < g.rec.cfg.MaxQueued+5; i++ {
+		_ = g.rec.q.add(agentops.Event{ID: fmt.Sprintf("%064x", i+1), Service: "1"})
+	}
+	if _, err := g.rec.fullResync(context.Background(), false, nil); !errors.Is(err, errTooManyEvents) {
+		t.Errorf("overflow: %v", err)
+	}
+}
+
+// "Try again" while the start-up run is blocked waiting for the first resync reconnects
+// at once (the kick is sent outside the Booter's single flight).
+func TestEnsureRoutesKicksTheReconnect(t *testing.T) {
+	var kicks atomic.Int32
+	g := newSvcRig(t, func(d *ServiceDeps) {
+		d.Kick = func() { kicks.Add(1) }
+		d.Boot = func(context.Context) error { return nil }
+	})
+	g.create("p", "web", m{"container_port": 80, "public_port": 9000})
+	if kicks.Load() == 0 {
+		t.Error("a route action found the gate closed and did not kick the reconciler")
+	}
+}
