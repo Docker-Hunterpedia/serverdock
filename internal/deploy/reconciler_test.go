@@ -615,6 +615,41 @@ func TestOrphanRemovalOnlyTouchesOurInstance(t *testing.T) {
 	}
 }
 
+// The routes are applied before any orphan is removed: an orphan's stop grace never
+// delays the apps, and a removal always follows a confirmed apply.
+func TestRoutesAreAppliedBeforeAnOrphanIsRemoved(t *testing.T) {
+	g := newRecRig(t, nil)
+	g.expose(g.svc, 9000)
+	g.activeDeploy(g.svc, 1, "10.250.0.2", true)
+	g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	g.px.onApply = func([]agentops.Route) { g.seq.add("apply") }
+	g.ops.onCall = func(op, _ string) {
+		if op == "stop" || op == "remove" {
+			g.seq.add(op)
+		}
+	}
+	g.resync(true)
+	apply, stop, remove := g.seq.index("apply"), g.seq.index("stop"), g.seq.index("remove")
+	if apply < 0 || stop < 0 || remove < 0 || apply > stop || stop > remove {
+		t.Fatalf("order %v: want the apply, then the stop, then the removal", g.seq.all())
+	}
+	// With the apply failing nothing is removed.
+	g2 := newRecRig(t, nil)
+	g2.expose(g2.svc, 9000)
+	g2.activeDeploy(g2.svc, 1, "10.250.0.2", true)
+	orphan := g2.put(g2.svc, addDeploy(t, g2.st, g2.svc, 2, "failed", "10.250.0.3"), 1, "10.250.0.3", true)
+	g2.px.fail = errors.New("proxy down")
+	g2.resync(true)
+	if !g2.exists(orphan) {
+		t.Error("an orphan was removed although the apply failed")
+	}
+	g2.px.fail = nil
+	g2.resync(false)
+	if g2.exists(orphan) {
+		t.Error("the orphan was not removed once the apply was confirmed")
+	}
+}
+
 func TestStateUnknownWhileEventsAreDown(t *testing.T) {
 	g := newRecRig(t, nil)
 	d, id := g.activeDeploy(g.svc, 1, "10.250.0.2", true)

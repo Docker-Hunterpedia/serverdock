@@ -24,7 +24,7 @@ import (
 // TryLock, and a busy service is skipped (the per-service resync after its job
 // covers it).
 //
-// For each service whose lock it got, in this order:
+// For each service whose lock it got (settle, before the routes are applied):
 //
 //	 0. the service's in-memory override is dropped (no job is using it);
 //	 1. an active deploy marked failed whose commit unknown-outcome in fact
@@ -32,17 +32,18 @@ import (
 //	 2. versions_kept is settled (stop-first kept two versions): the kept candidate
 //	    is removed only after a confirmed apply that does not reference it, then the
 //	    previous version is started and health-gated, then the flag is cleared;
-//	 3. orphans are removed: every container of this instance whose service does not
-//	    exist or whose deploy is not the service's active one, after a confirmed
-//	    apply that does not reference it (rule 2 of the plan);
-//	 4. a stopped active container is started again (rule 3), unless the service is
-//	    flagged delete_interrupted; the flags previous_version_down and
-//	    versions_kept are cleared when it comes back;
-//	 5. the app_safe of the service's newest failed deploy is raised to yes when the
+//	 3. a stopped active container is started again (rule 3 of the plan), unless the
+//	    service is flagged delete_interrupted; previous_version_down and versions_kept
+//	    are cleared when it comes back up;
+//	 4. the app_safe of the service's newest failed deploy is raised to yes when the
 //	    old version is seen running.
 //
-// Then, once, the state map is loaded and the routes applied (rule 4). A pass that
-// changes nothing runs no action, so it writes no audit row.
+// Then, once, the state map is loaded and the routes applied (rule 4), and only after
+// that apply has succeeded does the sweep remove the orphans (rule 2: every container
+// of this install whose service does not exist or whose deploy is not the service's
+// active one). Routing first means an orphan's stop grace never extends an outage, and
+// the apply that precedes a removal never names the container. A pass that changes
+// nothing runs no action, so it writes no audit row.
 
 // rcItem is one container of this install as the resync saw it.
 type rcItem struct {
@@ -76,6 +77,9 @@ type pass struct {
 	first bool
 	items []*rcItem
 	svcs  map[int64]*rsvc
+	// applied: the routes of this pass were applied (or there is no proxy), so the
+	// sweep may remove orphans.
+	applied bool
 }
 
 func (rc *Reconciler) collect(ctx context.Context, only int64) ([]*rcItem, error) {
@@ -177,8 +181,11 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		p.service(id)
+		p.settle(id)
 	}
+	// Rule 4: the state map is loaded and the routes applied BEFORE any orphan is
+	// removed, so the apps are routed as soon as their containers run (an orphan's
+	// stop grace never extends an outage), and a removal always follows a confirmed apply.
 	all := p.containers(0)
 	if rc.cfg.Proxy {
 		err = rc.cfg.Routes.Load(ctx, all, first)
@@ -190,9 +197,18 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool) error {
 			return ctx.Err()
 		}
 		// The state is known and the gate is open; the routes are marked stale and
-		// the next apply sends again.
-		rc.cfg.Log.Warn("the app routes could not be applied after the resync", "err", err.Error())
+		// the next apply sends again. Nothing is removed on this pass.
+		rc.cfg.Log.Warn("the app routes could not be applied after the resync; no orphan is removed yet", "err", err.Error())
+	} else {
+		p.applied = true
 	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		p.sweep(id)
+	}
+	// The sweep removed containers: the map must not keep them.
 	return nil
 }
 
@@ -207,18 +223,23 @@ func (rc *Reconciler) serviceResync(ctx context.Context, service int64) error {
 		return fmt.Errorf("reading the service: %w", err)
 	}
 	p := &pass{rc: rc, ctx: ctx, items: items, svcs: svcs}
-	p.service(service)
+	p.settle(service)
 	cs := p.containers(service)
 	if rc.cfg.Proxy {
-		if err := rc.cfg.Routes.ReplaceService(ctx, service, cs); err != nil && !errors.Is(err, ErrRoutesNotReady) {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			rc.cfg.Log.Warn("the app routes could not be applied after a service resync", "service", service, "err", err.Error())
+		err := rc.cfg.Routes.ReplaceService(ctx, service, cs)
+		switch {
+		case err == nil || errors.Is(err, ErrRoutesNotReady):
+			p.applied = true
+		case ctx.Err() != nil:
+			return ctx.Err()
+		default:
+			rc.cfg.Log.Warn("the app routes could not be applied after a service resync; no orphan is removed yet", "service", service, "err", err.Error())
 		}
 	} else {
 		rc.cfg.Routes.ReplaceServiceStateOnly(service, cs)
+		p.applied = true
 	}
+	p.sweep(service)
 	return nil
 }
 
@@ -242,49 +263,79 @@ func (p *pass) itemsOf(service int64) []*rcItem {
 	return out
 }
 
-// service runs the rules for one service if its lock is free.
-func (p *pass) service(id int64) {
+// settle is the first half of the rules for one service, run before the routes are
+// applied (so a service that needs its container started is routed to it, and an
+// orphan's stop grace never delays the apps): the override is dropped, a committed
+// deploy marked failed is finished, versions_kept is settled, a stopped active
+// container is started and app_safe raised. It runs only if the service's lock is free.
+func (p *pass) settle(id int64) {
 	rc := p.rc
 	unlock, ok := rc.cfg.Locks.TryLock(id)
 	if !ok {
-		p.rc.cfg.Log.Debug("a job holds the service's lock; its own resync covers it", "service", id)
+		rc.cfg.Log.Debug("a job holds the service's lock; its own resync covers it", "service", id)
 		return
 	}
 	defer unlock()
 	sv := p.svcs[id]
 	if sv == nil {
-		sv = &rsvc{id: id, graceS: 10} // the service is gone: its containers are orphans
+		return // the service is gone: only the sweep has something to do
 	}
 	mine := p.itemsOf(id)
-	if sv.exists {
-		rc.cfg.Routes.DropOverride(id) // rule 0: nothing uses it while we hold the lock
+	rc.cfg.Routes.DropOverride(id) // nothing uses it while we hold the lock
+	busy, err := p.runningJob(id)
+	if err != nil {
+		rc.cfg.Log.Warn("the service's running job could not be read; nothing is changed for it", "service", id, "err", err.Error())
+		return
+	}
+	if busy.running {
+		return // picked, lock not taken yet: the job's own resync follows
+	}
+	p.fixCommitted(sv)
+	if sv.attention == AttentionVersionsKept {
+		p.settleKept(sv, mine)
+	} else {
+		p.startStopped(sv, mine)
+	}
+	p.raiseAppSafe(sv, mine)
+}
+
+// sweep is the second half, run after the routes were applied (rule 2 of the plan:
+// the orphans): a container of this install whose service is gone, or whose deploy is
+// not the service's active one, is removed. It needs the apply that came before it to
+// have succeeded (applied): that apply never names such a container, so once the proxy
+// holds it no route can reach it and its address may be handed out again. The service
+// is read again, because a job may have run between the two halves.
+func (p *pass) sweep(id int64) {
+	rc := p.rc
+	if !p.applied {
+		return
+	}
+	unlock, ok := rc.cfg.Locks.TryLock(id)
+	if !ok {
+		return
+	}
+	defer unlock()
+	fresh, err := rc.loadServices(p.ctx, id)
+	if err != nil {
+		rc.cfg.Log.Warn("a service could not be read; its orphans stay for the next resync", "service", id, "err", err.Error())
+		return
+	}
+	sv := fresh[id]
+	if sv == nil {
+		sv = &rsvc{id: id, graceS: 10} // the service is gone: its containers are orphans
 	}
 	busy, err := p.runningJob(id)
 	if err != nil {
-		p.rc.cfg.Log.Warn("the service's running job could not be read; nothing is changed for it", "service", id, "err", err.Error())
+		rc.cfg.Log.Warn("the service's running job could not be read; nothing is removed for it", "service", id, "err", err.Error())
 		return
 	}
 	if busy.running {
 		// A job is running in the database although its lock was free (it was picked
 		// and has not taken the lock yet): only older attempts are orphans.
-		p.orphans(sv, mine, &busy)
+		p.orphans(sv, p.itemsOf(id), &busy)
 		return
 	}
-	settled := false
-	if sv.exists {
-		p.fixCommitted(sv)
-		if sv.attention == AttentionVersionsKept {
-			p.settleKept(sv, mine)
-			settled = true
-		}
-	}
-	p.orphans(sv, mine, nil)
-	if sv.exists {
-		if !settled { // settleKept has started and gated the previous version itself
-			p.startStopped(sv, mine)
-		}
-		p.raiseAppSafe(sv, mine)
-	}
+	p.orphans(sv, p.itemsOf(id), nil)
 }
 
 type runningJob struct {
@@ -345,10 +396,9 @@ func (p *pass) fixCommitted(sv *rsvc) {
 
 // ---- rule 2 of the plan: orphans ----
 
-// routesConfirmed is the precondition of every removal of a container that a stale
-// proxy could still route to (a kept candidate, the old version of a deploy that
-// committed): an apply of the list the database and the state map say must have
-// succeeded. That list never names a container of a deploy that is not the
+// routesConfirmed is the precondition of settleKept's removal of the kept candidate,
+// which happens before the pass's own apply: an apply of the list the database and
+// the state map say must have succeeded. That list never names a container of a deploy that is not the
 // service's active one (the overrides were dropped), so once the proxy holds it no
 // route can reach the container, and its address can be handed out again. Before the
 // boot gate opens nothing was ever applied by this process, so there is nothing to
@@ -376,9 +426,6 @@ func (p *pass) orphans(sv *rsvc, mine []*rcItem, running *runningJob) {
 		}
 		if sv.attention == AttentionVersionsKept {
 			continue // settleKept removes it (after its own confirmation), or it stays
-		}
-		if !p.routesConfirmed() {
-			return
 		}
 		p.remove(sv, it)
 	}
