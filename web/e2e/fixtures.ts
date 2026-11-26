@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test as base, type Page } from '@playwright/test';
-import { startServer, type Admin, type TestServer } from './server';
+import { signInWithRecoveryCode, startServer, type Admin, type TestServer } from './server';
 
 export const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
@@ -36,7 +36,8 @@ export const test = base.extend<Fixtures>({
 			const problems: string[] = [];
 			allowed.value = false;
 			page.on('response', (r) => {
-				if (r.status() >= 500 && r.url().includes('/api/v1/')) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
+				// The Overview asks system.exposure on every load; a server with no Docker answers 503 by design and the page says it could not check.
+				if (r.status() >= 500 && r.url().includes('/api/v1/') && !r.url().endsWith('/actions/system.exposure')) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
 			});
 			await page.addInitScript(() => {
 				addEventListener('securitypolicyviolation', (e) => {
@@ -59,3 +60,22 @@ export const test = base.extend<Fixtures>({
 	]
 });
 export { expect };
+
+/** Counts the requests a page sends to /api/ from now on (the no-requests-while-idle tests). */
+export function countApiRequests(page: Page) {
+	const seen: string[] = [];
+	page.on('request', (r) => {
+		if (r.url().includes('/api/')) seen.push(new URL(r.url()).pathname);
+	});
+	return { seen, reset: () => seen.splice(0, seen.length) };
+}
+
+/**
+ * Signs the page in to an own server (state-changing and seeded tests) with the
+ * admin's recovery code number `n` (each code works once; there are 10). Use the
+ * server's absolute URL afterwards: page.goto(`${server.baseURL}/services`).
+ */
+export async function signIn(page: Page, server: TestServer, admin: Admin, n = 0) {
+	const state = await signInWithRecoveryCode(server, admin.recoveryCodes[n]);
+	await page.context().addCookies(state.cookies);
+}

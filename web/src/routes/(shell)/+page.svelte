@@ -199,9 +199,8 @@
 
 		<section aria-labelledby="recent-title" class="block">
 			<h2 id="recent-title">Recent deploys</h2>
-			<p class="note">The latest deploy of the five most recently deployed services.</p>
 			<ResponsiveTable
-				caption="Recent deploys"
+				caption="The latest deploy of the five most recently deployed services"
 				columns={recentColumns}
 				rows={recent}
 				rowKey={(r: Service) => r.service}

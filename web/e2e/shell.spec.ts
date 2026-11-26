@@ -20,7 +20,7 @@ test.describe('shell states', () => {
 	test('Overview: empty state, landmarks and no axe violations', async ({ page }) => {
 		await openOverview(page);
 		await expect(page.getByRole('heading', { level: 2, name: 'No services yet' })).toBeVisible();
-		await expect(page.getByText('Deploying from an image arrives in the next version')).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Deploy an image' })).toBeVisible();
 		await expect(page.getByRole('link', { name: 'Read the documentation (opens GitHub)' })).toBeVisible();
 		await expect(page.locator('main')).toHaveCount(1);
 		await expect(page.locator('h1')).toHaveCount(1);
@@ -28,11 +28,11 @@ test.describe('shell states', () => {
 		await expectNoAxeViolations(page, 'Overview');
 	});
 
-	test('navigation shows only Overview and Settings, with aria-current', async ({ page }) => {
+	test('navigation shows Overview, Services and Settings, with aria-current', async ({ page }) => {
 		await openOverview(page);
 		if (isPhone(page)) await page.getByRole('button', { name: 'Menu' }).click();
 		const nav = page.getByRole('navigation', { name: 'Main' });
-		await expect(nav.getByRole('link')).toHaveText(['Overview', 'Settings']);
+		await expect(nav.getByRole('link')).toHaveText(['Overview', 'Services', 'Settings']);
 		await expect(nav.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
 		await expect(nav.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current', /.+/);
 		await nav.getByRole('link', { name: 'Settings' }).click();
@@ -204,6 +204,8 @@ test.describe('keyboard, focus and targets', () => {
 			await tab(page);
 		}
 		await expect(page.getByRole('link', { name: 'Overview' })).toBeFocused();
+		await tab(page);
+		await expect(page.getByRole('link', { name: 'Services' })).toBeFocused();
 		await tab(page);
 		await expect(page.getByRole('link', { name: 'Settings' })).toBeFocused();
 		await page.keyboard.press('Enter');

@@ -86,6 +86,11 @@ jobs:
     needs: web
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # registry:2, pinned by digest (the same multi-arch index as the integration job).
+      REGISTRY_IMAGE: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      # The test app the "create and deploy" tests run from the local registry.
+      SD_TEST_APP_IMAGE: 127.0.0.1:5000/sd-testapp:1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -106,6 +111,20 @@ jobs:
           bin/serverdock version | tee /dev/stderr | grep -q ' ui=spa$'
       - run: npm ci --ignore-scripts
         working-directory: web
+      - name: start a local registry on 127.0.0.1:5000
+        # The tests that deploy for real pull from it (the server runs with
+        # --allow-loopback-registry in those tests only; e2e/server.ts).
+        run: |
+          docker run -d --name sd-registry -p 127.0.0.1:5000:5000 "$REGISTRY_IMAGE"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5000/v2/ >/dev/null && exit 0
+            sleep 1
+          done
+          echo "registry did not start"; docker logs sd-registry; exit 1
+      - name: build and push the test app image
+        run: |
+          docker build -t "$SD_TEST_APP_IMAGE" internal/agent/dockerapi/testdata/app
+          docker push "$SD_TEST_APP_IMAGE"
       - name: install the browsers
         run: npx playwright install --with-deps chromium webkit
         working-directory: web
@@ -123,6 +142,9 @@ jobs:
           path: web/e2e/.results
           if-no-files-found: ignore
           retention-days: 7
+      - name: registry log on failure
+        if: failure()
+        run: docker logs sd-registry || true
 
   build:
     needs: [lint-test, web]

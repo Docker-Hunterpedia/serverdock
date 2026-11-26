@@ -321,9 +321,8 @@
 		margin: 0 0 1rem;
 	}
 	summary {
-		min-height: var(--target);
-		display: flex;
-		align-items: center;
+		display: list-item;
+		padding: 0.625rem 0;
 		cursor: pointer;
 		font-weight: 600;
 	}
