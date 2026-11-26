@@ -57,17 +57,40 @@ The same data raises a separate question for the reviewers: the single large bin
 
 ## M3a: outage while ServerDock is killed and restarted (QM3a-9)
 
-*To be filled in by the maintainer.* Apps are offline while ServerDock is down, because the proxy that serves them is embedded in the ServerDock process (QM3a-9, accepted for Phase 1). Plan 0004 step 10 measures it: for each stage of a blue-green and of a stop-first deploy, the `kill -9` suite (`TestKillNine...` in `cmd/serverdock`, tags `integration,testhooks`) kills the server at that stage with SIGKILL, starts it again on the same data directory and Docker, and logs one parseable line per run:
+Apps are offline while ServerDock is down, because the proxy that serves them is embedded in the ServerDock process (QM3a-9, accepted for Phase 1). Plan 0004 step 10 measures it: for each stage of a blue-green and of a stop-first deploy, the `kill -9` suite (`TestKillNine...` in `cmd/serverdock`, tag `integration`; the test builds the server binary with `testhooks` itself) kills the server at that stage with SIGKILL, starts it again on the same data directory and Docker, and logs one parseable line per run:
 
 ```
 OUTAGE strategy=<blue_green|stop_first> stage=<stage:before|after> ms=<SIGKILL to the first 2xx from the app after the restart>
 ```
 
+Measured on commit `e76aa77` (plan 0004 Revision 16), 3 runs (`-race -count=3`, three scenarios in parallel per run), in a 4-vCPU cloud container (Intel Xeon 2.10 GHz), Docker 29.10.0 with the overlayfs storage driver, a local `registry:2` on loopback, and the test app's `stop_grace_s` of 2 s. The restart uses the default Docker socket. Every run also checks that the right container answers, the deploy's end state and containers, the single outcome row of the `jobs.run_deploy` intent (the user's actor, executor `system`), and, for stop-first, that containers of two deploys never run at the same time (sampled with `docker ps` until settled).
+
 | Strategy | Stage | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) | Notes |
 |---|---|---|---|---|---|
-| | | | | | |
+| blue-green | pull:before | 60 | 61 | 59 | |
+| blue-green | check:before | 59 | 64 | 59 | |
+| blue-green | start:before | 60 | 60 | 86 | |
+| blue-green | health:before | 88 | 60 | 60 | the candidate is removed after the restart |
+| blue-green | switch:before | 61 | 99 | 66 | |
+| blue-green | commit:before | 64 | 90 | 74 | uncommitted: the old version keeps serving |
+| blue-green | commit:after | 61 | 99 | 90 | committed: the new version serves, the old one is removed |
+| blue-green | drain:before | 61 | 62 | 63 | |
+| blue-green | stop_old:before | 62 | 61 | 60 | |
+| stop-first | pull:before | 58 | 98 | 64 | |
+| stop-first | check:before | 63 | 63 | 63 | |
+| stop-first | maintenance:before | 68 | 61 | 88 | |
+| stop-first | stop_old_first:before | 59 | 118 | 59 | |
+| stop-first | start:before | 278 | 345 | 232 | the stopped old version is started again |
+| stop-first | start:after | 2388 | 2519 | 2363 | the candidate is stopped (grace 2 s) before the old version starts |
+| stop-first | health:before | 2573 | 2451 | 2410 | as start:after |
+| stop-first | switch:before | 2425 | 2502 | 2403 | as start:after |
+| stop-first | commit:before | 2481 | 2463 | 2425 | as start:after |
+| stop-first | commit:after | 62 | 69 | 60 | committed: the new version serves |
+| stop-first | stop_old:before | 72 | 67 | 59 | |
 
-Also to fill in: the machine (CPU, Docker version, storage driver), how many runs, whether the restart used `--docker-socket` as the default, and the daemon-restart case (`TestDaemonRestartKeepsRoutesCorrect`: time from `systemctl restart docker` to every public port answering 2xx again from its own service).
+The outage is about 60–100 ms (the server's own start and its first route apply) except where the old stop-first version must be started again. Where a stop-first candidate exists, **two versions never run**: the candidate is stopped first, with its `stop_grace_s` capped at 10 s, so on a real service those four stages cost up to that cap plus the old version's start. The CI run of the same suite on `e76aa77` gave the same shape (stop-first start:after 2,292 ms, health:before 2,272, switch:before 2,299, commit:before 2,460; every other stage 58–220 ms).
+
+**Docker daemon restart** (`TestDaemonRestartKeepsRoutesCorrect`, two services, CI only): in CI (`sudo systemctl restart docker`, GitHub-hosted Ubuntu runner) both public ports answered 2xx from their own service again **12.1 s** after the restart began, never from the other one. A local run in the cloud container (no systemd; a script that restarts `dockerd`) took 20.6 s and 23.4 s. The bound is 30 s.
 
 ## What the Phase 0 spikes verified (tests, not measurements)
 

@@ -694,7 +694,7 @@ Event-driven, no timer: the events reader, `applyRoutes` (hash-deduplicated), th
 10. **Reconciler: boot pass, events, resync, interrupts.**
     - Do: the watcher (events op, back-off, events-then-list, re-inspect of buffered ids); the state map and ◌ unknown rules; the DB-only boot pass; the resync rule set (`TryLock` on service locks, busy services skipped; only the current attempt protected; orphans with grace and log tail; start a stopped active container); the lock order and its test-only checker; the start gate; **bench: the "S2 live watcher" run (Docker socket mounted with its group) as the S2 number against the 80 MB tripwire, "S2 no Docker" kept as report-only, clean-up of `serverdock.managed` containers and the app network**; `reconciler.finish_deploy` and `reconciler.remove_container`; the `docs/security.md` "Unattended destructive actions" entry; the back-off Background work row.
     - Tests: **kill -9 at each stage** (`testhooks` pause, SIGKILL, fresh start) for every blue-green and stop-first stage: the app is reachable again after the restart; an uncommitted deploy is `failed (interrupted by restart)` and its containers are removed by the resync; a committed one is `succeeded` and its old container is removed with its log tail; a stop-first old container is running again; the `jobs.run_deploy` intent has exactly one outcome row with the user's actor and `executor = system`; **each run records the outage: the time from SIGKILL to the first 2xx from the app after the restart** (reported in the PR and research/05, QM3a-9). **`TestBootPassChangesOnlyTheDB`** (no Docker op before the first resync). **`TestSchedulerStartsOnlyAfterTheFirstResync`**. **`TestDaemonRestartKeepsRoutesCorrect`** (integration, CI only: two services, `sudo systemctl restart docker`; each public port answers 2xx from its own service again within 30 s, never from the other). **`TestEventsStreamDropTriggersResync`**. **`TestResyncSkipsAServiceWithARunningJob`** (a candidate in its health gate survives a reconnect); **`TestResyncNeverBlocksOnABusyServiceLock`** (a reconnect while a job holds a service lock finishes the other services and the routes at once, and the per-service resync after the job covers the skipped one); **`TestLockOrderIsNeverReversed`** (the checker over every runner, resync, watcher and delete test); `TestWatcherTakesOnlyTheRouteLock`; **`TestResyncRemovesAnOlderAttemptOfTheRunningDeploy`**; **`TestEventsDuringListAreReinspected`**; **`TestDieThenStopEndsExited`**; **`TestDieWithNoRestartIsReportedExited`**; `TestRestartingContainerKeepsItsUpstream`; `TestNoOpReconcileWritesNoAuditRows`; `TestOrphanRemovalOnlyTouchesOurInstance`; `TestOrphanRemovalRemovesOnlyAnonymousVolumes` (a named volume attached by hand survives); `TestStateUnknownWhileEventsAreDown`; `TestReconcilerActionsAreSystemOnlyAndListed`; `TestBackoffOnlyWhileDown`.
-    - Footprint: the PR must report the first "S2 live watcher" number (against the 80 MB tripwire and the ≈ 52 MB estimate).
+    - Footprint: the PR must report the first "S2 live watcher" number (against the 80 MB tripwire and the ≈ 52 MB estimate).  Reported in Revision 16: full run 54.9 MB (cloud container; the CI number comes from the PR run).
     - Reviewers: `reviewer`, `systems` (required), `security`, `footprint`.
 
 11. **Deploy logs and progress reads.**
@@ -1111,3 +1111,84 @@ Recorded after step 9 and its reviews; later steps follow these. Step 9 was requ
 - **Optional (`systems` N10):** when `leaveKept`'s re-apply does confirm, the candidate is provably unreferenced and could be removed and the old container restored at once, instead of waiting for the resync.
 - **Step 13:** the UI offers "Delete again" on the "confirm again" failure.
 - **Release gate (`footprint`):** a full run plus a measured peak RSS during two concurrent deploys.
+
+## Revision 16 (step 10 implementation notes)
+
+Recorded after step 10 and its reviews; later steps follow these. Step 10 was requested through the "PR #6 CI and review run" session.
+
+- **Commits.**
+  - Implementation: `773c484` lock-order checker and route state map helpers; `3a68770` `serviceVersionsKept` fails closed; `422130b` watcher, state map and resync rules; `f3fa718` boot pass outcomes and the first resync as the start gate; `b93dfe9` tests; `dc3ffe3` routes applied before orphans are removed; `ecefe32` kill -9 tests; `7f3c833` daemon-restart and anonymous-volume integration tests and CI steps; `96d513a` docs; `b995650` the watcher during two real deploys loads nothing.
+  - Bench: `dc363bf` scenario 2 runs the live watcher ("S2 no Docker" report-only).
+  - Review fixes: `ec24ffc`, `6257769`, `6b79e71`, `e76aa77`.
+  - Commits 1–4 build, but their test files compile only from `b93dfe9` (the new `ResolveInterrupted` signature).
+- **Watcher** (`internal/deploy/reconciler.go`).
+  - One loop goroutine from server start, plus the goroutine holding the `events` call while a connection lasts.
+  - On every (re)connect: events first, then the list. Event ids go to a coalescing queue (bounded at 4,096; an overflow means the next pass is a full resync) and are re-inspected one by one behind the resync.
+  - Back-off 1 s → 30 s, jittered, and a timer only while the stream is down.
+  - `Kick()` (non-blocking, a no-op while up) is sent by a service action that finds the gate closed, outside the Booter's single flight, so "Try again" reconnects at once.
+  - The Booter no longer lists containers; `Sync` is a callback (`EnsureSynced`), and `ErrRoutesNotReady` means "not yet".
+  - The API reports ◌ unknown while the stream is down (`ServiceDeps.StreamUp`).
+- **Boot pass** (`interrupted.go`, DB only). A committed deploy is `succeeded`; an uncommitted one is `failed interrupted`; restart is `failed`; delete is `failed` plus `delete_interrupted`.
+  - Each interrupted `jobs.run_*` intent gets **one** outcome row (the intent's actor, executor `system`), found by `request_id`. A failed write is logged.
+  - **An uncommitted stop-first deploy whose start stage had begun, on a service with an active deploy, flags `versions_kept`**, so a restart or stop-first deploy queued behind the start gate is refused until the resync settles it (`reviewer` R1, R3).
+- **Resync** (`resync.go`). Its order departs from the design text, which had orphans removed inside the rules:
+  1. **Settle, fast and DB-only**, per service under `TryLock`, busy services skipped: drop the in-memory delete override; finish a deploy marked failed whose unknown commit outcome did commit (`fixCommitted`, with a later "ok" outcome for its run, see below); raise `app_safe`.
+  2. **Load the state map and apply the routes.** The map keeps the existing entries of services that were skipped or have a running job. Buffered ids are drained. **The scheduler's start gate opens here**, after the first route apply and before any removal or start.
+  3. **Finish, per service under `TryLock`.**
+     - When a container would be removed: drop the override and `RefreshNoRetry` under the service lock. **Nothing is removed unless that apply succeeds**, so a container is never removed while the proxy can still route to it.
+     - Then remove every container of another deploy (orphans, a kept candidate, an interrupted candidate, the old version left by a shutdown during the drain).
+     - Only when all are gone, start a stopped active container (rule 3), re-inspect once, and clear `versions_kept` / `previous_version_down` if it runs or set `previous_version_down` if it does not. A service with no active deploy and clean removals has those two flags cleared.
+     - Rule 3 skips `delete_interrupted` and a delete that failed in memory.
+  - The per-service resync after each job holds that service's lock from the list to the end. Requests made while the stream is down are kept (bounded).
+- **Departures from the plan text (accepted by the reviewers):**
+  - **The reconciler has no health gate.** This departs from Revision 15's "start and health-gate the old container": a gate held every app's routes and the start gate for up to `health_timeout_s` (`systems` B1, `reviewer` B2). The flags reflect whether the container runs; events keep the state honest after that.
+  - **Two versions never run, at the cost of the stop-first outage.** In the stop-first gap (kill -9 at `start:after`, `health:before`, `switch:before`, `commit:before`) the candidate is removed before the old version starts. The removal of an uncommitted container that blocks a start uses **`min(stop_grace_s, 10 s)`** (the stop call's own grace; every other orphan keeps `stop_grace_s`). Measured outage about 2.4 s with the tests' 2 s grace.
+  - **Revision 12 choice:** later resyncs apply with no retry of failed ports. Only the resyncs until the first `Load` that works, and "Try again", retry them, so a taken port causes no Caddy load on every reconnect (ADR 0004).
+  - **A second audit outcome for one intent** (`correctIntent`). When `fixCommitted` finds that a run recorded as `error` did commit, it appends an `ok` outcome with an empty error and `"note": "corrected after a restart: the commit was found recorded"` in `args_json`. `IntentStatus` takes the latest; the log stays append-only (`security` approved).
+  - `raiseAppSafe` is limited to the newest failed deploy newer than the active one that finished since the process started.
+  - `reconciler.finish_deploy` refuses inside the action while any container of another deploy of the service runs, and for `delete_interrupted` or a delete failed in memory. `reconciler.remove_container` refuses the active deploy inside the action. `LogKept` is true only when a hook kept the tail.
+  - With the proxy off the reconciler still runs (`LoadStateOnly`), and the gate opens.
+  - A failed first `Load` opens the gate and ends the session, so the back-off retries (no hot loop).
+- **Not done in step 10 (accepted):**
+  - The log tail on removal (`KeepLog` is wired, nil until step 11).
+  - A candidate's health gate failing fast on a `die`/`oom` event (the gate's 1 s inspect catches it).
+  - The derived service state (● ▲ ◆ ◌) beyond "unknown while the stream is down" in the API (steps 12–13).
+- **Tests.** Every test named in step 10 exists. Added: the first-deploy and queued-restart cases, `TestNothingIsRemovedUntilARouteApplyUnderTheLockSucceeds`, `TestSlowVersionsKeptDoesNotDelayRoutesOrTheStartGate`, `TestATrackedCandidateSurvivesAFullResync`, `TestGraceCapAppliesOnlyToTheCandidateThatBlocksTheStart`, `TestEnsureRoutesKicksTheReconnect` and others. Final matrix on `e76aa77`, all passing:
+  - build and vet (default, `integration`, `testhooks`); `go test -race ./...`; `-race -tags testhooks ./internal/deploy` (the lock-order checker over the whole package, also in CI); integration on `dockerapi`, `agentops` and `deploy`.
+  - **The kill -9 suite ×3** (20 stages, with the two-versions sampler).
+  - **The stop-first pair ×5:** 0 non-2xx other than the maintenance page, 0 drops, 0 retries, 0 Caddy loads, 2 `proxy_apply`. Maintenance 503s were 498–562 keep-alive on the success path (about 2 s) and 2,223–2,304 on the failing path (about 7.4 s).
+  - **Blue-green ×3:** 0 non-2xx, drops, retries and loads; 1 `proxy_apply`.
+  - **Unhealthy candidate ×3:** 0 of each; 0 `proxy_apply`.
+  - `-race -count=20 ./internal/deploy ./internal/jobs`; `cmd/serverdock` at `-race -count=20` (implementer, round 2).
+  - `TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx` (port-set reloads, Revision 9) passed alone and in every package run: 15 new-connection drops, all retried, 0 failed after the client retry.
+  - Two flakes were fixed in the tests: `TestDieThenStopEndsExited`, and a jobs test, pre-existing, that reset a job while the scheduler ran. `TestSubnetRecordedAfterBoot` (pre-existing) assumed the first subnet choice; it now reads the recorded /24, so a host route in 10.250.0.0/24 no longer fails it.
+- **Outage (QM3a-9):** `docs/research/05`. Blue-green 59–99 ms at every stage. Stop-first: 58–118 ms except `start:before` (232–345 ms, the old version started again) and the four gap stages (2,363–2,573 ms, the candidate stopped first). Docker daemon restart in CI: 12.1 s to correct answers on both ports.
+- **CI:** the integration job runs the kill -9 suite and, last and alone, `TestDaemonRestartKeepsRoutesCorrect` (`SD_TEST_DOCKER_RESTART=1`, `sudo systemctl restart docker`); its timeout is 25 minutes. Green on `e76aa77` (bench-gate fails on a draft PR by design).
+- **Bench** (cloud container, clean worktree; the same temporary vendor and cgroup v1 shims as 6–9, never committed):
+  - **Full S2 live watcher** (`6b79e71`, 3 runs): **54.9 MB** median of medians (54.9, 55.9, 54.0), idle CPU 0.01 %, VmHWM 57.3 MB. Ceiling 210, tripwire 80. Against the ≈ 52 MB estimate and the ≤ 56 MB planning figure, which are on the CI scale, the CI number comes from the PR's bench run.
+  - Quick runs: S2 live watcher 57.9 MB versus "S2 no Docker" 56.3 MB (report only), +1.6 MB, matching the ≈ 1.7 MB estimate; after the fixes 57.5 MB.
+  - **Full S4:** 47.6 MB (`dc363bf`) and 47.5 MB (`6b79e71`); idle CPU 0.01 %; tripwire 50 MB. The quick S4 (49.7 / 49.2) ran above the full numbers.
+  - Binary 19.83 MB gzip -9.
+  - No new timer, ticker, goroutine or dependency beyond the watcher.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after three blocking rounds:
+    1. two versions after a kill -9 in the stop-first gap; the versions_kept settling before the first `Load` kept every app offline; a stale-list `Load`; dropped per-service requests; the API state while the stream is down;
+    2. the start gate opening before removals let a queued job overlap; "Try again" did not reconnect;
+    3. the boot-pass flag stuck on a first deploy.
+  - `systems` APPROVE (required), after two blocking rounds:
+    1. the health gate held routes, the gate and the watcher; two versions; the stale-list `Load`; the lost per-service resync;
+    2. removal without an apply confirmed under the lock; the grace-cap recommendation.
+  - `security` APPROVE, after one blocking round (the same removal-without-confirmation hole).
+  - `footprint` APPROVE, after the full S4 run it required.
+
+### Revision 16, follow-ups for later steps
+
+- **Step 11:** wire `KeepLog` so `remove_container` keeps the log tail; assert it in the kill -9 tests.
+- **Steps 12–13:**
+  - Expose the derived service state.
+  - A restart or stop-first deploy queued behind a crash in the stop-first gap is refused with the `versions_kept` message rather than waiting: the UI says "try again once the service has settled".
+  - "Try again" is needed after a freed port (no automatic retry on later resyncs).
+- **Optional (`security`):** a minimum interval (1–2 s, a timestamp, no timer) between `Kick()`s, so repeated actions while Docker is down cannot reconnect faster than the back-off.
+- **Watch CI (`systems`):** `TestDaemonRestartKeepsRoutesCorrect` has a 30 s bound. CI measured 12.1 s and the local script 23.4 s; consider resetting the back-off when Docker answers again.
+- **Optional:** the candidate's gate failing fast on `die`/`oom`; carrying `committed_at` on the resync item instead of one DB read per removal; a separate "settled" flag if ◌ unknown during the capped removal graces turns out to matter.
+- **Release gate (`footprint`):** the CI S2 live-watcher number, with a reason if it is over 56 MB; S4 has 2–2.5 MB of headroom under its tripwire in full runs.
