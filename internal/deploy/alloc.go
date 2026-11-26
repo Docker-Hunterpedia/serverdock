@@ -87,7 +87,11 @@ func NewAllocator(st *store.Store, docker Lister, subnet SubnetSource) *Allocato
 // retryable CodeDocker; no free address is CodeIPPoolExhausted.
 func (a *Allocator) Allocate(ctx context.Context, deployID int64) (netip.Addr, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	lockTaken(lockAlloc, a, 0)
+	defer func() {
+		lockReleased(lockAlloc, a, 0)
+		a.mu.Unlock()
+	}()
 
 	if err := a.subnet.Check(ctx); err != nil {
 		var oe *OverlapError

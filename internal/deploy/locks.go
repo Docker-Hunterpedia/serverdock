@@ -31,6 +31,7 @@ func (l *ServiceLocks) Lock(ctx context.Context, service int64) (unlock func(), 
 	e := l.ref(service)
 	select {
 	case e.ch <- struct{}{}:
+		lockTaken(lockService, l, service)
 		return l.unlocker(service, e), nil
 	case <-ctx.Done():
 		l.unref(service, e)
@@ -43,6 +44,7 @@ func (l *ServiceLocks) TryLock(service int64) (unlock func(), ok bool) {
 	e := l.ref(service)
 	select {
 	case e.ch <- struct{}{}:
+		lockTaken(lockService, l, service)
 		return l.unlocker(service, e), true
 	default:
 		l.unref(service, e)
@@ -77,6 +79,7 @@ func (l *ServiceLocks) unlocker(service int64, e *svcLock) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			lockReleased(lockService, l, service)
 			<-e.ch
 			l.unref(service, e)
 		})

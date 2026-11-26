@@ -159,6 +159,36 @@ func (s *StateMap) replace(all []Container) {
 	s.ready = true
 }
 
+// replaceKeepGate replaces the map without opening the boot gate (the embedded
+// proxy is off: there is no route to apply, so the gate stays closed).
+func (s *StateMap) replaceKeepGate(all []Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.by = make(map[string]Container, len(all))
+	for _, c := range all {
+		s.by[c.ID] = c
+	}
+}
+
+// replaceService replaces the entries of one service (a per-service resync).
+func (s *StateMap) replaceService(service int64, cs []Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.by == nil {
+		s.by = map[string]Container{}
+	}
+	for id, c := range s.by {
+		if c.Service == service {
+			delete(s.by, id)
+		}
+	}
+	for _, c := range cs {
+		if c.Service == service {
+			s.by[c.ID] = c
+		}
+	}
+}
+
 func (s *StateMap) set(c Container) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -445,18 +475,23 @@ func (r *Routes) apply(ctx context.Context, mutate func() error, retry, detach b
 func (r *Routes) acquire(ctx context.Context) error {
 	select {
 	case r.lock <- struct{}{}:
+		lockTaken(lockRoute, r, 0)
 		return nil
 	default:
 	}
 	select {
 	case r.lock <- struct{}{}:
+		lockTaken(lockRoute, r, 0)
 		return nil
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	}
 }
 
-func (r *Routes) release() { <-r.lock }
+func (r *Routes) release() {
+	lockReleased(lockRoute, r, 0)
+	<-r.lock
+}
 
 // send builds the list and sends it if it changed. The caller holds the route lock.
 func (r *Routes) send(ctx context.Context, retry bool) error {
@@ -489,6 +524,45 @@ func (r *Routes) send(ctx context.Context, retry bool) error {
 	}
 	return nil
 }
+
+// Load replaces the whole state map with all (a resync's list and inspect) and
+// applies the routes. retry is true only for the first resync after a start: a
+// later resync (a reconnect, a Docker restart) never asks the agent to retry failed
+// ports, so a taken port cannot make every resync reload Caddy (plan 0004 step 10,
+// the decision recorded in Revision 16: only "Try again" and the first boot Sync
+// retry). The error is an apply error: the map is loaded either way, so the boot
+// gate is open when Load returns (ErrRoutesNotReady cannot happen after it).
+func (r *Routes) Load(ctx context.Context, all []Container, retry bool) error {
+	return r.apply(ctx, func() error { r.state.replace(all); return nil }, retry, false)
+}
+
+// LoadStateOnly replaces the state map and applies nothing, leaving the boot gate
+// closed: the embedded proxy is off, there are no routes, and a route call must keep
+// answering ErrRoutesNotReady.
+func (r *Routes) LoadStateOnly(all []Container) { r.state.replaceKeepGate(all) }
+
+// ReplaceService replaces one service's entries (a per-service resync after a job)
+// and applies, never asking for a retry of failed ports.
+func (r *Routes) ReplaceService(ctx context.Context, service int64, cs []Container) error {
+	return r.apply(ctx, func() error { r.state.replaceService(service, cs); return nil }, false, false)
+}
+
+// ReplaceServiceStateOnly is ReplaceService with no apply (the proxy is off).
+func (r *Routes) ReplaceServiceStateOnly(service int64, cs []Container) {
+	r.state.replaceService(service, cs)
+}
+
+// RefreshNoRetry applies the routes the database and the state map say, never
+// asking for a retry of failed ports: the resync's own Refresh. A nil result means
+// the proxy holds exactly the desired list (a list that does not reference any
+// container of a deploy that is not the service's active one), so an orphan removal
+// that follows it cannot leave a route to a gone container.
+func (r *Routes) RefreshNoRetry(ctx context.Context) error { return r.apply(ctx, nil, false, false) }
+
+// DropOverride forgets a service's override without applying (the reconciler holds
+// the service's lock, so no job is using it: whatever an override still says is
+// stale).
+func (r *Routes) DropOverride(service int64) { r.delOverride(service) }
 
 // Refresh re-reads everything and applies if the routes changed. With failed
 // ports it sends again (the other program let go, or the user pressed "Try
