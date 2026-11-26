@@ -95,6 +95,32 @@ func (d *svcDeps) snapshotOf(r svcRow, image string) Snapshot {
 	return s
 }
 
+// versionsKeptMessage is why stop-first work and restarts are refused while a
+// failed stop-first deploy left its candidate running next to a stopped previous
+// version (needs_attention = versions_kept): starting or replacing either one could
+// run two versions of a service that must never run twice.
+const versionsKeptMessage = "two versions of this service may be running (a stop-first deploy was left unfinished); it is settled at the next start of ServerDock"
+
+// keptCheck refuses, in the transaction that would queue it, a stop-first deploy
+// while the service is flagged versions_kept. Blue-green may go on: it runs two
+// versions by design and its commit clears the flag.
+func keptCheck(ctx context.Context, tx *sql.Tx, service int64, strategy string) error {
+	if strategy != jobs.StrategyStopFirst {
+		return nil
+	}
+	var attention sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT needs_attention FROM services WHERE id = ?`, service).Scan(&attention); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return actions.NotFound("the service no longer exists")
+		}
+		return err
+	}
+	if attention.Valid && attention.String == AttentionVersionsKept {
+		return actions.Conflict("%s", versionsKeptMessage)
+	}
+	return nil
+}
+
 // queueDeploy enqueues a deploy of service row r with image (the reference the
 // snapshot records) as c.Actor, in one transaction that also records the new
 // image reference as the service's desired one (so a later plain deploy does not
@@ -115,6 +141,9 @@ func (d *svcDeps) queueDeploy(ctx context.Context, c actions.Call, r svcRow, ima
 	// request read (an admin's services.set_source in between wins: a write token
 	// cannot undo it), and a new tag becomes the service's desired image.
 	setImage := func(ctx context.Context, tx *sql.Tx) error {
+		if err := keptCheck(ctx, tx, r.id, snap.Strategy); err != nil {
+			return err
+		}
 		var cur string
 		if err := tx.QueryRowContext(ctx, `SELECT image_ref FROM services WHERE id = ?`, r.id).Scan(&cur); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -243,7 +272,12 @@ func (d *svcDeps) queueFrom(ctx context.Context, c actions.Call, r svcRow, kind 
 	}
 	out, err := d.Jobs.EnqueueDeploy(ctx, jobs.NewDeploy{
 		ServiceID: r.id, Kind: kind, SourceDeployID: source, Snapshot: raw, Settings: snap.Settings(),
-		Actor: jobs.ActorOf(c.Actor), InTx: check,
+		Actor: jobs.ActorOf(c.Actor), InTx: func(ctx context.Context, tx *sql.Tx) error {
+			if err := keptCheck(ctx, tx, r.id, snap.Strategy); err != nil {
+				return err
+			}
+			return check(ctx, tx)
+		},
 	})
 	switch {
 	case errors.Is(err, jobs.ErrServiceDeleting):
@@ -333,13 +367,21 @@ func (d *svcDeps) rollback(ctx context.Context, c actions.Call, in RollbackIn) (
 	// to what a rollback would run: an earlier version may come from a repository an
 	// admin has since retired, or listen on another port than the exposed service's
 	// now. Both are "what runs / where it is exposed" decisions: admin only.
-	if c.Actor.Scope() < actions.ScopeAdmin {
-		if !policy.SameRepository(snap.ImageRef, r.imageRef) {
-			return DeployOut{}, &actions.DeniedError{Reason: "that version is from another image repository than the service's current one: rolling back to it needs an admin token or a signed-in session"}
+	admin := c.Actor.Scope() >= actions.ScopeAdmin
+	tokenRules := func(imageRef string, publicPort, containerPort sql.NullInt64) error {
+		if admin {
+			return nil
 		}
-		if r.publicPort.Valid && (!r.containerPort.Valid || r.containerPort.Int64 != int64(snap.ContainerPort)) {
-			return DeployOut{}, &actions.DeniedError{Reason: "that version listens on another container port than the exposed service's current one: rolling back to it needs an admin token or a signed-in session"}
+		if !policy.SameRepository(snap.ImageRef, imageRef) {
+			return &actions.DeniedError{Reason: "that version is from another image repository than the service's current one: rolling back to it needs an admin token or a signed-in session"}
 		}
+		if publicPort.Valid && (!containerPort.Valid || containerPort.Int64 != int64(snap.ContainerPort)) {
+			return &actions.DeniedError{Reason: "that version listens on another container port than the exposed service's current one: rolling back to it needs an admin token or a signed-in session"}
+		}
+		return nil
+	}
+	if err := tokenRules(r.imageRef, r.publicPort, r.containerPort); err != nil {
+		return DeployOut{}, err
 	}
 	return d.queueFrom(ctx, c, r, "rollback", src.id, snap, func(ctx context.Context, tx *sql.Tx) error {
 		var committed sql.NullString
@@ -352,7 +394,17 @@ func (d *svcDeps) rollback(ctx context.Context, c actions.Call, in RollbackIn) (
 		if !committed.Valid {
 			return actions.InvalidInput("deploy #%d was never live, so it cannot be rolled back to", in.To)
 		}
-		return nil
+		// The token rules again, on what the service is NOW: a concurrent admin
+		// set_source or set_public_port is seen here, in the enqueue's transaction.
+		var imageRef string
+		var publicPort, containerPort sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT image_ref, public_port, container_port FROM services WHERE id = ?`, r.id).Scan(&imageRef, &publicPort, &containerPort); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return actions.NotFound("the service no longer exists")
+			}
+			return err
+		}
+		return tokenRules(imageRef, publicPort, containerPort)
 	})
 }
 

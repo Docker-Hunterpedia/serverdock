@@ -496,3 +496,46 @@ func TestRollbackNeedsAdminForAnotherRepositoryOrPort(t *testing.T) {
 		t.Errorf("an admin token: %v", err)
 	}
 }
+
+// While a failed stop-first deploy left a candidate running beside a stopped previous
+// version (versions_kept), nothing may start or replace either one: restart and every
+// stop-first deploy, redeploy and rollback are refused (409). Blue-green may go on,
+// and its commit clears the flag.
+func TestVersionsKeptRefusesRestartAndStopFirstWork(t *testing.T) {
+	g := newRRig(t)
+	g.start(false)
+	g.services()
+	g.liveVia(stopFirstMod) // a rollback runs the target's snapshot: its strategy decides
+	g.liveVia(stopFirstMod)
+	mustExec(t, g.st, `UPDATE services SET needs_attention = ?, strategy = 'stop_first' WHERE id = ?`, AttentionVersionsKept, g.svc)
+	before := g.rows(`SELECT COUNT(*) FROM jobs`)
+	for _, c := range []struct {
+		name string
+		in   any
+	}{
+		{"services.restart", m{"service": "p/web"}},
+		{"services.deploy", m{"service": "p/web"}},
+		{"services.redeploy", m{"service": "p/web"}},
+		{"services.rollback", m{"service": "p/web", "to": 1}},
+	} {
+		_, err := g.invoke(rigWrite, c.name, c.in)
+		wantKind(t, err, actions.ErrConflict)
+		if !strings.Contains(err.Error(), "two versions") {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+	if g.rows(`SELECT COUNT(*) FROM jobs`) != before {
+		t.Error("a refused request queued a job")
+	}
+	// Blue-green is allowed, and its commit clears the flag.
+	mustExec(t, g.st, `UPDATE services SET strategy = 'blue_green' WHERE id = ?`, g.svc)
+	out := g.deployOut(g.invoke(rigWrite, "services.deploy", m{"service": "p/web"}))
+	if s := g.wait(out.Job); s != jobs.StateSucceeded {
+		t.Fatalf("job %s", s)
+	}
+	var attention *string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != nil {
+		t.Errorf("needs_attention %q after a blue-green commit", *attention)
+	}
+}

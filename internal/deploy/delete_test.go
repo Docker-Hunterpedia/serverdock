@@ -372,6 +372,10 @@ func TestDeleteThatCannotRemoveAContainerFlagsTheServiceAndRunsAgain(t *testing.
 	if attention != AttentionDeleteInterrupted || g.rows(`SELECT COUNT(*) FROM services`) != 1 {
 		t.Errorf("attention %q", attention)
 	}
+	// A later-step failure also takes the not-running override away again.
+	if g.routes.overrideCount() != 0 {
+		t.Error("a failed delete left its not-running override behind")
+	}
 	_ = d
 	g.ops.mu.Lock()
 	g.ops.removeErr = nil
@@ -532,6 +536,13 @@ func TestDeleteTakesTheRouteAwayFirstAndNeedsItConfirmed(t *testing.T) {
 	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
 	if attention != AttentionDeleteInterrupted || g.rows(`SELECT COUNT(*) FROM services`) != 1 {
 		t.Errorf("attention %q", attention)
+	}
+	// The override of the failed delete is gone and the route is the old upstream again.
+	if g.routes.overrideCount() != 0 {
+		t.Error("a failed delete left its not-running override behind")
+	}
+	if last := g.lastRoutes(); len(last) != 1 || last[0].Upstream != "10.250.0.2:8080" {
+		t.Errorf("the route after the failed delete: %+v", last)
 	}
 	// The container still exists, so its address stays held: a new deploy never gets it.
 	extra := addDeploy(t, g.st, g.svc, 9, "queued", nil)

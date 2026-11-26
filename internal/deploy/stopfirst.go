@@ -174,7 +174,9 @@ func (rn *run) stopOldFirst(ctx context.Context) *failure {
 		// The stop is NOT cancellable: a cancel in the middle of the grace would leave
 		// the app SIGTERMed and dying while ServerDock believes it still runs. It runs
 		// to its own bound (the grace + 15 s; 5 s at shutdown) and the cancel is read
-		// right after.
+		// right after. Known limit: a SIGTERM to ServerDock during a long stop can outrun
+		// the 10 s process grace; the job is then left running, the boot pass settles it
+		// and the boot resync (step 10, rule 3) starts the stopped previous container.
 		bound := time.Duration(grace)*time.Second + StopExtra
 		if rn.shuttingDown() {
 			bound = rn.r.cfg.ShutdownCleanupBound
@@ -253,6 +255,7 @@ func (rn *run) restoreOld(f *failure) *failure {
 	switch {
 	case deleting:
 		f.appSafe = AppSafeNo
+		rn.setAttention(AttentionPreviousDown) // honest if the delete then fails: the previous version is down
 		f.msg += "; the service is being deleted, so the previous version was not started again"
 	case reason != "":
 		f.appSafe = AppSafeNo

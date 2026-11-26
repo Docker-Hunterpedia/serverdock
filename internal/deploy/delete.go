@@ -172,6 +172,15 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 	ctx = context.WithoutCancel(ctx)
 	fail := func(msg string) (RunDeleteOut, error) {
 		r.setAttention(p.Service, AttentionDeleteInterrupted)
+		// The "not running" override of step 0 must not outlive a failed delete: the
+		// service's rows and its active deploy's address are still held, so the routes
+		// can safely follow the database and the state map again (best effort, on a
+		// fresh bounded context).
+		cctx, ccancel := context.WithTimeout(ctx, SwitchBound)
+		if err := r.cfg.Routes.ClearOverride(cctx, p.Service); err != nil && !errors.Is(err, ErrRoutesNotReady) {
+			r.cfg.Log.Warn("the routes could not be re-applied after a failed delete", "service", p.Service, "err", err.Error())
+		}
+		ccancel()
 		return out, errors.New(msg)
 	}
 	step := func(d time.Duration) (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, d) }
@@ -194,7 +203,7 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 	// upstream to an address the allocator is about to hand out again.
 	if exists {
 		rctx, rcancel := step(SwitchBound)
-		err = r.cfg.Routes.SetOverride(rctx, p.Service, Override{Kind: OverrideNotRunning})
+		err = r.cfg.Routes.ReplaceOverride(rctx, p.Service, Override{Kind: OverrideNotRunning}) // the map first, then the apply
 		rcancel()
 		if err != nil && !errors.Is(err, ErrRoutesNotReady) {
 			r.cfg.Log.Warn("the route of a service being deleted could not be taken away", "service", p.Service, "err", err.Error())

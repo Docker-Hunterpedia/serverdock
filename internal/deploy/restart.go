@@ -63,6 +63,10 @@ func (d *svcDeps) restart(ctx context.Context, c actions.Call, in ServiceRefIn) 
 	if !r.activeDeploy.Valid {
 		return RestartOut{}, actions.Conflict("%s has no live version to restart; deploy it first", in.Service)
 	}
+	if r.attention.Valid && r.attention.String == AttentionVersionsKept {
+		// The stopped previous container would be started beside the kept candidate.
+		return RestartOut{}, actions.Conflict("%s", versionsKeptMessage)
+	}
 	// timeout_s is the recorded budget (the stop plus the health gate); like every
 	// non-deploy job it is not enforced: each step has its own bound.
 	payload, _ := json.Marshal(restartPayload{Service: r.id})
