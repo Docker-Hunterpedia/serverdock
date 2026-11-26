@@ -432,15 +432,16 @@ func (rn *run) gateOld(ctx context.Context) (reason string, unverified bool) {
 // versionsKept reports whether the service is flagged versions_kept right now (a
 // failed stop-first deploy left its candidate running beside the stopped previous
 // version). It is read at RUN time under the service lock, because the flag is set
-// by a job that may have run after this one was queued.
-func (rn *run) versionsKept(ctx context.Context) bool {
+// by a job that may have run after this one was queued. It fails closed: a database
+// error is an error, never "not flagged" (the caller refuses to go on).
+func (rn *run) versionsKept(ctx context.Context) (bool, error) {
 	return serviceVersionsKept(ctx, rn.r.cfg.DB.R, rn.svc.id)
 }
 
-func serviceVersionsKept(ctx context.Context, q rowQuerier, service int64) bool {
+func serviceVersionsKept(ctx context.Context, q rowQuerier, service int64) (bool, error) {
 	var attention sql.NullString
 	if err := q.QueryRowContext(ctx, `SELECT needs_attention FROM services WHERE id = ?`, service).Scan(&attention); err != nil {
-		return false
+		return false, err
 	}
-	return attention.Valid && attention.String == AttentionVersionsKept
+	return attention.Valid && attention.String == AttentionVersionsKept, nil
 }

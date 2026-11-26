@@ -301,11 +301,22 @@ func (rn *run) execute(ctx context.Context) *failure {
 	// Pull, check and start share one 10-minute bound; stop-first adds the stop of
 	// the previous container (stop_grace_s + 15 s, plan 0004 "Deadlines and contexts").
 	rn.stopFirst = rn.snap.Strategy == jobs.StrategyStopFirst
-	if rn.stopFirst && rn.versionsKept(ctx) {
+	if rn.stopFirst {
 		// Read again now that the service lock is held: the flag may have been set by
 		// the job that ran before this one, after this one was queued. Nothing is
-		// started, stopped or routed.
-		return &failure{code: CodeVersionsKept, msg: versionsKeptMessage}
+		// started, stopped or routed. Fail closed: a database error refuses the deploy
+		// too (before the pull), because the flag cannot be ruled out.
+		kept, err := rn.versionsKept(ctx)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return rn.ctxFailure(ctx)
+		case err != nil:
+			rn.failedDB = true
+			rn.r.cfg.Log.Error("a deploy could not read the service's attention flag", "deploy", rn.deploy, "err", err.Error())
+			return &failure{code: CodeDB, msg: "ServerDock's database could not be read, so the deploy stopped before changing anything"}
+		case kept:
+			return &failure{code: CodeVersionsKept, appSafe: AppSafeUnknown, msg: versionsKeptMessage}
+		}
 	}
 	bound := rn.r.cfg.PreSwitchBound
 	if rn.stopFirst {

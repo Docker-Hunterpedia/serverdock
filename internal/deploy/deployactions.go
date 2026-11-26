@@ -99,7 +99,7 @@ func (d *svcDeps) snapshotOf(r svcRow, image string) Snapshot {
 // failed stop-first deploy left its candidate running next to a stopped previous
 // version (needs_attention = versions_kept): starting or replacing either one could
 // run two versions of a service that must never run twice.
-const versionsKeptMessage = "two versions of this service may be running (a stop-first deploy was left unfinished); it is settled at the next start of ServerDock"
+const versionsKeptMessage = "two versions of this service may be running (a stop-first deploy was left unfinished); ServerDock settles this by itself (it checks after each job and at every start); try again afterwards"
 
 // keptCheck refuses, in the transaction that would queue it, a stop-first deploy
 // while the service is flagged versions_kept. Blue-green may go on: it runs two
