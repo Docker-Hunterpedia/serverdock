@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -135,6 +136,18 @@ func removeLogs(root string, service int64) error {
 	dir, err := safeLogDir(root, service)
 	if err != nil {
 		return err
+	}
+	// The root itself must be a plain directory: through a link RemoveAll would delete
+	// whatever the link points into.
+	fi, err := os.Lstat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return errors.New("the deploy-log root is not a plain directory")
 	}
 	return os.RemoveAll(dir)
 }

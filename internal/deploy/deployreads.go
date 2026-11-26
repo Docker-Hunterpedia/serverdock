@@ -259,7 +259,7 @@ func (d *deployReads) get(ctx context.Context, in DeploysGetIn) (DeploysGetOut, 
 		return DeploysGetOut{}, err
 	}
 	live := r.item.Status == StatusQueued || r.item.Status == StatusRunning
-	if live && d.Progress != nil {
+	if live && r.item.Stage == StagePull && d.Progress != nil {
 		if p, ok := d.Progress(r.id); ok {
 			out.Progress = &PullProgressOut{Layers: p.Layers, LayersDone: p.LayersDone, Bytes: p.Bytes, BytesTotal: p.BytesTotal, Status: agent.CleanText(p.Status, 64)}
 		}
@@ -279,6 +279,8 @@ func (d *deployReads) log(ctx context.Context, in DeploysGetIn) (DeploysLogOut, 
 	case err == nil:
 		out.Kept, out.Text, out.Truncated = true, text, truncated
 		return out, nil
+	case errors.Is(err, ErrLogBusy):
+		return DeploysLogOut{}, actions.Unavailable("deploy logs are being read right now; try again in a moment")
 	case !errors.Is(err, ErrNoLog):
 		return DeploysLogOut{}, actions.Unavailable("the log of deploy #%d could not be read", in.Number)
 	}

@@ -644,13 +644,6 @@ func (rn *run) stopOld(ctx context.Context, old int64) string {
 	grace := rn.snap.StopGraceS
 	var notes []string
 	for _, id := range ids {
-		if rn.r.cfg.KeepLog != nil {
-			kctx, kcancel := context.WithTimeout(ctx, recordBound)
-			if err := rn.r.cfg.KeepLog(kctx, old, id); err != nil {
-				notes = append(notes, "log not kept: "+agent.CleanText(err.Error(), 120))
-			}
-			kcancel()
-		}
 		sctx, scancel := context.WithTimeout(ctx, time.Duration(grace)*time.Second+StopExtra)
 		stopErr := ops.ContainerStop(sctx, id, grace)
 		rn.op(sctx, stopErr)
@@ -665,6 +658,16 @@ func (rn *run) stopOld(ctx context.Context, old int64) string {
 		if gone {
 			rn.r.cfg.Tracker.Untrack(id)
 			continue
+		}
+		// The output is kept after the stop (so what the app printed while shutting
+		// down is in it) and before the removal. It is after the commit: no route
+		// waits for it.
+		if rn.r.cfg.KeepLog != nil {
+			kctx, kcancel := context.WithTimeout(ctx, recordBound)
+			if err := rn.r.cfg.KeepLog(kctx, old, id); err != nil && !errors.Is(err, ErrOlderDeploy) {
+				notes = append(notes, "log not kept: "+agent.CleanText(err.Error(), 120))
+			}
+			kcancel()
 		}
 		rctx, rcancel := context.WithTimeout(ctx, RemoveBound)
 		rmErr := ops.ContainerRemove(rctx, id)

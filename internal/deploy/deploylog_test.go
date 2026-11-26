@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,9 +33,12 @@ type fakeLogSrc struct {
 	alive map[string]bool
 	tails []int
 	ops   *fakeOps
+	// hang makes a call block until its context ends (a log source that never answers).
+	hang   bool
+	onOpen func() // runs when a log is opened
 }
 
-func (f *fakeLogSrc) LogsOnce(_ context.Context, container string, tail int) (io.ReadCloser, error) {
+func (f *fakeLogSrc) LogsOnce(ctx context.Context, container string, tail int) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, container)
@@ -45,13 +49,27 @@ func (f *fakeLogSrc) LogsOnce(_ context.Context, container string, tail int) (io
 	if f.ops != nil {
 		f.alive[container] = f.ops.find(container) != nil
 	}
+	if f.onOpen != nil {
+		f.onOpen()
+	}
+	if f.hang {
+		f.mu.Unlock()
+		<-ctx.Done()
+		f.mu.Lock()
+		return nil, context.Cause(ctx)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
 	if f.gen != nil {
 		return io.NopCloser(f.gen(container)), nil
 	}
-	return io.NopCloser(strings.NewReader(f.texts[container])), nil
+	// Like Docker: only the newest tail lines.
+	txt := f.texts[container]
+	if lines := strings.SplitAfter(txt, "\n"); len(lines) > tail+1 {
+		txt = strings.Join(lines[len(lines)-1-tail:], "")
+	}
+	return io.NopCloser(strings.NewReader(txt)), nil
 }
 
 func (f *fakeLogSrc) set(container, text string) {
@@ -84,6 +102,9 @@ func newLogRig(t *testing.T, opts ...rigOpt) *logRig {
 	opts = append(opts, func(c *RunnerConfig) {
 		c.LogRoot = l.root
 		c.KeepLog = func(ctx context.Context, d int64, container string) error { return l.dl.Keep(ctx, d, container) }
+		c.KeepLogNote = func(ctx context.Context, d int64, container, note string) error {
+			return l.dl.KeepWithNote(ctx, d, container, note)
+		}
 		c.PruneLogs = func(ctx context.Context, s int64) { l.dl.Prune(ctx, s) }
 	})
 	l.rrig = newRRig(t, opts...)
@@ -259,7 +280,8 @@ func TestDeployLogCapHoldsForHugeOutput(t *testing.T) {
 	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
 		t.Fatal(err)
 	}
-	if served > 2<<20 {
+	// Each of at most five rounds reads about 1 MiB (this source ignores the tail it is asked for).
+	if served > 6<<20 {
 		t.Errorf("%d bytes were read from a 50 MiB output: the cap does not stop the read", served)
 	}
 	text, truncated, err := g.dl.Read(g.svc, d)
@@ -830,5 +852,323 @@ func TestDeleteRemovesRealDeployLogs(t *testing.T) {
 	}
 	if !g.dl.Kept(api)[dApi] {
 		t.Error("another service's log went with it")
+	}
+}
+
+// ---- review round 1 ----
+
+// With 2000 lines that do not fit in 1 MiB, the NEWEST lines are kept (the tail is asked
+// for again with fewer lines), and the header says how many.
+func TestDeployLogKeepsTheNewestLinesWhenTheTailDoesNotFit(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	var b strings.Builder
+	for i := 1; i <= LogTail; i++ {
+		fmt.Fprintf(&b, "line %04d %s\n", i, strings.Repeat("x", 2000)) // about 4 MB in all
+	}
+	b.WriteString("PANIC: the newest line\n")
+	g.src.set("c1", b.String())
+	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	text, truncated, err := g.dl.Read(g.svc, d)
+	if err != nil || truncated {
+		t.Fatalf("%v %v", err, truncated)
+	}
+	if !strings.Contains(text, "PANIC: the newest line") || !strings.Contains(text, "line 2000 ") || strings.Contains(text, "line 0001 ") {
+		t.Errorf("the newest lines are not the ones kept (%d bytes)", len(text))
+	}
+	if strings.Contains(text, "output cut") || strings.Contains(text, "the newest 2000 lines") {
+		t.Error("the header or marker claims what the file does not hold")
+	}
+	if !strings.Contains(text, "container: c1") {
+		t.Error("the header does not name the container")
+	}
+	g.src.mu.Lock()
+	defer g.src.mu.Unlock()
+	if n := len(g.src.tails); n < 2 || n > maxTailRounds+1 || g.src.tails[0] != LogTail || g.src.tails[n-1] >= LogTail {
+		t.Errorf("tails asked for: %v", g.src.tails)
+	}
+}
+
+// One line longer than the cap cannot be kept whole: the file says the newest is cut.
+func TestDeployLogSaysHonestlyWhenTheNewestLineCannotFit(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	g.src.set("c1", "old line\n"+strings.Repeat("y", 3<<20)+"\n")
+	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	text, truncated, err := g.dl.Read(g.svc, d)
+	if err != nil || truncated || len(text) > LogMaxBytes {
+		t.Fatalf("%v %v %d", err, truncated, len(text))
+	}
+	if !strings.Contains(text, "the newest line is longer than the cap") {
+		t.Errorf("no honest marker: %s", text[len(text)-200:])
+	}
+}
+
+func TestDeployLogWriteErrorsAreNotReportedAsReadErrors(t *testing.T) {
+	cw := &countWriter{w: failWriter{}}
+	_, err := io.Copy(&lineCounter{w: cw}, strings.NewReader("x"))
+	var we *writeError
+	if !errors.As(err, &we) || cw.err == nil {
+		t.Errorf("%v", err)
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// An older deploy is skipped without a note on any stage.
+func TestOlderDeploysLogIsASilentSkip(t *testing.T) {
+	g := newLogRig(t)
+	first := addDeploy(t, g.st, g.svc, 1, "succeeded", "10.250.0.2")
+	for n := 2; n <= LogKeep+2; n++ {
+		addDeploy(t, g.st, g.svc, n, "failed", nil)
+	}
+	g.src.set("c1", "x")
+	if err := g.dl.Keep(context.Background(), first, "c1"); !errors.Is(err, ErrOlderDeploy) {
+		t.Errorf("%v", err)
+	}
+}
+
+// Prune, Kept and Read never follow a link in the place of the root or of a service's
+// directory.
+func TestDeployLogDirectoryLinksAreNeverFollowed(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, strconv.FormatInt(d, 10)+".log.gz"), []byte("x"), 0o600)
+	os.WriteFile(filepath.Join(outside, "99.log.gz"), []byte("x"), 0o600) // Prune would delete this
+	os.MkdirAll(filepath.Dir(g.root), 0o700)
+	// The service directory is a link.
+	os.MkdirAll(g.root, 0o700)
+	os.Symlink(outside, filepath.Join(g.root, strconv.FormatInt(g.svc, 10)))
+	if len(g.dl.Kept(g.svc)) != 0 {
+		t.Error("Kept followed a linked service directory")
+	}
+	g.dl.Prune(context.Background(), g.svc)
+	if _, err := os.Stat(filepath.Join(outside, "99.log.gz")); err != nil {
+		t.Error("Prune deleted through a linked service directory")
+	}
+	if _, _, err := g.dl.Read(g.svc, d); !errors.Is(err, ErrNoLog) {
+		t.Errorf("Read: %v", err)
+	}
+	// The root is a link.
+	os.RemoveAll(g.root)
+	os.MkdirAll(filepath.Join(outside, strconv.FormatInt(g.svc, 10)), 0o700)
+	os.WriteFile(filepath.Join(outside, strconv.FormatInt(g.svc, 10), "99.log.gz"), []byte("x"), 0o600)
+	os.Symlink(outside, g.root)
+	g.dl.Prune(context.Background(), g.svc)
+	if len(g.dl.Kept(g.svc)) != 0 {
+		t.Error("Kept followed a linked root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, strconv.FormatInt(g.svc, 10), "99.log.gz")); err != nil {
+		t.Error("Prune deleted through a linked root")
+	}
+	if err := removeLogs(g.root, g.svc); err == nil {
+		t.Error("removeLogs went through a linked root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, strconv.FormatInt(g.svc, 10), "99.log.gz")); err != nil {
+		t.Error("the delete removed files through a linked root")
+	}
+}
+
+// A service deleted while its log is being written does not get its directory back.
+func TestDeployLogOfADeletedServiceIsNotWritten(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	g.src.set("c1", "x")
+	g.src.onOpen = func() { mustExec(t, g.st, `DELETE FROM services WHERE id = ?`, g.svc) }
+	if err := g.dl.Keep(context.Background(), d, "c1"); err == nil {
+		t.Error("a log was kept for a deleted service")
+	}
+	if _, err := os.Stat(filepath.Join(g.root, strconv.FormatInt(g.svc, 10))); !os.IsNotExist(err) {
+		t.Errorf("the service's directory is back: %v", err)
+	}
+}
+
+// At shutdown the candidate is stopped and removed even though the log source never
+// answers: the log is skipped (the resync keeps a leftover candidate's log).
+func TestShutdownBeforeSwitchSkipsAHangingLogAndStillRemovesTheCandidate(t *testing.T) {
+	g := newLogRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.src.hang = true
+	inHealth := make(chan struct{}, 1)
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		select {
+		case inHealth <- struct{}{}:
+		default:
+		}
+		return agentops.HealthResult{OK: false}, nil
+	}
+	g.start(false)
+	d, _ := g.deploy(g.svc, func(s *Snapshot) { s.Health.TimeoutS = 600 })
+	<-inHealth
+	t0 := time.Now()
+	g.stop()
+	if took := time.Since(t0); took > 4*time.Second {
+		t.Errorf("the shutdown took %v", took)
+	}
+	if g.containerOf(d) != nil {
+		t.Error("the candidate was left behind")
+	}
+	g.src.mu.Lock()
+	n := len(g.src.calls)
+	g.src.mu.Unlock()
+	if n != 0 {
+		t.Errorf("the log source was asked %d times at shutdown", n)
+	}
+}
+
+// Not at shutdown: a log source that hangs costs at most its bound, and the candidate
+// is still removed; the stage detail says the log was not kept.
+func TestHangingLogSourceCostsOnlyItsBound(t *testing.T) {
+	old := keepBound
+	keepBound = 150 * time.Millisecond
+	defer func() { keepBound = old }()
+	g := newLogRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	g.px.fail, g.px.failN = errors.New("down"), 1
+	g.src.hang = true
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	if g.containerOf(d) != nil {
+		t.Error("the candidate was left behind")
+	}
+	if det := g.stageDetail(d, StageSwitch); !strings.Contains(det, "log not kept") {
+		t.Errorf("switch detail %q", det)
+	}
+}
+
+// In the stop-first gap the keep is bounded by gapKeepBound, whatever else is left.
+func TestStopFirstGapBoundsTheLogKeep(t *testing.T) {
+	old := gapKeepBound
+	gapKeepBound = 100 * time.Millisecond
+	defer func() { gapKeepBound = old }()
+	g := newLogRig(t)
+	oldDeploy := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(oldDeploy).id
+	g.ops.healthFn = func(_ context.Context, a agentops.HealthArgs) (agentops.HealthResult, error) {
+		if strings.HasPrefix(a.Target, "10.250.0.2") {
+			return agentops.HealthResult{OK: true, Status: 200}, nil
+		}
+		return agentops.HealthResult{OK: false}, nil
+	}
+	g.src.hang = true
+	g.start(false)
+	d, job := g.deploy(g.svc, stopFirstMod, func(s *Snapshot) { s.Health.TimeoutS = 5 })
+	t0 := time.Now()
+	g.wait(job)
+	if r := g.row(d); r.status != StatusFailed {
+		t.Fatalf("%+v", r)
+	}
+	if !g.alive(oldID) || !g.ops.find(oldID).running {
+		t.Error("the old container did not come back")
+	}
+	if g.containerOf(d) != nil {
+		t.Error("the candidate was left behind")
+	}
+	if took := time.Since(t0); took > 20*time.Second {
+		t.Errorf("the deploy took %v", took)
+	}
+}
+
+// Progress is only reported while the deploy is in its pull stage.
+func TestDeploysGetProgressOnlyDuringPull(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, StatusRunning, nil)
+	g.runner.setProgress(d, agentops.PullProgress{Layers: 3})
+	for stage, want := range map[string]bool{StagePull: true, StageHealth: false} {
+		mustExec(t, g.st, `UPDATE deploys SET stage = ? WHERE id = ?`, stage, d)
+		out, err := g.invoke(rigRead, "deploys.get", m{"service": "p/web", "number": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out.(DeploysGetOut).Progress != nil; got != want {
+			t.Errorf("stage %s: progress reported = %v", stage, got)
+		}
+	}
+}
+
+// At most MaxLogReads logs are read at once; one more is told to try again.
+func TestDeployLogReadsAreCappedAtTwoAtOnce(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	g.src.set("c1", "x")
+	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if !g.dl.acquire() || !g.dl.acquire() {
+		t.Fatal("two slots were not free")
+	}
+	t0 := time.Now()
+	if _, _, err := g.dl.Read(g.svc, d); !errors.Is(err, ErrLogBusy) || time.Since(t0) > 3*time.Second {
+		t.Errorf("a third read: %v after %v", err, time.Since(t0))
+	}
+	// Through the action: unavailable, with a clear message.
+	if _, err := g.invoke(rigWrite, "deploys.log", m{"service": "p/web", "number": 1}); !errors.Is(err, actions.ErrUnavailable) || !strings.Contains(err.Error(), "try again") {
+		t.Errorf("deploys.log while busy: %v", err)
+	}
+	g.dl.release()
+	g.dl.release()
+	if _, _, err := g.dl.Read(g.svc, d); err != nil {
+		t.Errorf("after the slots were free: %v", err)
+	}
+}
+
+// A read of a large log allocates about three times its size, not seven.
+func TestDeployLogReadAllocatesLittle(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	g.src.set("c1", strings.Repeat(strings.Repeat("log ", 100)+"\n", LogTail))
+	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	text, _, err := g.dl.Read(g.svc, d)
+	runtime.ReadMemStats(&after)
+	if err != nil || len(text) < 700<<10 {
+		t.Fatalf("%v %d", err, len(text))
+	}
+	if used := after.TotalAlloc - before.TotalAlloc; used > 3*LogMaxBytes+(256<<10) {
+		t.Errorf("a read allocated %d KiB for a %d KiB log", used>>10, len(text)>>10)
+	} else {
+		t.Logf("a read of %d KiB allocated %d KiB", len(text)>>10, used>>10)
+	}
+}
+
+// The first resync removes the directories of services that are gone, and only those.
+func TestFirstResyncSweepsLogDirectoriesOfDeletedServices(t *testing.T) {
+	var l *DeployLogs
+	g := newRecRig(t, func(_ *recRig, cfg *ReconcilerConfig) { cfg.SweepLogs = func(ctx context.Context) { l.Sweep(ctx) } })
+	l = &DeployLogs{Root: filepath.Join(t.TempDir(), "deploy-logs"), DB: g.st}
+	mk := func(name string) string {
+		p := filepath.Join(l.Root, name)
+		os.MkdirAll(p, 0o700)
+		os.WriteFile(filepath.Join(p, "1.log.gz"), []byte("x"), 0o600)
+		return p
+	}
+	live, gone, odd := mk(strconv.FormatInt(g.svc, 10)), mk("9999"), mk("notanid")
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "keep"), []byte("x"), 0o600)
+	os.Symlink(outside, filepath.Join(l.Root, "8888")) // a link to somewhere else: removed as a link
+	g.resync(true)
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Error("the deleted service's directory is still there")
+	}
+	for _, p := range []string{live, odd, filepath.Join(outside, "keep")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was removed: %v", p, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(l.Root, "8888")); !os.IsNotExist(err) {
+		t.Error("the link was kept")
 	}
 }

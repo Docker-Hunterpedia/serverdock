@@ -36,3 +36,14 @@ func TestCleanLogTextRemovesEveryControlAndBidiCharacter(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// CleanLogBytes gives exactly what CleanLogText gives.
+func TestCleanLogBytesMatchesCleanLogText(t *testing.T) {
+	for _, in := range []string{"plain\n\tok", "\x1b[31mx\x1b]0;t\x07 ‮ ​", "bad \xff\xfe \x9b utf8", "é x\r\ny", strings.Repeat("é", 50), ""} {
+		for _, max := range []int{0, 1, 7, 100} {
+			if a, b := CleanLogBytes([]byte(in), max), CleanLogText(in, max); a != b {
+				t.Errorf("%q max %d: %q vs %q", in, max, a, b)
+			}
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
@@ -56,6 +58,15 @@ const (
 	agentErrLine  = "serverdock-agent: "
 )
 
+// ErrLogBusy means MaxLogReads reads are already running.
+var ErrLogBusy = errors.New("deploy: log reads are busy")
+
+// MaxLogReads is how many deploy logs are read at once: a read holds a few MiB.
+const MaxLogReads = 2
+
+// logReadWait is how long a read waits for a slot before it says it is busy.
+const logReadWait = 500 * time.Millisecond
+
 // ErrNoLog means the deploy has no log file.
 var ErrNoLog = errors.New("deploy: no log file")
 
@@ -71,20 +82,61 @@ type DeployLogs struct {
 	Src  LogSource
 	Log  *slog.Logger
 	Now  func() time.Time
+
+	semOnce sync.Once
+	sem     chan struct{}
+}
+
+func (l *DeployLogs) acquire() bool {
+	l.semOnce.Do(func() { l.sem = make(chan struct{}, MaxLogReads) })
+	select {
+	case l.sem <- struct{}{}:
+		return true
+	default:
+	}
+	t := time.NewTimer(logReadWait)
+	defer t.Stop()
+	select {
+	case l.sem <- struct{}{}:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+func (l *DeployLogs) release() { <-l.sem }
+
+// Sweep removes the directories under the root that belong to no service (a crash
+// between a delete's rows and its removeLogs, or a log written for a service deleted
+// meanwhile). Only names that are positive decimal ids are looked at, each through
+// the same one-level checks as everything else; a link is removed as a link.
+func (l *DeployLogs) Sweep(ctx context.Context) {
+	if l == nil || l.Root == "" || l.DB == nil || !plainDirs(l.Root) {
+		return
+	}
+	ents, err := os.ReadDir(l.Root)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		id, err := strconv.ParseInt(e.Name(), 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != e.Name() {
+			continue
+		}
+		var exists bool
+		if err := l.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE id = ?)`, id).Scan(&exists); err != nil || exists {
+			continue
+		}
+		if err := removeLogs(l.Root, id); err != nil {
+			l.warn("a deploy-log directory of a deleted service could not be removed", err)
+		}
+	}
 }
 
 var (
 	gzPool  = sync.Pool{New: func() any { w, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed); return w }}
 	bufPool = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
 )
-
-type logNoteKey struct{}
-
-// withLogNote adds a line to the header of a log kept under ctx (the reason the
-// attempt failed: the stage rows do not have it yet when the candidate is removed).
-func withLogNote(ctx context.Context, note string) context.Context {
-	return context.WithValue(ctx, logNoteKey{}, note)
-}
 
 func (l *DeployLogs) now() time.Time {
 	if l.Now != nil {
@@ -164,10 +216,27 @@ func (l *DeployLogs) head(ctx context.Context, deploy int64) (deployHead, error)
 	return h, err
 }
 
+// ErrOlderDeploy is why Keep skips a deploy outside its service's newest LogKeep:
+// that is not a failure worth a note on a deploy's stage.
+var ErrOlderDeploy = errors.New("an older deploy: only the last 10 keep logs")
+
+// maxTailRounds is how many times a cut tail is asked for again with fewer lines.
+const maxTailRounds = 4
+
 // Keep writes the log of deploy, with the tail of container's output, if the
 // deploy is one of its service's newest LogKeep. A failure is returned for the
 // caller to report ("log not kept: <reason>"); nothing here can fail a deploy.
+//
+// There is one file per deploy: a second container of the same deploy (a retried
+// attempt, several previous containers) replaces the first, and the header names the
+// container whose output the file holds.
 func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) error {
+	return l.KeepWithNote(ctx, deploy, container, "")
+}
+
+// KeepWithNote is Keep with a line for the header: why the attempt failed (the stage
+// rows do not say yet when a candidate is removed).
+func (l *DeployLogs) KeepWithNote(ctx context.Context, deploy int64, container, note string) error {
 	if l == nil || l.Root == "" || l.Src == nil || l.DB == nil {
 		return errors.New("deploy logs are not kept on this server")
 	}
@@ -187,7 +256,7 @@ func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) e
 		return errors.New("the service's deploys could not be read")
 	}
 	if !recent {
-		return errors.New("an older deploy: only the last 10 keep logs")
+		return ErrOlderDeploy
 	}
 	final, err := logFile(l.Root, h.service, deploy)
 	if err != nil {
@@ -197,23 +266,15 @@ func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) e
 	if err != nil {
 		return errors.New("the deploy's stages could not be read")
 	}
-	// Open the container's log before anything is created: a container that is gone
-	// leaves no file.
-	src, err := l.Src.LogsOnce(ctx, container, LogTail)
-	if err != nil {
-		return fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
-	}
-	defer src.Close()
 	buf := bufPool.Get().(*[]byte)
 	defer bufPool.Put(buf)
-	// The agent reports a failure as one line in the stream: do not keep it as output.
-	first, err := io.ReadFull(src, (*buf)[:len(agentErrLine)])
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
+	// Open the container's log before anything is created: a container that is gone
+	// leaves no file.
+	src, first, err := l.openTail(ctx, container, LogTail, *buf)
+	if err != nil {
+		return err
 	}
-	if bytes.HasPrefix((*buf)[:first], []byte(agentErrLine)) {
-		return errors.New("the container's log could not be read: Docker did not return it")
-	}
+	defer func() { src.Close() }()
 	dir, err := ensureDir(l.Root, h.service)
 	if err != nil {
 		return fmt.Errorf("the log directory is not usable: %s", cleanErr(err))
@@ -227,40 +288,88 @@ func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) e
 		if !ok {
 			tmp.Close()
 			os.Remove(tmp.Name())
+			os.Remove(dir) // only if it is empty: a service deleted meanwhile leaves nothing
 		}
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		return err
+		return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
 	}
 	gz := gzPool.Get().(*gzip.Writer)
-	gz.Reset(tmp)
 	defer gzPool.Put(gz)
+
 	// The whole file is at most LogMaxBytes uncompressed (what a read returns): the
-	// output gets what the header and the cut marker leave.
-	cw := &countWriter{w: gz}
-	l.writeHead(ctx, cw, h, stages)
-	fmt.Fprintf(cw, "--- container output (last %d lines, at most %d KiB in all) ---\n", LogTail, LogMaxBytes>>10)
-	room := LogMaxBytes - cw.n - cutMarkerRoom
-	if room < int64(first) {
-		return errors.New("the deploy's header is too large")
-	}
-	cw.Write((*buf)[:first])
-	n, err := io.CopyBuffer(cw, io.LimitReader(src, room-int64(first)), *buf)
-	n += int64(first)
-	if err != nil {
-		return fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
-	}
-	if n >= room {
-		var one [1]byte
-		if m, _ := src.Read(one[:]); m > 0 {
-			fmt.Fprintf(gz, "\n--- output cut at %d KiB ---\n", LogMaxBytes>>10)
+	// output gets what the header and the cut marker leave. When the tail does not fit
+	// it is the NEWEST lines that matter, so the file is rewritten from a shorter tail
+	// (the number of lines that fitted, halved at most) rather than cut at its end.
+	tail := LogTail
+	missing := ""
+	for round := 0; ; round++ {
+		if round > 0 {
+			src.Close()
+			if src, first, err = l.openTail(ctx, container, tail, *buf); err != nil {
+				return err
+			}
+			if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+				return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
+			}
+			if err := tmp.Truncate(0); err != nil {
+				return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
+			}
 		}
-	}
-	if err := gz.Close(); err != nil {
-		return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
+		gz.Reset(tmp)
+		cw := &countWriter{w: gz}
+		last := round == maxTailRounds || tail == 1
+		l.writeHead(ctx, cw, h, stages, container, note)
+		fmt.Fprintf(cw, "--- container output (the newest %d lines at most; %d KiB in all) ---\n", tail, LogMaxBytes>>10)
+		room := LogMaxBytes - cw.n - cutMarkerRoom
+		if room < int64(first) {
+			return errors.New("the deploy's header is too large")
+		}
+		lc := &lineCounter{w: cw}
+		lc.Write((*buf)[:first])
+		n, err := io.CopyBuffer(lc, io.LimitReader(src, room-int64(first)), *buf)
+		n += int64(first)
+		if err != nil {
+			var we *writeError
+			if errors.As(err, &we) {
+				return fmt.Errorf("the log file could not be written: %s", cleanErr(we.err))
+			}
+			return fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
+		}
+		cut := false
+		if n >= room {
+			var one [1]byte
+			m, _ := io.ReadAtLeast(src, one[:], 1)
+			cut = m > 0
+		}
+		if cut && !last {
+			// Ask again for as many lines as fitted, at most half of this round's.
+			tail = max(1, min(lc.lines, tail/2))
+			continue
+		}
+		if cut {
+			if tail == 1 {
+				missing = "the newest line is longer than the cap: only its start is kept"
+			} else {
+				missing = "the newest lines did not fit: the oldest of the asked lines are kept and the newest are missing"
+			}
+			fmt.Fprintf(cw, "\n--- output cut at %d KiB: %s ---\n", LogMaxBytes>>10, missing)
+		}
+		if cw.err != nil {
+			return fmt.Errorf("the log file could not be written: %s", cleanErr(cw.err))
+		}
+		if err := gz.Close(); err != nil {
+			return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
+		}
+		break
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
+	}
+	// A service deleted while this ran must not get its directory back.
+	var exists bool
+	if err := l.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE id = ?)`, h.service).Scan(&exists); err != nil || !exists {
+		return errors.New("the service was deleted")
 	}
 	if err := os.Rename(tmp.Name(), final); err != nil {
 		return fmt.Errorf("the log file could not be put in place: %s", cleanErr(err))
@@ -269,18 +378,64 @@ func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) e
 	return nil
 }
 
-// cutMarkerRoom is what the marker of a cut output needs.
-const cutMarkerRoom = 128
+// openTail asks the agent for the newest tail lines of the container's output and
+// reads the first bytes: the agent reports a failure as one line in the stream, which
+// must not be kept as output. first is how many bytes of buf were read.
+func (l *DeployLogs) openTail(ctx context.Context, container string, tail int, buf []byte) (io.ReadCloser, int, error) {
+	src, err := l.Src.LogsOnce(ctx, container, tail)
+	if err != nil {
+		return nil, 0, fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
+	}
+	first, err := io.ReadFull(src, buf[:len(agentErrLine)])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		src.Close()
+		return nil, 0, fmt.Errorf("the container's log could not be read: %s", cleanErr(err))
+	}
+	if bytes.HasPrefix(buf[:first], []byte(agentErrLine)) {
+		src.Close()
+		return nil, 0, errors.New("the container's log could not be read: Docker did not return it")
+	}
+	return src, first, nil
+}
 
-// countWriter counts what is written through it.
+// cutMarkerRoom is what the marker of a cut output needs.
+const cutMarkerRoom = 256
+
+// writeError marks an error of the file side of a copy (a full disk), as opposed to
+// one of the container's log stream.
+type writeError struct{ err error }
+
+func (e *writeError) Error() string { return e.err.Error() }
+func (e *writeError) Unwrap() error { return e.err }
+
+// countWriter counts what is written through it and remembers its first error.
 type countWriter struct {
-	w io.Writer
-	n int64
+	w   io.Writer
+	n   int64
+	err error
 }
 
 func (c *countWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n += int64(n)
+	if err != nil {
+		if c.err == nil {
+			c.err = err
+		}
+		return n, &writeError{err}
+	}
+	return n, nil
+}
+
+// lineCounter counts the newlines that pass through it.
+type lineCounter struct {
+	w     io.Writer
+	lines int
+}
+
+func (c *lineCounter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.lines += bytes.Count(p[:n], []byte{'\n'})
 	return n, err
 }
 
@@ -316,7 +471,7 @@ func (l *DeployLogs) stageLines(ctx context.Context, deploy int64) ([]string, er
 	return out, rows.Err()
 }
 
-func (l *DeployLogs) writeHead(ctx context.Context, w io.Writer, h deployHead, stages []string) {
+func (l *DeployLogs) writeHead(_ context.Context, w io.Writer, h deployHead, stages []string, container, note string) {
 	c := func(s string) string { return agent.CleanText(s, 300) }
 	image := ""
 	if snap, err := ParseSnapshot(h.snapshot); err == nil {
@@ -330,7 +485,8 @@ func (l *DeployLogs) writeHead(ctx context.Context, w io.Writer, h deployHead, s
 	if h.reason.Valid {
 		fmt.Fprintf(w, "reason: %s %s\n", c(h.code.String), c(h.reason.String))
 	}
-	if note, _ := ctx.Value(logNoteKey{}).(string); note != "" {
+	fmt.Fprintf(w, "container: %s\n", c(container[:min(len(container), 12)]))
+	if note != "" {
 		fmt.Fprintf(w, "this attempt: %s\n", c(note))
 	}
 	for _, s := range stages {
@@ -349,34 +505,60 @@ func (l *DeployLogs) Read(service, deploy int64) (text string, truncated bool, e
 	if err != nil {
 		return "", false, err
 	}
-	dir := filepath.Dir(p)
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+	if !l.acquire() {
+		return "", false, ErrLogBusy
+	}
+	defer l.release()
+	if !plainDirs(l.Root, filepath.Dir(p)) {
 		return "", false, ErrNoLog
 	}
-	fi, err := os.Lstat(p)
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, ErrNoLog
 	}
-	if err != nil || !fi.Mode().IsRegular() {
-		return "", false, errors.New("the log file is not readable")
-	}
-	f, err := os.Open(p)
-	if err != nil {
+	if err != nil { // a symlink in the file's place is refused here
 		return "", false, errors.New("the log file is not readable")
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return "", false, errors.New("the log file is not readable")
+	}
+	// How much the file holds once decompressed: the last four bytes of a gzip file
+	// (so the buffer is sized once, not grown by doubling).
+	hint := int64(64 << 10)
+	if fi, err := f.Stat(); err == nil && fi.Size() > 4 {
+		var tail [4]byte
+		if _, err := f.ReadAt(tail[:], fi.Size()-4); err == nil {
+			hint = int64(binary.LittleEndian.Uint32(tail[:]))
+		}
+	}
 	zr, err := gzip.NewReader(io.LimitReader(f, 4*LogMaxBytes))
 	if err != nil {
 		return "", false, errors.New("the log file is damaged")
 	}
-	b, err := io.ReadAll(io.LimitReader(zr, LogMaxBytes+1))
-	if err != nil && len(b) == 0 {
+	var buf bytes.Buffer
+	buf.Grow(int(min(max(hint, 512), LogMaxBytes+1)))
+	_, err = buf.ReadFrom(io.LimitReader(zr, LogMaxBytes+1))
+	if err != nil && buf.Len() == 0 {
 		return "", false, errors.New("the log file is damaged")
 	}
+	b := buf.Bytes()
 	if len(b) > LogMaxBytes {
 		b, truncated = b[:LogMaxBytes], true
 	}
-	return agent.CleanLogText(string(b), LogMaxBytes), truncated, nil
+	return agent.CleanLogBytes(b, LogMaxBytes), truncated, nil
+}
+
+// plainDirs reports whether every path is an existing directory itself, not a link to
+// one (Lstat): a link in the place of the root or of a service's directory is never
+// followed.
+func plainDirs(paths ...string) bool {
+	for _, p := range paths {
+		if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // Kept lists the deploy ids of a service that have a log file.
@@ -387,6 +569,9 @@ func (l *DeployLogs) Kept(service int64) map[int64]bool {
 	}
 	dir, err := safeLogDir(l.Root, service)
 	if err != nil {
+		return out
+	}
+	if !plainDirs(l.Root, dir) {
 		return out
 	}
 	ents, err := os.ReadDir(dir)
@@ -424,6 +609,9 @@ func (l *DeployLogs) Prune(ctx context.Context, service int64) {
 	}
 	dir, err := safeLogDir(l.Root, service)
 	if err != nil {
+		return
+	}
+	if !plainDirs(l.Root, dir) {
 		return
 	}
 	ents, err := os.ReadDir(dir)

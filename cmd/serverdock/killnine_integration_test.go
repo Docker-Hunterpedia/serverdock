@@ -49,6 +49,9 @@ import (
 // killSubnets hands every scenario its own app network.
 var killSubnet atomic.Int32
 
+// umaskMu serialises the umask change around starting a server (the umask is process-wide).
+var umaskMu sync.Mutex
+
 type killStage struct {
 	pause     string // the testhooks pause point
 	committed bool   // the deploy had committed when the server was killed
@@ -106,7 +109,13 @@ type killRig struct {
 
 func (k *killRig) server(env ...string) *testbin.Proc {
 	k.t.Helper()
+	// Started with the most permissive umask: the files under deploy-logs/ must be
+	// private whatever umask the service is started with.
+	umaskMu.Lock()
+	old := syscall.Umask(0)
 	p := testbin.Start(k.t, testbin.Options{Args: k.args, Env: env})
+	syscall.Umask(old)
+	umaskMu.Unlock()
 	k.t.Cleanup(func() {
 		if k.t.Failed() {
 			_ = p.Cmd.Process.Signal(syscall.SIGQUIT) // a goroutine dump, if it is still running

@@ -72,6 +72,9 @@ type RunnerConfig struct {
 	// Empty means no deploy logs are kept on this server.
 	LogRoot string
 	KeepLog func(ctx context.Context, deploy int64, container string) error
+	// KeepLogNote, if set, is KeepLog for a failed deploy's candidate, with the
+	// failure's message for the log's header (*DeployLogs.KeepWithNote).
+	KeepLogNote func(ctx context.Context, deploy int64, container, note string) error
 	// PruneLogs, if set, deletes the deploy logs of the service beyond its newest
 	// LogKeep deploys; it runs when a deploy finishes (*DeployLogs.Prune).
 	PruneLogs func(ctx context.Context, service int64)

@@ -27,6 +27,32 @@ func CleanText(s string, max int) string { return clean(s, max, false) }
 // CleanLogText is CleanText for log bodies: it keeps newline and tab.
 func CleanLogText(s string, max int) string { return clean(s, max, true) }
 
+// CleanLogBytes is CleanLogText for a []byte: one pass and one allocation (the
+// result), with no intermediate string of the whole input.
+func CleanLogBytes(b []byte, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.Grow(min(len(b), max))
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		if r == utf8.RuneError && n <= 1 {
+			r, n = '\uFFFD', 1
+		}
+		b = b[n:]
+		if r == '\n' || r == '\t' {
+		} else if unicode.IsControl(r) || isInvisible(r) {
+			continue
+		}
+		if sb.Len()+utf8.RuneLen(r) > max {
+			break
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
+}
+
 func clean(s string, max int, keepNLTab bool) string {
 	if max <= 0 {
 		return ""

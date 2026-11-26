@@ -44,11 +44,12 @@ func TestDeployLogCapHoldsForAContainerThatLogs50MiB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if truncated || len(text) > LogMaxBytes || len(text) < LogMaxBytes-8192 {
-		t.Errorf("read back %d bytes (truncated %v), want just under %d", len(text), truncated, LogMaxBytes)
+	// The NEWEST lines are kept: the tail was asked for again with fewer lines until it fit.
+	if truncated || len(text) > LogMaxBytes || len(text) < LogMaxBytes/4 {
+		t.Errorf("read back %d bytes (truncated %v)", len(text), truncated)
 	}
-	if !strings.Contains(text, "output cut at") || !strings.Contains(text, "service: p/web") {
-		t.Error("the header or the cut marker is missing")
+	if !strings.Contains(text, "LAST-LINE-MARKER") || strings.Contains(text, "output cut at") || !strings.Contains(text, "service: p/web") {
+		t.Error("the newest line is missing, or the file claims a cut it does not have")
 	}
 	file := filepath.Join(root, strconv.FormatInt(svc, 10), strconv.FormatInt(d, 10)+".log.gz")
 	if fi, err := os.Stat(file); err != nil || fi.Mode().Perm() != 0o600 {

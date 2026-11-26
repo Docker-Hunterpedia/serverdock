@@ -1188,15 +1188,55 @@ func (rn *run) pruneLogs(ctx context.Context) {
 	}
 }
 
-// keepCandidateLog keeps the tail of the candidate's output before it is removed.
-// It returns the note for the failed stage's detail when the log was not kept.
+// keepBound and gapKeepBound bound the time spent keeping a log where something is
+// waiting for it: a deploy's own clean-up, and the stop-first gap, where the app shows
+// the maintenance page until the previous container is started again (variables so a
+// test can shorten them).
+var (
+	keepBound    = recordBound
+	gapKeepBound = 3 * time.Second
+)
+
+// logBound is how long keeping a log may take now, and false when it must be skipped:
+// never at shutdown (the clean-up has 5 s for the stop and the removal, and the next
+// start's resync keeps the log of a candidate that is left), at most a third of what
+// is left of the clean-up context otherwise, and 3 s in the stop-first gap.
+func (rn *run) logBound(ctx context.Context) (time.Duration, bool) {
+	if rn.shuttingDown() {
+		return 0, false
+	}
+	b := keepBound
+	if dl, ok := ctx.Deadline(); ok {
+		b = min(b, time.Until(dl)/3)
+	}
+	if rn.gap || rn.stopSent {
+		b = min(b, gapKeepBound)
+	}
+	return b, b > 0
+}
+
+// keepCandidateLog keeps the tail of the candidate's output before it is stopped (a
+// candidate that was never live has nothing to wait for, and in the stop-first gap
+// the previous version must come back at once, so the stop is not put off by it).
+// When the log is not kept the failed stage's detail says so (rn.logNote).
 func (rn *run) keepCandidateLog(ctx context.Context, id string, f *failure) {
-	if rn.r.cfg.KeepLog == nil || id == "" {
+	if id == "" {
 		return
 	}
-	kctx, cancel := context.WithTimeout(withLogNote(ctx, f.msg), recordBound)
+	keep := rn.r.cfg.KeepLog
+	if rn.r.cfg.KeepLogNote != nil {
+		keep = func(ctx context.Context, d int64, c string) error { return rn.r.cfg.KeepLogNote(ctx, d, c, f.msg) }
+	}
+	if keep == nil {
+		return
+	}
+	b, ok := rn.logBound(ctx)
+	if !ok {
+		return
+	}
+	kctx, cancel := context.WithTimeout(ctx, b)
 	defer cancel()
-	if err := rn.r.cfg.KeepLog(kctx, rn.deploy, id); err != nil {
+	if err := keep(kctx, rn.deploy, id); err != nil && !errors.Is(err, ErrOlderDeploy) {
 		rn.logNote = "log not kept: " + agent.CleanText(err.Error(), 120)
 		rn.r.cfg.Log.Warn("the candidate's log was not kept", "deploy", rn.deploy, "err", rn.logNote)
 	}

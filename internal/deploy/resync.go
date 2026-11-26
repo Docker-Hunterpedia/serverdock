@@ -168,6 +168,9 @@ func (rc *Reconciler) fullResync(ctx context.Context, first bool, onApplied func
 	if err != nil {
 		return false, fmt.Errorf("reading the services: %w", err)
 	}
+	if first && rc.cfg.SweepLogs != nil {
+		rc.cfg.SweepLogs(ctx) // files only, no Docker call, no timer
+	}
 	p := &pass{rc: rc, ctx: ctx, first: first, items: items, svcs: svcs, skipped: map[int64]bool{}}
 	seen := map[int64]bool{}
 	var ids []int64

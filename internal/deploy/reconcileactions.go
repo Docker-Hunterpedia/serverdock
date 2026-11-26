@@ -101,8 +101,8 @@ func RegisterReconcilerActions(reg *actions.Registry, rc *Reconciler) {
 	})
 }
 
-// removeContainer: keep the log tail (*DeployLogs.Keep; nil in tests), stop with the
-// grace, remove (anonymous volumes only: the agent's removal never takes a named
+// removeContainer: stop with the grace, keep the log tail (*DeployLogs.Keep; nil in
+// tests), remove (anonymous volumes only: the agent's removal never takes a named
 // volume), and forget it. The agent refuses any container that is not this
 // install's, so a look-alike is never touched.
 func (rc *Reconciler) removeContainer(ctx context.Context, in RemoveContainerIn) (RemoveContainerOut, error) {
@@ -115,18 +115,6 @@ func (rc *Reconciler) removeContainer(ctx context.Context, in RemoveContainerIn)
 	if active.Valid && active.Int64 == in.Deploy {
 		return out, errors.New("the container belongs to the service's live deploy")
 	}
-	if rc.cfg.KeepLog != nil {
-		var exists bool
-		if err := rc.cfg.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM deploys WHERE id = ?)`, in.Deploy).Scan(&exists); err == nil && exists {
-			kctx, cancel := context.WithTimeout(ctx, recordBound)
-			err := rc.cfg.KeepLog(kctx, in.Deploy, in.Container)
-			out.LogKept = err == nil
-			cancel()
-			if err != nil {
-				rc.cfg.Log.Warn("an orphan's log was not kept", "deploy", in.Deploy, "err", agent.CleanText(err.Error(), 120))
-			}
-		}
-	}
 	sctx, cancel := context.WithTimeout(ctx, time.Duration(in.Grace)*time.Second+StopExtra)
 	stopErr := rc.cfg.Ops.ContainerStop(sctx, in.Container, in.Grace)
 	cancel()
@@ -134,6 +122,21 @@ func (rc *Reconciler) removeContainer(ctx context.Context, in RemoveContainerIn)
 		return out, fmt.Errorf("the container could not be stopped: %s", opText(stopErr, "Docker did not answer"))
 	}
 	if !agentops.IsCode(stopErr, agent.CodeNotFound) {
+		// Stopped, not yet removed: keep what the container printed, including while it
+		// stopped. A short bound: the resync has other containers to settle, and a
+		// removal with a capped grace must stay within its promise.
+		if rc.cfg.KeepLog != nil {
+			var exists bool
+			if err := rc.cfg.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM deploys WHERE id = ?)`, in.Deploy).Scan(&exists); err == nil && exists {
+				kctx, kcancel := context.WithTimeout(ctx, gapKeepBound)
+				err := rc.cfg.KeepLog(kctx, in.Deploy, in.Container)
+				out.LogKept = err == nil
+				kcancel()
+				if err != nil && !errors.Is(err, ErrOlderDeploy) {
+					rc.cfg.Log.Warn("an orphan's log was not kept", "deploy", in.Deploy, "err", agent.CleanText(err.Error(), 120))
+				}
+			}
+		}
 		rctx, rcancel := context.WithTimeout(ctx, RemoveBound)
 		err := rc.cfg.Ops.ContainerRemove(rctx, in.Container)
 		rcancel()

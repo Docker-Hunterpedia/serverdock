@@ -74,7 +74,10 @@ type ReconcilerConfig struct {
 	// KeepLog is the deploy-log hook (*DeployLogs.Keep): it is called with the deploy
 	// and the container id before an orphan is stopped.
 	KeepLog func(ctx context.Context, deploy int64, container string) error
-	Log     *slog.Logger
+	// SweepLogs, if set, runs once in the first resync: it removes the deploy-log
+	// directories of services that no longer exist (*DeployLogs.Sweep).
+	SweepLogs func(ctx context.Context)
+	Log       *slog.Logger
 
 	// Tunables (zero means the default; tests shorten them).
 	BackoffMin time.Duration // 1 s

@@ -514,11 +514,11 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// Deploy logs (step 11): the tail of a container's output is kept before it is removed.
 	logs := &deploy.DeployLogs{Root: filepath.Join(cfg.Data, "deploy-logs"), DB: st, Src: localLogs{h: h}, Log: log}
 	rec = deploy.NewReconciler(deploy.ReconcilerConfig{DB: st, Ops: opsClient, Routes: routes, Locks: locks, Act: inv, Proxy: cfg.Proxy,
-		OpenGate: sched.OpenGate, PanelUp: panelUp, Since: processStart, Audit: auditLog, KeepLog: logs.Keep, Log: log})
+		OpenGate: sched.OpenGate, PanelUp: panelUp, Since: processStart, Audit: auditLog, KeepLog: logs.Keep, SweepLogs: logs.Sweep, Log: log})
 	deploy.RegisterReconcilerActions(reg, rec)
 	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: inv, Refresh: authStore, Locks: locks, Log: log,
 		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Routes: routes, Stopping: sched.Stopping, Net: booter, AppNet: appNet,
-		DeleteSignal: sched.DeleteSignal, LogRoot: logs.Root, KeepLog: logs.Keep, PruneLogs: logs.Prune,
+		DeleteSignal: sched.DeleteSignal, LogRoot: logs.Root, KeepLog: logs.Keep, KeepLogNote: logs.KeepWithNote, PruneLogs: logs.Prune,
 		Instance: installID, Policy: cfg.policyOptions()})
 	deploy.RegisterJobActions(reg, runner)
 	deploy.RegisterDeployReadActions(reg, deploy.DeployReadDeps{DB: st, Progress: runner.Progress, Logs: logs})
