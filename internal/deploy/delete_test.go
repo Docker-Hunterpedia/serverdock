@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -243,6 +244,10 @@ func TestRunningDeployPastItsCommitSkipsTheRestOfItsDrain(t *testing.T) {
 	g.services()
 	d, deployJob := g.deploy(g.svc, func(s *Snapshot) { s.StopGraceS = 7 }) // a 10 s drain
 	g.until("the drain", func() bool { return g.row(d).stage == StageDrain })
+	// The delete job may remove the deploy row before this test reads it: a trigger
+	// keeps what the row said when it was deleted.
+	mustExec(t, g.st, `CREATE TABLE seen(id INTEGER, status TEXT, reason TEXT)`)
+	mustExec(t, g.st, `CREATE TRIGGER keep_seen BEFORE DELETE ON deploys BEGIN INSERT INTO seen VALUES (OLD.id, OLD.status, COALESCE(OLD.reason, '')); END`)
 	t0 := time.Now()
 	sess := g.adminSession("sess-d", time.Now().Add(time.Hour))
 	out, err := g.deleteAs(sess, "p/web", "p/web")
@@ -255,9 +260,16 @@ func TestRunningDeployPastItsCommitSkipsTheRestOfItsDrain(t *testing.T) {
 	if took := time.Since(t0); took > 4*time.Second {
 		t.Errorf("the drain was not cut short: %v after the delete was queued", took)
 	}
-	r := g.row(d)
-	if r.status != "succeeded" || !strings.Contains(r.reason, "cut short") {
-		t.Errorf("%+v", r)
+	var status, reason string
+	err = g.st.R.QueryRow(`SELECT status, COALESCE(reason, '') FROM deploys WHERE id = ?`, d).Scan(&status, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = g.st.R.QueryRow(`SELECT status, reason FROM seen WHERE id = ?`, d).Scan(&status, &reason)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || !strings.Contains(reason, "cut short") {
+		t.Errorf("status %q reason %q", status, reason)
 	}
 	if s := g.wait(out.Job); s != jobs.StateSucceeded {
 		t.Fatalf("delete job %s: %s", s, g.jobError(out.Job))
