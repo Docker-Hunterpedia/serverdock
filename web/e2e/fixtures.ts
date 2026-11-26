@@ -79,3 +79,10 @@ export async function signIn(page: Page, server: TestServer, admin: Admin, n = 0
 	const state = await signInWithRecoveryCode(server, admin.recoveryCodes[n]);
 	await page.context().addCookies(state.cookies);
 }
+
+/**
+ * A deploy (or restart, or delete) queued in the same second the account was created
+ * fails closed ("the password or authenticator changed after this job was queued":
+ * internal/auth/jobactor.go). Call this after firstRun() in any test that queues a job.
+ */
+export const letTheAccountAge = () => new Promise((r) => setTimeout(r, 1500));

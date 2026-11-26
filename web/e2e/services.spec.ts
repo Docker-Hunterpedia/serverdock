@@ -1,6 +1,6 @@
-import { countApiRequests, expect, expectNoAxeViolations, signIn, test } from './fixtures';
+import { countApiRequests, expect, expectNoAxeViolations, letTheAccountAge, signIn, test } from './fixtures';
 import { seedService, seedThreeServices } from './seed';
-import { DOCKER_SOCKET, TEST_APP_IMAGE, startServer } from './server';
+import { DOCKER_SOCKET, TEST_APP_IMAGE, startServer, uniqueProject } from './server';
 
 // Plan 0004 step 12: Services list, New service, Overview. The implementer's smoke
 // tests; the tester extends them to every listed screen state in all 8 projects.
@@ -12,6 +12,7 @@ test('Overview and Services are empty on a new server', async ({ page, server, a
 	await expect(page.getByRole('heading', { name: 'No services yet' })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Deploy an image' })).toBeVisible();
 	await expectNoAxeViolations(page, 'Overview, empty');
+	if ((page.viewportSize()?.width ?? 1280) < 768) await page.getByRole('button', { name: 'Menu' }).click();
 	await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Services' }).click();
 	await expect(page.getByRole('heading', { name: 'Services', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'No services yet' })).toBeVisible();
@@ -44,10 +45,12 @@ test('Overview lists what needs attention and sends nothing while idle', async (
 });
 
 test('New service validates, keeps typed input and deploys the test app for real', async ({ page, allow5xx }) => {
+	test.setTimeout(240_000); // a real pull, start and health gate
 	allow5xx(); // a fresh server with Docker may log a 503 on the first reads while it settles
 	const server = await startServer({ dockerSocket: DOCKER_SOCKET, allowLoopbackRegistry: true });
 	try {
 		const admin = await server.firstRun();
+		await letTheAccountAge();
 		await signIn(page, server, admin);
 		await page.goto(`${server.baseURL}/services/new`);
 		await expect(page.getByRole('heading', { name: 'Deploy a Docker image' })).toBeVisible();
@@ -55,15 +58,19 @@ test('New service validates, keeps typed input and deploys the test app for real
 		await page.getByRole('button', { name: 'Create and deploy' }).click();
 		await expect(page.getByRole('alert')).toContainText('fields need fixing');
 		await expect(page.getByLabel('Name')).toHaveValue('Bad Name');
+		const project = uniqueProject();
+		await page.getByLabel('Project').fill(project);
 		await page.getByLabel('Name').fill('web');
 		await page.getByLabel('Image').fill(TEST_APP_IMAGE);
 		await page.getByLabel('Port your app listens on (optional)').fill('8080');
 		await page.getByRole('button', { name: 'Create and deploy' }).click();
-		await expect(page).toHaveURL(/\/services\/default\/web\/deploys\/1$/);
+		await expect(page).toHaveURL(new RegExp(`/services/${project}/web/deploys/1$`));
 		await expect(page.getByRole('heading', { name: 'Deploy #1' })).toBeVisible();
-		await expect.poll(() => server.query<{ status: string }>(`SELECT status FROM deploys WHERE number = 1`)[0]?.status, { timeout: 120_000 }).toBe('succeeded');
+		await expect
+			.poll(() => server.query<{ status: string; reason: string | null }>(`SELECT status, reason FROM deploys WHERE number = 1`).map((r) => (r.status === 'failed' ? `failed: ${r.reason}` : r.status))[0], { timeout: 180_000 })
+			.toBe('succeeded');
 		await page.goto(`${server.baseURL}/services`);
-		await expect(page.locator('[data-row="default/web"]:visible')).toContainText('Running');
+		await expect(page.locator(`[data-row="${project}/web"]:visible`)).toContainText('Running');
 	} finally {
 		await server.stop();
 	}

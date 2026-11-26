@@ -220,3 +220,10 @@ function removeDockerLeftovers(dbPath: string, socket: string) {
 	for (const c of docker('ps', '-aq', '--filter', `label=serverdock.instance=${id}`).stdout.split(/\s+/).filter(Boolean)) docker('rm', '-f', '-v', c);
 	docker('network', 'rm', `serverdock-${id.slice(0, 8)}`);
 }
+
+/**
+ * A project name no other test server uses. Container names are Docker-wide
+ * (sd-<project>-<service>-d<deploy id>-a<attempt>), and the projects run servers side
+ * by side against one Docker, so tests that deploy for real must not share "default".
+ */
+export const uniqueProject = () => `pw${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
