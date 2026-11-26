@@ -41,6 +41,11 @@ type Config struct {
 	// (jobs.NewStore's now argument): arm subtracts this one from a time the store
 	// wrote, so two different clocks would make a retry fire early or late.
 	Now func() time.Time
+	// OnDone, if set, is called on the worker's goroutine after a job's result was
+	// recorded (including a job left running by a shutdown). It must be cheap and
+	// must not block: the deploy package uses it to ask the reconciler for the
+	// per-service resync of the job's service. A panic in it is recovered.
+	OnDone func(Job)
 	// RetryDelay replaces the package RetryDelay in tests.
 	RetryDelay func(failedAttempt int) time.Duration
 
@@ -503,10 +508,23 @@ func (s *Scheduler) work(ctx context.Context, cancel context.CancelCauseFunc, j 
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer bcancel()
 	s.record(bctx, j, err, cause)
+	s.done(j)
 	s.mu.Lock()
 	s.active--
 	s.mu.Unlock()
 	s.Notify()
+}
+
+func (s *Scheduler) done(j Job) {
+	if s.cfg.OnDone == nil {
+		return
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			s.cfg.Log.Error("jobs: the done hook panicked", "job", j.ID, "panic", p)
+		}
+	}()
+	s.cfg.OnDone(j)
 }
 
 func (s *Scheduler) safeRun(ctx context.Context, j Job) (err error) {

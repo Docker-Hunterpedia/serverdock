@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
@@ -12,35 +13,44 @@ import (
 // ResolveInterrupted is the DB-only part of the boot pass (plan 0004,
 // "Reconciler"): every job still "running" from an earlier boot (a crash, a kill,
 // or a shutdown that left it for this pass) is settled before the scheduler
-// starts, so it cannot hold its service's lock key forever. For a deploy, the
-// commit point is authoritative: if services.active_deploy_id names it, the deploy
-// is succeeded; if not, it is failed "interrupted" with app_safe unknown (the
-// reconciler's resync, step 10, finds out whether the previous version runs and
-// removes the candidate; nothing here touches Docker). Other kinds are failed
-// "interrupted". Passes that change nothing write nothing.
+// starts, so it cannot hold its service's lock key forever. It touches no container.
 //
-// This is the part of step 10's boot pass that step 8a needs on its own, because
-// 8a is the first step that can leave a job running across a restart. Step 10
-// extends it (app_safe from the resync, the audit outcome of the intent, the
-// service_delete needs_attention flag) and runs it before the first resync.
+//   - A deploy whose commit happened (services.active_deploy_id names it) is
+//     succeeded ("finished after a restart"); the commit point is authoritative.
+//   - Any other deploy is failed "interrupted" with app_safe unknown; the first
+//     resync (resync.go) finds out whether the previous version runs, raises
+//     app_safe to yes if it does, and removes the candidate.
+//   - A restart is failed "interrupted"; a service delete is failed "interrupted"
+//     and its service is flagged delete_interrupted (every step of a delete is
+//     idempotent: the user deletes it again).
+//   - The jobs.run_<kind> intent of the run (found by its request id, job-<id>-a<n>)
+//     gets its single outcome row, through the later-boot outcome path: the
+//     intent's own actor, executor system, result ok (a finished deploy) or error.
+//     An intent that already has an outcome is never given a second one, and a
+//     pass that settles nothing writes nothing.
 //
 // bootID is the new scheduler's boot id: only jobs with another one are settled.
-func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now time.Time) (int, error) {
+// aud may be nil (no audit rows are written). A failure to write an outcome is
+// logged by the caller's next pass of the audit verifier, never fails the boot: the
+// intent then stays "unknown", which is what it was.
+func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now time.Time, aud audit.Appender) (int, error) {
 	n := 0
+	var settled []settledJob
 	err := st.WriteTx(ctx, func(tx *sql.Tx) error {
 		n = 0
-		rows, err := tx.QueryContext(ctx, `SELECT id, kind FROM jobs WHERE state = 'running' AND (boot_id IS NULL OR boot_id <> ?) ORDER BY id`, bootID)
+		settled = settled[:0]
+		rows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(request_id, 'job-' || id || '-a' || attempt) FROM jobs WHERE state = 'running' AND (boot_id IS NULL OR boot_id <> ?) ORDER BY id`, bootID)
 		if err != nil {
 			return err
 		}
 		type jr struct {
-			id   int64
-			kind string
+			id          int64
+			kind, reqID string
 		}
 		var list []jr
 		for rows.Next() {
 			var j jr
-			if err := rows.Scan(&j.id, &j.kind); err != nil {
+			if err := rows.Scan(&j.id, &j.kind, &j.reqID); err != nil {
 				rows.Close()
 				return err
 			}
@@ -107,9 +117,46 @@ func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now
 			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, finished_at = ?, error = ? WHERE id = ? AND state = 'running'`, jobState, ts, e, j.id); err != nil {
 				return err
 			}
+			settled = append(settled, settledJob{reqID: j.reqID, ok: jobState == jobs.StateSucceeded, errText: jobErr})
 			n++
 		}
 		return nil
 	})
-	return n, err
+	if err != nil || aud == nil {
+		return n, err
+	}
+	for _, j := range settled {
+		resolveIntent(ctx, st, aud, j)
+	}
+	return n, nil
+}
+
+// settledJob is a job the boot pass ended, for its audit outcome.
+type settledJob struct {
+	reqID   string
+	ok      bool
+	errText string
+}
+
+// resolveIntent writes the one outcome row of the job's intent, if the intent exists
+// and has none yet. It never fails the boot: the intent stays unknown if it cannot.
+func resolveIntent(ctx context.Context, st *store.Store, aud audit.Appender, j settledJob) {
+	var intent audit.Entry
+	var id int64
+	var executor string
+	err := st.R.QueryRowContext(ctx, `SELECT id, actor_kind, actor_id, COALESCE(executor, ''), action, target, risk, args_json FROM audit_log
+		WHERE phase = ? AND request_id = ? AND action IN ('jobs.run_deploy', 'jobs.run_restart', 'jobs.run_service_delete')
+		AND NOT EXISTS (SELECT 1 FROM audit_log o WHERE o.phase = ? AND o.intent_id = audit_log.id)
+		ORDER BY id DESC LIMIT 1`, audit.PhaseIntent, j.reqID, audit.PhaseOutcome).
+		Scan(&id, &intent.ActorKind, &intent.ActorID, &executor, &intent.Action, &intent.Target, &intent.Risk, &intent.ArgsJSON)
+	if err != nil {
+		return // no intent (the run never got that far) or already resolved
+	}
+	intent.Executor = "system" // the job ran as its actor with executor system; this outcome is the system's too
+	intent.Phase, intent.IntentID, intent.RequestID = audit.PhaseOutcome, id, j.reqID
+	intent.Result = audit.ResultOK
+	if !j.ok {
+		intent.Result, intent.Error = audit.ResultError, j.errText
+	}
+	_, _ = aud.Append(context.WithoutCancel(ctx), intent)
 }

@@ -221,6 +221,7 @@ type serverAddrs struct {
 	reg    *actions.Registry
 	routes *deploy.Routes
 	booter *deploy.Booter
+	rec    *deploy.Reconciler
 	// sched, jobStore and db are the job scheduler (the real one, wired to the
 	// registry), its store and the database, for the tests of that wiring.
 	sched    *jobs.Scheduler
@@ -463,17 +464,20 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// The job scheduler (plan 0004 step 8a): built here, wired to the registry's
 	// session revoke below (so a revoked session's queued jobs end cancelled) and
 	// started further down. It dispatches nothing until its start gate opens:
-	// the Booter opens it after its first container list (see BootConfig.OnReady).
-	// runner is set below, before the scheduler runs.
+	// the reconciler opens it after its first resync (plan 0004 step 10).
+	// runner and rec are set below, before the scheduler runs; a finished job asks the
+	// reconciler for the per-service resync of its service.
 	jobStore := jobs.NewStore(st, nil)
 	var runner *deploy.Runner
-	sched, err := jobs.NewScheduler(jobs.Config{Store: jobStore, Log: log, Run: func(ctx context.Context, j jobs.Job) error { return runner.Run(ctx, j) }})
+	var rec *deploy.Reconciler
+	sched, err := jobs.NewScheduler(jobs.Config{Store: jobStore, Log: log, Run: func(ctx context.Context, j jobs.Job) error { return runner.Run(ctx, j) },
+		OnDone: func(j jobs.Job) { rec.ResyncService(deploy.ServiceOfJob(j)) }})
 	if err != nil {
 		return err
 	}
 	// Settle the jobs a previous process left running (database only, before the
 	// scheduler can start anything), so none holds its service's lock key forever.
-	if n, err := deploy.ResolveInterrupted(ctx, st, sched.BootID(), time.Now()); err != nil {
+	if n, err := deploy.ResolveInterrupted(ctx, st, sched.BootID(), time.Now(), auditLog); err != nil {
 		return fmt.Errorf("resolving interrupted jobs: %w", err)
 	} else if n > 0 {
 		log.Warn("jobs interrupted by the last stop were settled", "jobs", n)
@@ -482,9 +486,9 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	// not start (or join) a run before that, whether it is the start-up run or a
 	// lazy one from an action that arrives early on the control socket.
 	panelUp := make(chan struct{})
-	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, Src: opsClient, SyncRoutes: cfg.Proxy, PanelUp: panelUp,
-		// The interim start gate; step 10's first resync replaces it.
-		OnReady: sched.OpenGate, Log: log})
+	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, SyncRoutes: cfg.Proxy, PanelUp: panelUp,
+		// The first container list belongs to the reconciler; the Booter only asks for it.
+		Sync: func(ctx context.Context) error { return rec.EnsureSynced(ctx) }, Log: log})
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -502,7 +506,14 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	})
 	// The one-time system invoker belongs to the deploy runner: it runs each job as
 	// the actor that queued it (never as the system).
-	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: reg.SystemInvoker(), Refresh: authStore, Locks: &deploy.ServiceLocks{}, Log: log,
+	// The one system invoker serves the job runner (it runs each job as the actor that
+	// queued it) and the reconciler (its two system-only actions).
+	inv := reg.SystemInvoker()
+	locks := &deploy.ServiceLocks{}
+	rec = deploy.NewReconciler(deploy.ReconcilerConfig{DB: st, Ops: opsClient, Routes: routes, Locks: locks, Act: inv, Proxy: cfg.Proxy,
+		OpenGate: sched.OpenGate, PanelUp: panelUp, Log: log})
+	deploy.RegisterReconcilerActions(reg, rec)
+	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: inv, Refresh: authStore, Locks: locks, Log: log,
 		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Routes: routes, Stopping: sched.Stopping, Net: booter, AppNet: appNet,
 		DeleteSignal: sched.DeleteSignal, LogRoot: filepath.Join(cfg.Data, "deploy-logs"),
 		Instance: installID, Policy: cfg.policyOptions()})
@@ -542,7 +553,7 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
-	addrs.hub, addrs.reg, addrs.routes, addrs.booter = h, reg, routes, booter
+	addrs.hub, addrs.reg, addrs.routes, addrs.booter, addrs.rec = h, reg, routes, booter, rec
 	addrs.sched, addrs.jobStore, addrs.db = sched, jobStore, st
 	// The scheduler runs from here; its gate is closed until the boot succeeds.
 	// It stops BEFORE the local agent (below): a deploy that is cancelled by the
@@ -551,6 +562,12 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	defer schedCancel()
 	schedDone := make(chan struct{})
 	go func() { sched.Run(schedCtx); close(schedDone) }()
+	// The reconciler (the watcher, the resync and the start gate) stops right after
+	// the scheduler and before the local agent: its container work goes through it.
+	recCtx, recCancel := context.WithCancel(context.Background())
+	defer recCancel()
+	recDone := make(chan struct{})
+	go func() { rec.Run(recCtx); close(recDone) }()
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
@@ -606,6 +623,12 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	case <-schedDone:
 	case <-time.After(shutdownGrace):
 		log.Error("the job scheduler did not stop in time")
+	}
+	recCancel()
+	select {
+	case <-recDone:
+	case <-time.After(shutdownGrace):
+		log.Error("the reconciler did not stop in time")
 	}
 	agentCancel()
 	if !agentExited {

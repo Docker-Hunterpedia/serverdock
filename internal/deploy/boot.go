@@ -24,8 +24,12 @@ type BootConfig struct {
 	AppNet SubnetSource
 	Net    NetworkEnsurer
 	Routes *Routes
-	// Src is what Routes.Sync lists and inspects.
-	Src BootSource
+	// Sync is the first container list and inspect, which opens Routes' boot gate
+	// and applies the app routes. Since step 10 the reconciler owns it
+	// (Reconciler.EnsureSynced: it asks for a reconnect now and waits): the Booter
+	// itself never lists containers, so there is one list-and-load path and a late
+	// Booter run cannot replace a state map the watcher has kept current.
+	Sync func(ctx context.Context) error
 	// SyncRoutes is false when the embedded proxy is off: there is no route to
 	// apply, so the boot gate stays closed and the panel (if any) runs alone.
 	SyncRoutes bool
@@ -34,32 +38,15 @@ type BootConfig struct {
 	// joins a run: a lazy run before that would Sync into a proxy that is not
 	// started and open the gate for nothing. Nil means already up.
 	PanelUp <-chan struct{}
-	// OnReady, if set, is called (from the goroutine that ran the boot) each time a
-	// run ends with the app side ready: the first container list and inspect has
-	// filled the state map (or, with the embedded proxy off, the network was
-	// ensured). It must be cheap and idempotent. The server uses it as the
-	// scheduler's start gate: jobs are dispatched only after it first fires.
-	//
-	// This is the INTERIM start gate of plan 0004 step 8a. The plan says the
-	// reconciler's first successful resync opens the gate; that reconciler is
-	// step 10, which REPLACES this hook (the watcher's first resync then calls
-	// Scheduler.OpenGate and this field goes away). Until then the boot's own
-	// first list is the nearest thing to a resync, and it is safe: no deploy can
-	// be running at start-up (the boot pass in ResolveInterrupted settles every
-	// job a previous process left running before the scheduler starts).
-	OnReady func()
 	Log     *slog.Logger
 }
 
 // Booter runs the boot sequence of the app side, in this order: the panel runs
 // alone first (the local agent starts it before anything here), then
-// network_ensure with the recorded subnet, then Routes.Sync, which opens the
-// boot gate and applies the app routes. It is safe to call again: each part
-// that already succeeded is skipped, so a caller that finds the routes not
-// ready can retry it lazily. It has no goroutine and no timer.
-//
-// The sequence is safe before the deploy runner exists (step 8a): no app
-// container exists before then, so Sync has nothing to route to.
+// network_ensure with the recorded subnet, then the reconciler's first resync
+// (BootConfig.Sync), which opens the boot gate and applies the app routes. It is
+// safe to call again: each part that already succeeded is skipped, so a caller that
+// finds the routes not ready can retry it lazily. It has no goroutine and no timer.
 type Booter struct {
 	cfg BootConfig
 
@@ -111,8 +98,8 @@ type bootRun struct {
 
 // NewBooter returns a Booter; it panics on a missing dependency (a wiring bug).
 func NewBooter(cfg BootConfig) *Booter {
-	if cfg.Instance == "" || cfg.AppNet == nil || cfg.Net == nil || cfg.Routes == nil || cfg.Src == nil {
-		panic("deploy: NewBooter needs an instance, AppNet, Net, Routes and Src")
+	if cfg.Instance == "" || cfg.AppNet == nil || cfg.Net == nil || cfg.Routes == nil {
+		panic("deploy: NewBooter needs an instance, AppNet, Net and Routes")
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
@@ -206,24 +193,13 @@ func (b *Booter) run(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	if b.cfg.SyncRoutes && !b.cfg.Routes.Ready() {
-		if err := b.cfg.Routes.Sync(ctx, b.cfg.Src); err != nil {
-			b.cfg.Log.Warn("the app routes are not applied yet: listing the containers failed", "err", err.Error())
+	if b.cfg.SyncRoutes && b.cfg.Sync != nil && !b.cfg.Routes.Ready() {
+		if err := b.cfg.Sync(ctx); err != nil {
+			b.cfg.Log.Warn("the app routes are not applied yet: the container list has not finished", "err", err.Error())
 			errs = append(errs, err)
 		}
 	}
-	if b.cfg.OnReady != nil && b.ready() {
-		b.cfg.OnReady()
-	}
 	return errors.Join(errs...)
-}
-
-// ready is the interim start-gate condition (see BootConfig.OnReady).
-func (b *Booter) ready() bool {
-	if b.cfg.SyncRoutes {
-		return b.cfg.Routes.Ready()
-	}
-	return b.networkOK()
 }
 
 // ensureNetwork checks the recorded subnet against the host, then creates the
