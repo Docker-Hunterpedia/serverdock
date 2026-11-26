@@ -28,6 +28,8 @@ Goal: decisions locked and a skeleton that proves the footprint.
 
 Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 
+Milestone order (2026-11-27, maintainer decision; [plan 0002](plans/0002-phase-1-mvp-solo.md) Revision 1): M1, M2, M3a, M3b, M4a, M7a — the **early usable version**, for apps whose data is disposable or backed up elsewhere until M6 adds app-data backups (confirmed by the maintainer 2026-11-27) — then M7b, M5, M6, M4b, M8, M9. The reorder brings first real use forward; it does not make the Phase 1 exit earlier.
+
 - [x] Setup token, admin + TOTP with recovery codes, first-run onboarding UI over HTTPS — built in M2 ([plan 0003](plans/0003-m2-auth-first-run-spa.md) steps 5–12; tests: `TestFirstRunOverHTTP` in `internal/api/authflow_test.go`, Playwright `web/e2e/setup.spec.ts`; [security.md](security.md#m2-close-out-status))
 - [ ] Install script with pre-flight checks (M7a)
 - [ ] Signed releases (cosign); `serverdock bench` published with each release
@@ -36,7 +38,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] GitHub push-to-deploy + generic webhook, commit status
 - [x] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys — built in M3a ([plan 0004](plans/0004-m3a-deploy-from-image.md) steps 4a–10, 13; tests: `TestBlueGreenSwitchWithZeroNon2xx`, `TestUnhealthyCandidateKeepsOldServingWithZeroNon2xx`, `TestRollbackPinsTheImageIdAndRunsThatSnapshot`, `TestSupersedeDuringHealthGateIsUnhealthy`, the kill -9 suite; [security.md](security.md#m3a-close-out-status)). A deploy, rollback or redeploy of one app does not reload the proxy: it drops no request on other apps or on the panel, and none on the deployed app that finishes within `drain_s` (at least 10 s); longer requests and open streams end when the old version is stopped. A restart is an outage by design, and the stop-first gap answers 503 (maintenance page); adding, changing or clearing a public port reloads the proxy and can close a connection being opened at that moment (expected never to have been processed, so safe to retry; to be confirmed by the measurements). The release measurements are still pending
 - [ ] Domains with automatic HTTPS (embedded Caddy) and actionable diagnostics; TLS problems never take a running app down
-- [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4)
+- [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4b, after M6)
 - [ ] Env vars & secrets (encrypted, audited reveal)
 - [ ] Postgres / MySQL / Redis one-click + scheduled S3 backups + restore
 - [ ] Metrics (cgroup), live logs, log search, basic alerts; email/webhook/Telegram notifications
@@ -56,7 +58,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [x] Accessible, phone-usable UI baseline — built in M2 and checked by axe (zero violations in eight Playwright projects: desktop, 390 px, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit; `web/e2e/`), covering the shell, setup, sign-in, Overview and Settings › Security. **Ticked 2026-11-22: the maintainer approved the manual screen-reader item for steps 12 and 13** (recorded in plan 0003) (checklists in [plan 0003](plans/0003-m2-auth-first-run-spa.md#step-12-manual-screen-reader-pass-checklist-for-the-maintainer))
 - [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar) — M3a screens: axe green in eight projects, manual screen-reader pass approved by the maintainer 2026-11-28 ([checklist](accessibility/m3a-screen-reader-checklist.md))
 
-**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
+**Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks — the counted window is the last 14 consecutive days before the exit, on builds that include M5, M6 and M8, updated only through self-update (earlier use is a logged pre-dogfood run and doesn't count).
 
 ## Phase 2 — Multi-server & builds
 
@@ -74,7 +76,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] CLI; request-ID tracing
 - [ ] **MCP write actions**: dry-run → `pending_approval` → approve in the panel → execute; destructive actions need typed confirmation (ADR 0006)
 - [ ] MCP investigation tools (failing services, explain deploy failure, logs around, what changed, trace request); Claude Code skills
-- [ ] Passkeys; more notification channels
+- [ ] More notification channels (passkeys moved to Phase 1, M4b)
 - [ ] Docker resources view per server: containers, images, volumes, networks (incl. unmanaged), prune with preview
 - [ ] Web + worker processes from one repo; replicas on one server
 - [ ] Deploy from a local folder (`serverdock up`)
