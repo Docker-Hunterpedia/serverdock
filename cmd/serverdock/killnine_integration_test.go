@@ -3,6 +3,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"fmt"
@@ -163,6 +164,9 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 	p2 := k.server("SERVERDOCK_TESTHOOK_PAUSE="+st.pause, "SERVERDOCK_TESTHOOK_DIR="+pauseDir)
 	marker := filepath.Join(pauseDir, "paused-"+strings.ReplaceAll(st.pause, ":", "-"))
 	k.waitFor("the pause at "+st.pause, 120*time.Second, func() bool { _, err := os.Stat(marker); return err == nil })
+	// The candidate's container, if the deploy got far enough to have one: its output
+	// must be in deploy B's log after the restart (the resync keeps it before removal).
+	bBefore := k.containerOf(2)
 	// Phase 3: SIGKILL, then a fresh server; the clock starts at the kill.
 	killedAt := time.Now()
 	if err := p2.Cmd.Process.Kill(); err != nil {
@@ -194,6 +198,10 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 		if k.activeDeploy() != k.deployID(2) {
 			t.Errorf("the active deploy is %d, want deploy B (%d)", k.activeDeploy(), k.deployID(2))
 		}
+		// The old container's tail was kept before the resync removed it (step 11).
+		if txt := k.deployLog(1); !strings.Contains(txt, "sd-testapp ready "+aID[:12]) || !strings.Contains(txt, "deploy: #1") {
+			t.Errorf("deploy A's log does not hold the old container's output:\n%s", txt)
+		}
 	} else {
 		k.waitFor("deploy B failed (interrupted)", 60*time.Second, func() bool { return k.deployStatus(2) == "failed" })
 		if code, reason := k.deployReason(2); code != "interrupted" || !strings.Contains(reason, "interrupted by restart") {
@@ -209,6 +217,14 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 			t.Errorf("the active deploy is %d, want deploy A", k.activeDeploy())
 		}
 		k.waitFor("app_safe raised to yes", 30*time.Second, func() bool { return k.appSafe(2) == "yes" })
+		// The uncommitted candidate's tail was kept before the resync removed it (step 11).
+		if bBefore != "" {
+			if txt := k.deployLog(2); !strings.Contains(txt, "sd-testapp ready "+bBefore[:12]) || !strings.Contains(txt, "deploy: #2") {
+				t.Errorf("deploy B's log does not hold the candidate's output:\n%s", txt)
+			}
+		} else if k.hasLog(2) {
+			t.Error("a log exists for a deploy that never had a container")
+		}
 	}
 	if twoVersions != nil {
 		if seen := twoVersions(); len(seen) > 0 {
@@ -219,6 +235,47 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 		t.Errorf("deploy B's job is %s", n)
 	}
 	k.checkAudit()
+}
+
+// deployLog is the decompressed deploy log of deploy number n, read from the data
+// directory of the built binary: the root, the service's directory and the file are
+// private (0700, 0700, 0600), whatever umask the test runner has.
+func (k *killRig) deployLog(number int) string {
+	t := k.t
+	t.Helper()
+	id := k.deployID(number)
+	root := filepath.Join(k.data, "deploy-logs")
+	dir := filepath.Join(root, strconv.FormatInt(k.svc, 10))
+	file := filepath.Join(dir, strconv.FormatInt(id, 10)+".log.gz")
+	k.waitFor("the log of deploy "+strconv.Itoa(number), 30*time.Second, func() bool { _, err := os.Stat(file); return err == nil })
+	for p, want := range map[string]os.FileMode{root: 0o700, dir: 0o700, file: 0o600} {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != want {
+			t.Errorf("%s has mode %v, want %v", p, fi.Mode().Perm(), want)
+		}
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(io.LimitReader(zr, 2<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (k *killRig) hasLog(number int) bool {
+	_, err := os.Stat(filepath.Join(k.data, "deploy-logs", strconv.FormatInt(k.svc, 10), strconv.FormatInt(k.deployID(number), 10)+".log.gz"))
+	return err == nil
 }
 
 // watchTwoVersions samples docker ps from now until the returned function is called

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -834,13 +835,26 @@ func TestShutdownDuringTheDrainWritesTheHonestEnd(t *testing.T) {
 	}
 	// The reason promises it: after a restart the first resync removes the previous
 	// container, and only that one (step 10).
-	rec := NewReconciler(ReconcilerConfig{DB: g.st, Ops: &recOps{fakeOps: g.ops}, Routes: g.routes, Locks: g.runner.cfg.Locks, Act: g.runner.cfg.Inv, Proxy: true})
+	// Its log tail is kept first (step 11), into the OLD deploy's log.
+	src := &fakeLogSrc{ops: g.ops}
+	src.set(oldID, "the previous version's last output\n")
+	dl := &DeployLogs{Root: filepath.Join(t.TempDir(), "deploy-logs"), DB: g.st, Src: src}
+	if dl.Kept(g.svc)[old] {
+		t.Fatal("the old log existed before the restart")
+	}
+	rec := NewReconciler(ReconcilerConfig{DB: g.st, Ops: &recOps{fakeOps: g.ops}, Routes: g.routes, Locks: g.runner.cfg.Locks, Act: g.runner.cfg.Inv, Proxy: true, KeepLog: dl.Keep})
 	RegisterReconcilerActions(g.reg, rec)
 	if _, err := rec.fullResync(context.Background(), true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if g.alive(oldID) {
 		t.Error("the previous container is still there after the restart's resync")
+	}
+	if alive, called := src.wasAlive(oldID); !called || !alive {
+		t.Errorf("the old container's log: called %v, alive at the time %v", called, alive)
+	}
+	if txt, _, err := dl.Read(g.svc, old); err != nil || !strings.Contains(txt, "the previous version's last output") {
+		t.Errorf("the old deploy's log after the restart: %q %v", txt, err)
 	}
 	if g.containerOf(d) == nil || !g.containerOf(d).running {
 		t.Error("the committed version's container was removed by the resync")
