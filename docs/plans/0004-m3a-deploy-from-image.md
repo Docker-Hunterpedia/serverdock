@@ -1192,3 +1192,113 @@ Recorded after step 10 and its reviews; later steps follow these. Step 10 was re
 - **Watch CI (`systems`):** `TestDaemonRestartKeepsRoutesCorrect` has a 30 s bound. CI measured 12.1 s and the local script 23.4 s; consider resetting the back-off when Docker answers again.
 - **Optional:** the candidate's gate failing fast on `die`/`oom`; carrying `committed_at` on the resync item instead of one DB read per removal; a separate "settled" flag if ◌ unknown during the capped removal graces turns out to matter.
 - **Release gate (`footprint`):** the CI S2 live-watcher number, with a reason if it is over 56 MB; S4 has 2–2.5 MB of headroom under its tripwire in full runs.
+
+## Revision 17 (step 11 implementation notes)
+
+Recorded after step 11 and its reviews; later steps follow these.
+
+- **Commits.**
+  - Implementation:
+    - `8fb058d` deploy logs and the `KeepLog` hooks;
+    - `45284d1` `deploys.list`, `deploys.get`, `deploys.log`, with OpenAPI and types;
+    - `ddc2b37` the test app prints a start line;
+    - `5f32490` the kill -9 and drain-shutdown assertions, plus docs;
+    - `1f25421` the datadir note.
+  - Review fixes: `32c940b`, `a96bc0f`, `0db1a43`.
+  - Outside the step: `b296593` fixes a racy step 9 test. `TestRunningDeployPastItsCommitSkipsTheRestOfItsDrain` read a deploy row the delete job could already have removed; it failed most runs on a loaded machine.
+- **Files** (`internal/deploy/deploylog.go`).
+  - Location: `DATA/deploy-logs/<service id>/<deploy id>.log.gz`. Directories are 0700, created with that mode and tightened with `Chmod` if looser. The file is 0600, written to a `.log-*.tmp` in the same directory and then renamed.
+  - Contents: a header (deploy, image, digest, times, the container, and for a failed candidate "this attempt: <reason>"), then the stage lines, then the container output.
+  - Capture is through the agent `logs` op with `follow:false`, `tail:2000`, streamed through a pooled BestSpeed gzip writer and a pooled 32 KiB buffer.
+  - **The 1 MiB cap is on the whole file. When the output does not fit, the tail is asked for again with fewer lines (`min(lines that fitted, tail/2)`, at most 4 more rounds), so the newest lines are kept.** The header says how many lines were kept, and a final cut says what is missing.
+  - Paths:
+    - Ids are positive integers, exactly one level under the root.
+    - The root and the service directory are checked with `Lstat` (a link is refused) in Keep, Read, Prune, Kept, Sweep and the delete.
+    - Read opens with `O_NOFOLLOW` and checks that the file is regular.
+    - Keep re-checks that the service row exists before the rename.
+- **Capture points.**
+  - The candidate's log is kept before it is stopped, on every failure path.
+    - It is skipped at shutdown; the resync keeps the log of a candidate left behind.
+    - It is bounded at a third of the remaining clean-up time, and at 3 s in the stop-first gap.
+    - After a panic, the runner's clean-up skips the keep.
+  - The old container goes stop → keep → remove after a success, so its shutdown lines are kept.
+  - Orphans the resync removes go stop → keep → remove, bounded at 3 s.
+  - A keep never fails a deploy: "log not kept: <reason>" goes in the failed stage's detail or in `stop_old`. `LogKept` is true only when the file was written. A deploy outside the newest 10 is skipped silently.
+- **Retention:** the newest 10 deploys per service keep a file. Prune runs when a deploy is recorded (lazy, no timer) and also removes `.tmp` files older than 10 minutes. The first resync after start removes `deploy-logs/<id>` directories whose service row is gone (`Sweep`). The step 9 delete still removes the directory (`TestDeleteRemovesRealDeployLogs`).
+- **Reads** (`deployreads.go`).
+  - `deploys.list`: newest first, up to 200, with `log_kept`.
+  - `deploys.get`: stages; in-memory pull progress, only while the stage is pull; `cancellable`.
+  - `deploys.log`: RiskRead with `ScopeWrite`. A read token gets 403, MCP never gets it, and an app-origin request is refused.
+    - The text comes through a 4 MiB compressed limit and a 1 MiB + 1 decompressed limit, a buffer pre-sized from the gzip trailer (clamped), and one cleaned copy through `agent.CleanLogBytes`. That function removes ESC, NUL, C0 and C1 controls (so CSI and OSC lose their introducer), bidi and format characters, and invalid UTF-8.
+    - **At most 2 reads at once;** a third waits 0.5 s, then gets 503 "try again in a moment".
+    - When no file exists, the reply says why: not yet, never kept, or "Log no longer kept (only the last 10 deploys keep logs)".
+- **Departures from the plan text (accepted):**
+  - The cap covers the whole file rather than the output alone, and the tail is re-asked with fewer lines instead of keeping a ring buffer.
+  - The candidate's log is kept before its stop; the old container's and orphans' after their stop.
+  - The failure reason is passed to the hook as an explicit note.
+  - An agent error line at the start of the stream makes the keep fail rather than storing it.
+  - `deploys.*` reads are registered after the runner exists.
+  - Several old containers of one deploy share its file (the last one wins; the header names it).
+  - Concurrent `deploys.log` reads are capped at 2 (`footprint`).
+- **Tests.** Every test named in step 11 exists:
+  - retention 10;
+  - the cap at 50 MiB (unit, and real Docker asserting the last line is kept);
+  - a gzip bomb;
+  - the modes on the built binary (kill -9 suite, run with umask 0);
+  - candidate, old-container and orphan tails;
+  - hostile-log sanitising end to end;
+  - read token refused and write token allowed;
+  - a deleted service's files gone;
+  - progress while pulling.
+
+  Added in review: the newest lines kept on a cut, the honest final cut, a failed re-read that neither panics nor leaves a file, a candidate still removed when its log re-read fails, a hanging log source bounded, shutdown skipping the keep, symlinks never followed, a deleted service's log not written, the read cap, and the boot sweep.
+
+  Final matrix on `0db1a43`, all passing:
+  - build, and vet with the default, `integration` and `testhooks` tags;
+  - `go test -race ./...`;
+  - `-race -tags testhooks ./internal/deploy`;
+  - integration on `dockerapi`, `agentops` and `deploy`;
+  - **the kill -9 suite ×1**: 22 passes, with the log and mode assertions. Outages unchanged: blue-green 60–112 ms; stop-first 61–250 ms, and the four gap stages 2,416–2,594 ms;
+  - **the stop-first pair ×3**: maintenance 503s only, 0 drops, 0 retries, 0 Caddy loads, 2 `proxy_apply`;
+  - **blue-green ×3** and **unhealthy ×3**: 0 non-2xx, drops, retries and loads;
+  - the 50 MiB cap test;
+  - `-race -count=20 ./internal/deploy ./internal/jobs`;
+  - implementer runs of `-race -count=50` over the deploy-log family.
+
+  `TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx` passed (12 new-connection drops, all retried).
+- **Bench** (cloud container, clean worktree, the same temporary shims, never committed):
+
+  | Run | Commit | S2 live watcher | S4 |
+  |---|---|---|---|
+  | Quick | `1f25421` | 56.8 MB | 49.8 MB |
+  | Full | `1f25421` | — | 47.9 MB (VmHWM 49.7) |
+  | Quick | `a96bc0f` | 57.3 MB | 50.9 MB (over the tripwire, a warning) |
+  | **Full** | **`0db1a43`** | **53.7 MB** (53.7, 55.4, 53.0; VmHWM 58.3) | **47.6 MB** (47.9, 47.0, 47.6; VmHWM 49.8) |
+
+  - Idle CPU was 0.01 % or less throughout.
+  - Binary: 19.87 MB gzip -9 (+0.04).
+  - Quick S4 runs spread from 49.2 to 50.9 MB, while full runs stay at 47.5–47.9 MB.
+  - Step 11 adds nothing on the agent side.
+- **Disk and memory** (`footprint`; `docs/architecture.md` has its own entry):
+  - Disk: worst case 1 MiB × 10 × 100 services, about 1 GB uncompressed bound, less after gzip. There is no disk budget, only this bound. A `.tmp` left by a crash for a service that never deploys again is not swept.
+  - Memory, all transient: about 1.2 MiB per gzip writer, at most 3 at once (2 workers and the reconciler); about 3× the log per `deploys.log` read, at most 2 at once.
+  - No new goroutine, ticker or dependency. The only timer is the 0.5 s read-slot wait inside a request.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after two blocking rounds:
+    1. the kept output was the head of the tail, not its end;
+    2. the nil-source panic when a re-read failed.
+  - `security` APPROVE (required), after one blocking round: the same nil-source panic, which a noisy, slow container could trigger to leave its candidate running. Its round 0 nits were fixed: links never followed everywhere, `O_NOFOLLOW`, the delete race.
+  - `footprint` APPROVE: the full S4 it required, the read cap, and the doc corrections.
+
+### Revision 17, follow-ups for later steps
+
+- **Step 13 (UI):**
+  - Render the log as text only, with the header visually separate from the container output (a container can print lines that look like header lines).
+  - Show "Log no longer kept…" and "try again in a moment" (503) honestly.
+  - Poll `deploys.get` as the plan says (2 s, 5 s after 2 minutes of pulling, only while visible).
+- **Plan 0005:**
+  - The sentinel test over `deploys.log`, `deploys.get` reasons and stage details once app secrets exist.
+  - Consider auditing `deploys.log` reads or marking them sensitive (`security`).
+- **Plan 0009:** `doctor --bundle` excludes `deploy-logs/`.
+- **Optional:** send agent errors out of band, so a container cannot stop its own log from being kept by starting its output with the error prefix (`security`).
+- **Watch:** S4's full-run VmHWM is 49.7–49.8 MB against the 50 MB tripwire; the medians are 47.5–47.9 MB.
