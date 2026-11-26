@@ -329,6 +329,18 @@ func (d *svcDeps) rollback(ctx context.Context, c actions.Call, in RollbackIn) (
 	if err != nil {
 		return DeployOut{}, err
 	}
+	// The rules services.deploy and services.update enforce for a write token apply
+	// to what a rollback would run: an earlier version may come from a repository an
+	// admin has since retired, or listen on another port than the exposed service's
+	// now. Both are "what runs / where it is exposed" decisions: admin only.
+	if c.Actor.Scope() < actions.ScopeAdmin {
+		if !policy.SameRepository(snap.ImageRef, r.imageRef) {
+			return DeployOut{}, &actions.DeniedError{Reason: "that version is from another image repository than the service's current one: rolling back to it needs an admin token or a signed-in session"}
+		}
+		if r.publicPort.Valid && (!r.containerPort.Valid || r.containerPort.Int64 != int64(snap.ContainerPort)) {
+			return DeployOut{}, &actions.DeniedError{Reason: "that version listens on another container port than the exposed service's current one: rolling back to it needs an admin token or a signed-in session"}
+		}
+	}
 	return d.queueFrom(ctx, c, r, "rollback", src.id, snap, func(ctx context.Context, tx *sql.Tx) error {
 		var committed sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT committed_at FROM deploys WHERE id = ? AND service_id = ?`, src.id, r.id).Scan(&committed); err != nil {

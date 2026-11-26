@@ -161,28 +161,53 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 		return out, context.Cause(ctx)
 	}
 	defer unlock()
-
-	// Everything from here is idempotent. A failure leaves the service flagged so the
-	// UI says the delete did not finish.
+	// One last look at a cancel (a session revoke, a supersede-like flag) before anything
+	// is touched: a cancelled delete that has not started changes nothing. From here on
+	// the delete runs to its end on a context cut off from the job's: every step has its
+	// own bound and is idempotent, and a delete stopped halfway would leave a service
+	// with no container and no flag. Anything that fails flags the service.
+	if ctx.Err() != nil {
+		return out, context.Cause(ctx)
+	}
+	ctx = context.WithoutCancel(ctx)
 	fail := func(msg string) (RunDeleteOut, error) {
 		r.setAttention(p.Service, AttentionDeleteInterrupted)
 		return out, errors.New(msg)
 	}
+	step := func(d time.Duration) (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, d) }
+
 	grace := 10
 	var exists bool
-	if err := r.cfg.DB.R.QueryRowContext(ctx, `SELECT stop_grace_s FROM services WHERE id = ?`, p.Service).Scan(&grace); err == nil {
+	qctx, qcancel := step(recordBound)
+	err = r.cfg.DB.R.QueryRowContext(qctx, `SELECT stop_grace_s FROM services WHERE id = ?`, p.Service).Scan(&grace)
+	qcancel()
+	switch {
+	case err == nil:
 		exists = true
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return out, errors.New("the service could not be read")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fail("the service could not be read")
+	}
+
+	// 0. The route goes FIRST: the service's route is set to the "not running" page and
+	// the apply must be confirmed (nothing routed counts as confirmed) before any
+	// container is touched. A stale proxy can then only show a static page, never an
+	// upstream to an address the allocator is about to hand out again.
+	if exists {
+		rctx, rcancel := step(SwitchBound)
+		err = r.cfg.Routes.SetOverride(rctx, p.Service, Override{Kind: OverrideNotRunning})
+		rcancel()
+		if err != nil && !errors.Is(err, ErrRoutesNotReady) {
+			r.cfg.Log.Warn("the route of a service being deleted could not be taken away", "service", p.Service, "err", err.Error())
+			return fail("the proxy could not confirm that the service's route was removed, so nothing was deleted; delete again to retry: " + routeErrText(err))
+		}
 	}
 
 	// 1. Containers: labelled with this service and owned by this install (the list
 	// marks anything else unowned, and the agent refuses it again on stop and remove).
-	list, err := r.cfg.Ops.ContainerList(ctx)
+	lctx, lcancel := step(RemoveBound)
+	list, err := r.cfg.Ops.ContainerList(lctx)
+	lcancel()
 	if err != nil {
-		if ctx.Err() != nil {
-			return out, context.Cause(ctx)
-		}
 		r.cfg.Tracker.State().MarkUnknown(p.Service)
 		return fail("Docker could not list the containers: " + opText(err, "no answer"))
 	}
@@ -191,23 +216,17 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 		if c.Unowned || c.Labels.Service != svc {
 			continue
 		}
-		sctx, cancel := context.WithTimeout(ctx, time.Duration(grace)*time.Second+StopExtra)
+		sctx, cancel := step(time.Duration(grace)*time.Second + StopExtra)
 		err := r.cfg.Ops.ContainerStop(sctx, c.ID, grace)
 		cancel()
 		if err != nil && !agentops.IsCode(err, agent.CodeNotFound) {
-			if ctx.Err() != nil {
-				return out, context.Cause(ctx)
-			}
 			return fail("a container of the service could not be stopped: " + opText(err, "Docker did not answer"))
 		}
 		if !agentops.IsCode(err, agent.CodeNotFound) {
-			rctx, rcancel := context.WithTimeout(ctx, RemoveBound)
+			rctx, rcancel := step(RemoveBound)
 			err = r.cfg.Ops.ContainerRemove(rctx, c.ID)
 			rcancel()
 			if err != nil && !agentops.IsCode(err, agent.CodeNotFound) {
-				if ctx.Err() != nil {
-					return out, context.Cause(ctx)
-				}
 				return fail("a container of the service could not be removed: " + opText(err, "Docker did not answer"))
 			}
 		}
@@ -222,17 +241,20 @@ func (r *Runner) runDelete(ctx context.Context, _ actions.Call, jobID int64) (Ru
 		return fail("the deploy logs could not be removed: " + agent.CleanText(err.Error(), 160))
 	}
 
-	// 3. The rows, as the mutate of ApplyRoutes: the route goes with them. Not a
+	// 3. The rows, as the mutate of ApplyRoutes: the route entry goes with them. Not a
 	// retry of other services' failed ports (a failed port is not this delete's).
 	if exists {
-		err = r.cfg.Routes.DeleteRoutes(ctx, func() error { return r.deleteRows(ctx, p.Service) })
+		dctx, dcancel := step(SwitchBound + ApplyBound)
+		err = r.cfg.Routes.DeleteRoutes(dctx, p.Service, func() error { return r.deleteRows(dctx, p.Service) })
+		dcancel()
 		var me *MutateError
 		switch {
 		case err == nil, errors.Is(err, ErrRoutesNotReady):
 		case errors.As(err, &me):
 			return fail("the service's records could not be deleted: " + agent.CleanText(me.Err.Error(), 160))
 		default:
-			// Deleted; the proxy did not confirm (Routes is marked stale: services.get says so).
+			// Deleted, and the route already showed only a static page; the proxy did
+			// not confirm the final list (Routes is marked stale: services.get says so).
 			r.cfg.Log.Warn("the proxy did not confirm the routes after a service delete", "service", p.Service, "err", err.Error())
 		}
 	}

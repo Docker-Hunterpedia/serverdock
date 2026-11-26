@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,11 +60,22 @@ func TestStopFirstGapThenCommit(t *testing.T) {
 	old := g.live(g.svc, 1, "10.250.0.2")
 	oldID := g.containerOf(old).id
 	g.expose(g.svc, 9000)
+	var stageAtCommit atomic.Value
+	g.runner.trace = func(ev string) {
+		if ev == "commit" {
+			var st string
+			g.st.R.QueryRow(`SELECT stage FROM deploys WHERE status = 'running'`).Scan(&st)
+			stageAtCommit.Store(st)
+		}
+	}
 	l := g.record(oldID)
 	g.start(false)
 	d, job := g.deploy(g.svc, stopFirstMod)
 	if s := g.wait(job); s != jobs.StateSucceeded {
 		t.Fatalf("job %s: %+v", s, g.row(d))
+	}
+	if st, _ := stageAtCommit.Load().(string); st != StageStopOld {
+		t.Errorf("a committed stop-first deploy is in stage %q, want stop_old (it has no drain)", st)
 	}
 	want := "pull,maintenance,proxy_apply,stop:old,create,start:new,health,switch,proxy_apply,commit,stop_old,stop:old,remove:old"
 	if got := seqOf(l); got != want {
@@ -478,5 +490,185 @@ func TestStopFirstUnknownCommitOutcomeTouchesNothingMore(t *testing.T) {
 	}
 	if _, ok := g.routes.overrideOf(g.svc); ok {
 		t.Error("the override was left behind")
+	}
+}
+
+// The revert of a switch fails in the gap too: the candidate is KEPT (the proxy may
+// still point at it), the previous container is NEVER started (two versions must not
+// run), the map holds no override naming the candidate, and the service is flagged.
+func TestFailedRevertInTheGapNeverStartsTheOldContainer(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	pages := 0
+	g.px.failIf = func(routes []agentops.Route) error {
+		switch {
+		case routes[0].Upstream == "10.250.0.3:8080":
+			return errors.New("proxy down")
+		case routes[0].Page == agentops.PageMaintenance:
+			if pages++; pages > 1 { // the gap's own page worked; the revert's does not
+				return errors.New("proxy down")
+			}
+		}
+		return nil
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc, stopFirstMod)
+	g.wait(job)
+	r := g.row(d)
+	if r.code != CodeSwitchFailed || r.appSafe != AppSafeUnknown || !strings.Contains(r.reason, "was not started again") {
+		t.Fatalf("%+v", r)
+	}
+	if g.containerOf(d) == nil {
+		t.Error("the candidate was removed although the proxy may still route to it")
+	}
+	if g.ops.find(oldID).running || g.ops.count("restart") != 0 {
+		t.Error("the previous container was started while the candidate exists")
+	}
+	if o, ok := g.routes.overrideOf(g.svc); ok && o.Kind == OverrideUpstream {
+		t.Errorf("the map still names the candidate: %+v", o)
+	}
+	var attention string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != AttentionVersionsKept {
+		t.Errorf("needs_attention %q", attention)
+	}
+}
+
+// A commit that is KNOWN to have failed, with the revert confirmed: the candidate is
+// removed, then the previous container comes back.
+func TestStopFirstKnownCommitFailureRestoresThePreviousVersion(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	g.px.onApply = func(routes []agentops.Route) {
+		if routes[0].Upstream == "10.250.0.3:8080" {
+			mustExecIgnore(g, `CREATE TRIGGER IF NOT EXISTS no_commit BEFORE UPDATE OF active_deploy_id ON services BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+		}
+	}
+	l := g.record(oldID)
+	g.start(false)
+	d, job := g.deploy(g.svc, stopFirstMod)
+	g.wait(job)
+	r := g.row(d)
+	if r.code != CodeCommitFailed || r.appSafe != AppSafeYes {
+		t.Fatalf("%+v", r)
+	}
+	seq := seqOf(l)
+	if !strings.Contains(seq, "remove:new,restore_old,start:old") {
+		t.Errorf("the candidate must go before the old container starts: %s", seq)
+	}
+	if g.containerOf(d) != nil || !g.ops.find(oldID).running {
+		t.Error("candidate left or the previous version is not running")
+	}
+}
+
+// A cancel in the middle of the stop must not leave the app dying: the stop runs to
+// its end on its own context, then the previous version is started again.
+func TestCancelDuringTheStopStillRestoresThePreviousVersion(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	jobCh := make(chan int64, 1)
+	var once atomic.Bool
+	g.ops.stopGraceFn = func(int) {
+		if once.CompareAndSwap(false, true) {
+			j := <-jobCh
+			_ = g.sched.Cancel(context.Background(), j, "cancelled by the user")
+		}
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc, stopFirstMod)
+	jobCh <- job
+	if s := g.wait(job); s != jobs.StateCancelled {
+		t.Fatalf("job %s", s)
+	}
+	r := g.row(d)
+	if r.status != "cancelled" || r.appSafe != AppSafeYes {
+		t.Fatalf("%+v", r)
+	}
+	if c := g.ops.find(oldID); c == nil || !c.running || c.dying {
+		t.Errorf("the previous version is not running: %+v", c)
+	}
+	g.ops.mu.Lock()
+	defer g.ops.mu.Unlock()
+	if len(g.ops.stopAfter) == 0 || g.ops.stopAfter[0] != nil {
+		t.Errorf("the stop ran on the cancellable context: %v", g.ops.stopAfter)
+	}
+}
+
+// A queued delete during the gap: the previous container is not restored (the
+// service is going away), the page comes down, and the delete then removes it all.
+func TestDeleteDuringTheGapSkipsTheRestore(t *testing.T) {
+	g := newRRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	inHealth := make(chan struct{}, 1)
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		select {
+		case inHealth <- struct{}{}:
+		default:
+		}
+		return agentops.HealthResult{OK: false}, nil
+	}
+	g.start(false)
+	g.services()
+	d, deployJob := g.deploy(g.svc, stopFirstMod, func(s *Snapshot) { s.Health.TimeoutS = 600 })
+	<-inHealth
+	startsBefore := g.ops.count("start")
+	out, err := g.deleteAs(g.adminSession("sess-d", time.Now().Add(time.Hour)), "p/web", "p/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.wait(deployJob); s != jobs.StateCancelled {
+		t.Fatalf("deploy job %s", s)
+	}
+	if g.ops.count("start") != startsBefore {
+		t.Errorf("a container was started for a service that is being deleted: %v", g.ops.names())
+	}
+	_ = d
+	if s := g.wait(out.Job); s != jobs.StateSucceeded {
+		t.Fatalf("delete job %s: %s", s, g.jobError(out.Job))
+	}
+	if !g.noContainers() || g.rows(`SELECT COUNT(*) FROM services`) != 0 {
+		t.Error("the service was not deleted")
+	}
+}
+
+// At shutdown, a previous container that cannot be started or checked within the
+// short bound is "unverified": app_safe unknown, no needs_attention.
+func TestShutdownRestoreThatRunsOutOfTimeIsUnverifiedNotDown(t *testing.T) {
+	g := newRRig(t, func(c *RunnerConfig) { c.ShutdownCleanupBound = 300 * time.Millisecond })
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	inHealth := make(chan struct{}, 1)
+	g.ops.healthFn = func(context.Context, agentops.HealthArgs) (agentops.HealthResult, error) {
+		select {
+		case inHealth <- struct{}{}:
+		default:
+		}
+		return agentops.HealthResult{OK: false}, nil
+	}
+	g.ops.startWait = func(ctx context.Context, id string) {
+		if strings.HasPrefix(id, oldID[:8]) {
+			<-ctx.Done() // the previous container's start does not answer within the bound
+		}
+	}
+	g.start(false)
+	d, _ := g.deploy(g.svc, stopFirstMod, func(s *Snapshot) { s.Health.TimeoutS = 600 })
+	<-inHealth
+	g.stop()
+	r := g.row(d)
+	if r.code != CodeShutdown || r.appSafe != AppSafeUnknown {
+		t.Fatalf("%+v", r)
+	}
+	var attention *string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != nil {
+		t.Errorf("needs_attention %q for a restore that was only cut short", *attention)
 	}
 }

@@ -214,9 +214,13 @@ func TestQueuingTheDeleteCancelsQueuedWorkAndFlagsTheRunningDeploy(t *testing.T)
 	if s := g.wait(deployJob); s != jobs.StateCancelled {
 		t.Fatalf("the running deploy's job is %s", s)
 	}
-	if r := g.row(d); r.status != "cancelled" || !strings.Contains(r.reason, "being deleted") {
-		t.Errorf("%+v", r)
+	// (The deploy's row is gone once the delete has run: read the job's flag.)
+	var reason string
+	g.st.R.QueryRow(`SELECT COALESCE(cancel_reason, '') FROM jobs WHERE id = ?`, deployJob).Scan(&reason)
+	if reason != jobs.ReasonDeleted {
+		t.Errorf("the running deploy's job was flagged %q", reason)
 	}
+	_ = d
 	if g.jobState(restartJob) != jobs.StateCancelled {
 		t.Errorf("the queued restart is %s", g.jobState(restartJob))
 	}
@@ -316,8 +320,8 @@ func TestDeleteAfterTheFreshWindowExpiresAsksToConfirmAgain(t *testing.T) {
 	}
 }
 
-// Deleting an exposed service changes the set of public ports: one route list, with
-// the port gone (the proxy reloads on that: a documented reload case).
+// Deleting an exposed service: the "not running" page first (a table swap), then one
+// route list with the port gone (the proxy reloads on that: a documented reload case).
 func TestDeleteOfAnExposedServiceRemovesItsRouteInOneApply(t *testing.T) {
 	g := newRRig(t)
 	g.live(g.svc, 1, "10.250.0.2")
@@ -332,8 +336,11 @@ func TestDeleteOfAnExposedServiceRemovesItsRouteInOneApply(t *testing.T) {
 	if s := g.wait(out.Job); s != jobs.StateSucceeded {
 		t.Fatalf("delete job %s: %s", s, g.jobError(out.Job))
 	}
-	if g.px.n() != before+1 || len(g.lastRoutes()) != 0 {
-		t.Errorf("%d applies after the delete (want 1), last routes %+v", g.px.n()-before, g.lastRoutes())
+	if g.px.n() != before+2 || len(g.lastRoutes()) != 0 {
+		t.Errorf("%d applies after the delete (want 2: the page, then the port gone), last routes %+v", g.px.n()-before, g.lastRoutes())
+	}
+	if first := g.routeLists()[before]; len(first) != 1 || first[0].Page != agentops.PageNotRunning {
+		t.Errorf("the first apply of the delete is %+v, want the not-running page", first)
 	}
 	g.px.mu.Lock()
 	defer g.px.mu.Unlock()
@@ -464,10 +471,136 @@ func TestDeleteLogDirIsValidated(t *testing.T) {
 		t.Errorf("the link is still there: %v", err)
 	}
 	// A missing directory and an empty root are fine (nothing to delete).
+	// A symlink INSIDE the directory that points outside is not followed either.
+	inner := filepath.Join(root, "8")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(inner, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLogs(root, 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
+		t.Errorf("a symlink inside the directory was followed: %v", err)
+	}
+	if _, err := os.Lstat(inner); !os.IsNotExist(err) {
+		t.Errorf("the directory is still there: %v", err)
+	}
 	if err := removeLogs(root, 99); err != nil {
 		t.Error(err)
 	}
 	if err := removeLogs("", 99); err != nil {
 		t.Error(err)
+	}
+}
+
+// The route is taken away FIRST, and the proxy must confirm it: with a proxy that
+// cannot apply, the delete fails before any container is touched, the service is
+// flagged, and an address of the service can never be handed out while a stale proxy
+// might still route to it.
+func TestDeleteTakesTheRouteAwayFirstAndNeedsItConfirmed(t *testing.T) {
+	g := newRRig(t)
+	d := g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	g.start(false)
+	g.services()
+	sess := g.adminSession("sess-d", time.Now().Add(time.Hour))
+
+	// 1. The proxy fails the "not running" page: nothing is removed.
+	g.px.failIf = func(routes []agentops.Route) error {
+		if len(routes) == 1 && routes[0].Page == agentops.PageNotRunning {
+			return errors.New("proxy down")
+		}
+		return nil
+	}
+	out, err := g.deleteAs(sess, "p/web", "p/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.wait(out.Job); s != jobs.StateFailed {
+		t.Fatalf("job %s", s)
+	}
+	if !strings.Contains(g.jobError(out.Job), "nothing was deleted") {
+		t.Errorf("error %q", g.jobError(out.Job))
+	}
+	if g.ops.count("stop") != 0 || g.ops.count("remove") != 0 || g.containerOf(d) == nil {
+		t.Errorf("a container was touched before the route was confirmed gone: %v", g.ops.names())
+	}
+	var attention string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != AttentionDeleteInterrupted || g.rows(`SELECT COUNT(*) FROM services`) != 1 {
+		t.Errorf("attention %q", attention)
+	}
+	// The container still exists, so its address stays held: a new deploy never gets it.
+	extra := addDeploy(t, g.st, g.svc, 9, "queued", nil)
+	addr, err := g.runner.cfg.Alloc.Allocate(context.Background(), extra)
+	if err != nil || addr.String() == "10.250.0.2" {
+		t.Errorf("Allocate gave %v %v while the deleted service's address may still be routed", addr, err)
+	}
+	mustExec(t, g.st, `UPDATE deploys SET status = 'failed', ip = NULL WHERE id = ?`, extra)
+
+	// 2. A proxy that works: the first route list after the delete is the page, before any stop.
+	g.px.mu.Lock()
+	g.px.failIf = nil
+	g.px.mu.Unlock()
+	var order []string
+	g.px.onApply = func(routes []agentops.Route) {
+		if len(routes) == 1 && routes[0].Page == agentops.PageNotRunning {
+			order = append(order, "page")
+		}
+	}
+	g.ops.onCall = func(op, _ string) {
+		if op == "stop" || op == "remove" {
+			order = append(order, op)
+		}
+	}
+	out, err = g.deleteAs(sess, "p/web", "p/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.wait(out.Job); s != jobs.StateSucceeded {
+		t.Fatalf("job %s: %s", s, g.jobError(out.Job))
+	}
+	if len(order) < 3 || order[0] != "page" {
+		t.Errorf("order %v: the route page must come before any container call", order)
+	}
+	if g.routes.overrideCount() != 0 {
+		t.Error("an override is left behind after the delete")
+	}
+}
+
+// A session revoke (the job's context cancelled) in the middle of a delete does not
+// leave it half done: it runs on to its end.
+func TestRevokeDuringADeleteNeverLeavesItHalfDone(t *testing.T) {
+	g := newRRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.start(false)
+	g.services()
+	sess := g.adminSession("sess-d", time.Now().Add(time.Hour))
+	jobCh := make(chan int64, 1)
+	g.ops.stopGraceFn = func(int) {
+		select {
+		case j := <-jobCh:
+			jobCh <- j
+			_ = g.sched.Cancel(context.Background(), j, "the session that queued this job was revoked")
+		case <-time.After(2 * time.Second):
+		}
+	}
+	out, err := g.deleteAs(sess, "p/web", "p/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobCh <- out.Job
+	g.wait(out.Job)
+	gone := g.rows(`SELECT COUNT(*) FROM services`) == 0 && g.noContainers()
+	var attention *string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services`).Scan(&attention)
+	if !gone && (attention == nil || *attention != AttentionDeleteInterrupted) {
+		t.Fatalf("half done and unflagged: services %d, containers %v, job %s", g.rows(`SELECT COUNT(*) FROM services`), g.ops.names(), g.jobError(out.Job))
+	}
+	if !gone {
+		t.Errorf("the delete did not run to its end after the revoke: %s", g.jobError(out.Job))
 	}
 }

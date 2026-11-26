@@ -63,6 +63,8 @@ func (d *svcDeps) restart(ctx context.Context, c actions.Call, in ServiceRefIn) 
 	if !r.activeDeploy.Valid {
 		return RestartOut{}, actions.Conflict("%s has no live version to restart; deploy it first", in.Service)
 	}
+	// timeout_s is the recorded budget (the stop plus the health gate); like every
+	// non-deploy job it is not enforced: each step has its own bound.
 	payload, _ := json.Marshal(restartPayload{Service: r.id})
 	id, err := d.Jobs.Enqueue(ctx, jobs.NewJob{
 		Kind: jobs.KindRestart, LockKey: jobs.LockKey(r.id), Actor: jobs.ActorOf(c.Actor), Payload: payload,
@@ -149,10 +151,16 @@ func (r *Runner) runRestart(ctx context.Context, _ actions.Call, jobID int64) (R
 
 	grace := snap.StopGraceS
 	for _, id := range o.ids {
-		sctx, cancel := context.WithTimeout(ctx, time.Duration(grace)*time.Second+StopExtra)
+		// Not cancellable: a cancel in the middle would leave the app SIGTERMed and
+		// dying. It runs to its own bound; the cancel is read right after.
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(grace)*time.Second+StopExtra)
 		err := r.cfg.Ops.ContainerRestart(sctx, id, grace)
 		rn.op(sctx, err)
 		cancel()
+		if err == nil && ctx.Err() != nil {
+			rn.trackOld(context.WithoutCancel(ctx))
+			return out, context.Cause(ctx)
+		}
 		if err != nil {
 			rn.trackOld(context.WithoutCancel(ctx))
 			if ctx.Err() != nil {
@@ -173,6 +181,11 @@ func (r *Runner) runRestart(ctx context.Context, _ actions.Call, jobID int64) (R
 		return out, fmt.Errorf("the app was restarted but is not healthy: %s", reason)
 	}
 	rn.trackOld(ctx)
+	rn.soft("the service's attention flag", func(ctx context.Context, tx *sql.Tx) error {
+		// The previous version is serving again: a flag that said it was down is stale.
+		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention = ?`, p.Service, AttentionPreviousDown)
+		return err
+	})
 	out.Status = "restarted"
 	return out, nil
 }

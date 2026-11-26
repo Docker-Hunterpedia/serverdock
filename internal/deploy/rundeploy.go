@@ -999,18 +999,16 @@ func (rn *run) finish(f *failure) error {
 	if !f.keep {
 		rn.removeCandidate(fctx)
 	}
-	if (rn.gap || rn.stopSent) && !(f.code == CodeCommitFailed && f.keep) {
-		// (An unknown commit outcome leaves both versions as they are: the routes
-		// follow the database, and the resync settles the rest.)
-		// Stop-first: the page goes down and the previous container comes back, on
-		// its own fresh context (stopfirst.go). A candidate that was kept because the
-		// proxy might still point at it is removed once the routes are confirmed.
-		kept := f.keep
-		f = rn.restoreOld(f)
-		if kept && !f.keep {
-			kctx, kcancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
-			rn.removeCandidate(kctx)
-			kcancel()
+	if rn.gap || rn.stopSent {
+		// Stop-first. If the candidate is KEPT (the proxy may still point at it, or the
+		// commit's outcome is unknown) the previous container is never started: two
+		// versions would run, one possibly serving. Everything is left for the resync.
+		// Otherwise the page comes down and the previous container comes back, on its
+		// own fresh context (stopfirst.go).
+		if f.keep {
+			f = rn.leaveKept(f)
+		} else {
+			f = rn.restoreOld(f)
 		}
 	}
 	if f.noRecord {

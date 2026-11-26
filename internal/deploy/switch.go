@@ -59,11 +59,12 @@ const (
 // failure re-applies the database's routes with ClearOverride.
 type RouteControl interface {
 	SetOverride(ctx context.Context, service int64, o Override) error
+	ReplaceOverride(ctx context.Context, service int64, o Override) error
 	ClearOverride(ctx context.Context, service int64) error
 	CommitRoutes(ctx context.Context, service int64, commit func() error) error
 	// DeleteRoutes runs a service delete's database delete as the mutate of the
 	// no-retry apply (delete.go).
-	DeleteRoutes(ctx context.Context, mutate func() error) error
+	DeleteRoutes(ctx context.Context, service int64, mutate func() error) error
 }
 
 func (rn *run) trace(event string) {
@@ -296,7 +297,7 @@ func (rn *run) revert(f *failure) *failure {
 		// Stop-first: the previous container is stopped, so the routes go back to the
 		// maintenance page (not to a stopped container) until restoreOld has started it
 		// again and the gate has passed. Still a table swap.
-		err = rn.r.cfg.Routes.SetOverride(fctx, rn.svc.id, Override{Kind: OverrideMaintenance})
+		err = rn.r.cfg.Routes.ReplaceOverride(fctx, rn.svc.id, Override{Kind: OverrideMaintenance})
 	} else {
 		err = rn.r.cfg.Routes.ClearOverride(fctx, rn.svc.id)
 	}
@@ -308,7 +309,7 @@ func (rn *run) revert(f *failure) *failure {
 	}
 	f.appSafe = rn.appSafe(nil)
 	if rn.gap {
-		f.msg += "; the previous version is started again"
+		f.msg += "; the maintenance page is back"
 	} else if rn.svc.hasActive {
 		f.msg += "; the previous version keeps serving"
 	} else {
@@ -335,8 +336,8 @@ func (rn *run) commitTx(ctx context.Context) error {
 	}
 	now := rn.now()
 	err := rn.r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ?, needs_attention = CASE WHEN needs_attention = ? THEN NULL ELSE needs_attention END
-			WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, AttentionPreviousDown, rn.svc.id, old)
+		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ?, needs_attention = CASE WHEN needs_attention IN (?, ?) THEN NULL ELSE needs_attention END
+			WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, AttentionPreviousDown, AttentionVersionsKept, rn.svc.id, old)
 		if err != nil {
 			return err
 		}
@@ -344,8 +345,11 @@ func (rn *run) commitTx(ctx context.Context) error {
 			return errors.New("the service changed while this deploy was running")
 		}
 		next := StageDrain
-		if !rn.svc.hasActive {
+		switch {
+		case !rn.svc.hasActive:
 			next = StageDone // nothing to drain or stop
+		case rn.stopFirst:
+			next = StageStopOld // the previous container is already stopped: no drain stage
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE deploys SET committed_at = ?, stage = ? WHERE id = ? AND status = 'running'`, now, next, rn.deploy)
 		if err != nil {
@@ -364,7 +368,7 @@ func (rn *run) commitTx(ctx context.Context) error {
 			}
 		}
 		if rn.svc.hasActive {
-			_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'running', started_at = ? WHERE deploy_id = ? AND stage = ?`, now, rn.deploy, StageDrain)
+			_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'running', started_at = ? WHERE deploy_id = ? AND stage = ?`, now, rn.deploy, next)
 		} else {
 			_, err = tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'skipped', detail = 'no previous version' WHERE deploy_id = ? AND stage IN (?, ?)`, rn.deploy, StageDrain, StageStopOld)
 		}

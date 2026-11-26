@@ -877,3 +877,25 @@ func TestRetryFailedFlagAndTheNoRetryOption(t *testing.T) {
 		t.Fatalf("nothing failed, nothing changed: %v %d", err, px2.n())
 	}
 }
+
+// ReplaceOverride writes the desired state BEFORE it waits for the route lock, so a
+// repair that loses the wait still leaves the map as the repair wanted it.
+func TestReplaceOverrideWritesTheMapBeforeTheLockWait(t *testing.T) {
+	r := NewRoutes(openStore(t), &fakeProxy{}, nil)
+	if err := r.apply(context.Background(), func() error { r.state.replace(nil); return nil }, false, false); err != nil {
+		t.Fatal(err)
+	}
+	r.setOverride(7, Override{Kind: OverrideUpstream, Deploy: 3, IP: "10.250.0.9", Port: 80})
+	if err := r.acquire(context.Background()); err != nil { // another apply is in flight
+		t.Fatal(err)
+	}
+	defer r.release()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := r.ReplaceOverride(ctx, 7, Override{Kind: OverrideMaintenance}); err == nil {
+		t.Fatal("the apply should have lost the lock wait")
+	}
+	if o, ok := r.overrideOf(7); !ok || o.Kind != OverrideMaintenance {
+		t.Errorf("the map keeps %+v", o)
+	}
+}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
+	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 )
 
 // This file is the stop-first strategy (plan 0004 step 9, "Stop-first"): for apps
@@ -44,6 +45,13 @@ const (
 // failed and the previous version did not come back: the service shows ◆ "Needs
 // attention" until a deploy commits.
 const AttentionPreviousDown = "previous_version_down"
+
+// AttentionVersionsKept is services.needs_attention when a stop-first deploy ended
+// with its candidate kept (the proxy could not confirm the routes, or the commit's
+// outcome is unknown) after the previous container was stopped: ServerDock did not
+// start the previous container again (two versions must never run), so the service
+// waits for the resync (step 10) to settle which one serves.
+const AttentionVersionsKept = "versions_kept"
 
 // oldVersion is the version a stop-first deploy replaces: its containers that were
 // running when the gap began, and what its health gate needs.
@@ -163,7 +171,15 @@ func (rn *run) stopOldFirst(ctx context.Context) *failure {
 	grace := rn.snap.StopGraceS
 	for _, id := range rn.old.ids {
 		rn.stopSent = true // from here finish starts it again on any failure
-		sctx, cancel := context.WithTimeout(ctx, time.Duration(grace)*time.Second+StopExtra)
+		// The stop is NOT cancellable: a cancel in the middle of the grace would leave
+		// the app SIGTERMed and dying while ServerDock believes it still runs. It runs
+		// to its own bound (the grace + 15 s; 5 s at shutdown) and the cancel is read
+		// right after.
+		bound := time.Duration(grace)*time.Second + StopExtra
+		if rn.shuttingDown() {
+			bound = rn.r.cfg.ShutdownCleanupBound
+		}
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound)
 		err := rn.r.cfg.Ops.ContainerStop(sctx, id, grace)
 		rn.op(sctx, err)
 		cancel()
@@ -174,7 +190,10 @@ func (rn *run) stopOldFirst(ctx context.Context) *failure {
 			return &failure{code: CodeStopFailed, msg: "the previous version could not be stopped: " + opText(err, "Docker did not answer")}
 		}
 	}
-	rn.trackOld(ctx)
+	rn.trackOld(context.WithoutCancel(ctx))
+	if ctx.Err() != nil { // a cancel that arrived during the stop: the stop finished, the previous version comes back
+		return rn.ctxFailure(ctx)
+	}
 	return rn.leave(ctx, StageStopOldFirst, "the previous container is stopped and kept until the new version is live")
 }
 
@@ -213,9 +232,18 @@ func (rn *run) restoreOld(f *failure) *failure {
 	defer cancel()
 	rn.trace("restore_old")
 
-	reason, unverified := "", false
-	if rn.stopSent {
+	reason, unverified, deleting := "", false, false
+	switch {
+	case rn.stopSent && rn.deleteRequested():
+		// A delete is queued: the service is going away, so do not wait behind a full
+		// restore. The page comes down; the delete removes everything.
+		deleting = true
+	case rn.stopSent:
 		reason, unverified = rn.startOld(ctx)
+		if reason != "" && ctx.Err() != nil && rn.shuttingDown() {
+			// The process is stopping and the bound ran out: neither proven nor failed.
+			reason, unverified = "", true
+		}
 	}
 	routesOK := true
 	if err := rn.routesBack(ctx); err != nil && !errors.Is(err, ErrRoutesNotReady) {
@@ -223,6 +251,9 @@ func (rn *run) restoreOld(f *failure) *failure {
 		rn.r.cfg.Log.Warn("the routes could not be put back after a stop-first failure", "deploy", rn.deploy, "err", err.Error())
 	}
 	switch {
+	case deleting:
+		f.appSafe = AppSafeNo
+		f.msg += "; the service is being deleted, so the previous version was not started again"
 	case reason != "":
 		f.appSafe = AppSafeNo
 		f.msg += "; the previous version did not come back: " + reason
@@ -244,10 +275,40 @@ func (rn *run) restoreOld(f *failure) *failure {
 			f.appSafe = rn.appSafe(nil)
 		}
 	}
-	if routesOK && reason == "" && !unverified {
-		f.keep = false // the proxy was confirmed to reference no candidate
+	return f
+}
+
+// leaveKept is finish's answer for a stop-first deploy whose candidate is kept: the
+// previous container is NOT started (the candidate may be serving, or the commit may
+// have succeeded), the override is dropped from memory (the next apply follows the
+// database), and the service is flagged when the previous version is down. The
+// resync (step 10) settles it.
+func (rn *run) leaveKept(f *failure) *failure {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), rn.cleanupBound())
+	defer cancel()
+	_ = rn.routesBack(ctx) // best effort: the override is deleted first, whatever the apply does
+	f.appSafe = AppSafeUnknown
+	if rn.stopSent {
+		f.msg += "; the previous version is stopped and was not started again: the new version is kept because ServerDock could not confirm the routes or the commit, and two versions must never run"
+		rn.setAttention(AttentionVersionsKept)
 	}
 	return f
+}
+
+// deleteRequested: a service delete asked this job to stop.
+func (rn *run) deleteRequested() bool {
+	var cc jobs.CancelCause
+	if errors.As(context.Cause(rn.jobCtx), &cc) && cc.Reason == jobs.ReasonDeleted {
+		return true
+	}
+	if ch := rn.deleteChan(); ch != nil {
+		select {
+		case <-ch:
+			return true
+		default:
+		}
+	}
+	return false
 }
 
 // setAttention sets (code) or clears ("") the service's needs_attention for this
@@ -255,7 +316,7 @@ func (rn *run) restoreOld(f *failure) *failure {
 func (rn *run) setAttention(code string) {
 	rn.soft("the service's attention flag", func(ctx context.Context, tx *sql.Tx) error {
 		if code == "" {
-			_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention = ?`, rn.svc.id, AttentionPreviousDown)
+			_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention IN (?, ?)`, rn.svc.id, AttentionPreviousDown, AttentionVersionsKept)
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = ? AND needs_attention IS NULL`, code, rn.svc.id)

@@ -195,6 +195,10 @@ const (
 	// OverrideMaintenance serves the "Deploying, back in a moment" page: the
 	// stop-first gap.
 	OverrideMaintenance
+	// OverrideNotRunning serves the "not running" page whatever the database and the
+	// state map say: a service delete takes the route away first (step 9), so a stale
+	// proxy can only ever show a static page, never an upstream.
+	OverrideNotRunning
 )
 
 // Override replaces what the database says for one service until it is cleared.
@@ -361,8 +365,14 @@ func (r *Routes) CommitRoutes(ctx context.Context, service int64, commit func() 
 // the route lock. Deleting an exposed service changes the set of public ports, so
 // the apply reloads Caddy (a documented reload case); another service's failed port
 // is not retried.
-func (r *Routes) DeleteRoutes(ctx context.Context, mutate func() error) error {
-	return r.ApplyRoutesNoRetry(ctx, mutate)
+func (r *Routes) DeleteRoutes(ctx context.Context, service int64, mutate func() error) error {
+	return r.ApplyRoutesNoRetry(ctx, func() error {
+		if err := mutate(); err != nil {
+			return err
+		}
+		r.delOverride(service) // the service is gone: so is its override
+		return nil
+	})
 }
 
 // hasFailed reports whether the last successful apply left ports unopened.
@@ -492,6 +502,16 @@ func (r *Routes) Refresh(ctx context.Context) error { return r.apply(ctx, nil, t
 // SetOverride sets the service's override and applies.
 func (r *Routes) SetOverride(ctx context.Context, service int64, o Override) error {
 	return r.apply(ctx, func() error { r.setOverride(service, o); return nil }, false, false)
+}
+
+// ReplaceOverride sets the service's override and applies, like SetOverride, but the
+// override is replaced BEFORE the route lock is waited for (as ClearOverride's
+// removal is), so a repair that loses the lock wait still leaves the desired state
+// as the repair wanted it: the map never keeps an entry that names a candidate the
+// switch is being undone from.
+func (r *Routes) ReplaceOverride(ctx context.Context, service int64, o Override) error {
+	r.setOverride(service, o)
+	return r.apply(ctx, nil, false, false)
 }
 
 // ClearOverride removes the service's override and applies. The removal does not
@@ -629,6 +649,9 @@ func (r *Routes) build(ctx context.Context) ([]agentops.Route, error) {
 			switch o.Kind {
 			case OverrideMaintenance:
 				out = append(out, agentops.Route{Port: x.port, Page: agentops.PageMaintenance})
+				continue
+			case OverrideNotRunning:
+				out = append(out, agentops.Route{Port: x.port, Page: agentops.PageNotRunning})
 				continue
 			case OverrideUpstream:
 				deploy, ip = o.Deploy, o.IP

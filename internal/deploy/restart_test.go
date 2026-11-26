@@ -418,3 +418,81 @@ func TestRedeployRollbackAndRestartCauseNoReloadsOnTheirOwn(t *testing.T) {
 		}
 	}
 }
+
+// A cancel in the middle of container_restart does not leave the app dying (the
+// restart runs to its end on its own context), and a good restart clears a stale
+// previous_version_down flag.
+func TestCancelDuringARestartDoesNotCutItAndASuccessfulRestartClearsTheFlag(t *testing.T) {
+	g := newRRig(t)
+	g.start(false)
+	g.services()
+	d1 := g.liveVia()
+	mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionPreviousDown, g.svc)
+	jobCh := make(chan int64, 1)
+	g.ops.restartFn = func(c *fcont, _ int) error {
+		c.running = true
+		j := <-jobCh
+		_ = g.sched.Cancel(context.Background(), j, "cancelled by the user")
+		return nil
+	}
+	out, err := g.invoke(rigWrite, "services.restart", m{"service": "p/web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := out.(RestartOut).Job
+	jobCh <- job
+	if s := g.wait(job); s != jobs.StateCancelled {
+		t.Fatalf("job %s", s)
+	}
+	if c := g.containerOf(d1); c == nil || !c.running {
+		t.Error("the container is not running")
+	}
+	g.ops.mu.Lock()
+	if len(g.ops.restartAfter) != 1 || g.ops.restartAfter[0] != nil {
+		t.Errorf("the restart ran on the cancellable context: %v", g.ops.restartAfter)
+	}
+	g.ops.mu.Unlock()
+	// A restart that is not cancelled clears the flag.
+	g.ops.mu.Lock()
+	g.ops.restartFn = nil
+	g.ops.mu.Unlock()
+	out, err = g.invoke(rigWrite, "services.restart", m{"service": "p/web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.wait(out.(RestartOut).Job); s != jobs.StateSucceeded {
+		t.Fatalf("job %s", s)
+	}
+	var attention *string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != nil {
+		t.Errorf("needs_attention %q after a good restart", *attention)
+	}
+}
+
+// A write token cannot roll back to a version from another repository, or to one
+// with another container port on an exposed service; an admin token can.
+func TestRollbackNeedsAdminForAnotherRepositoryOrPort(t *testing.T) {
+	g := newRRig(t)
+	g.start(false)
+	g.services()
+	adminTok := actions.TokenActor("3", actions.ScopeAdmin)
+	g.liveVia(func(s *Snapshot) { s.ImageRef = "redis:7" })                            // #1: a repository since retired
+	g.liveVia(func(s *Snapshot) { s.ContainerPort = 9090; s.Health.Kind = "running" }) // #2: another port
+	g.liveVia()                                                                        // #3: the current one
+	mustExec(t, g.st, `UPDATE services SET public_port = 9000, container_port = 8080 WHERE id = ?`, g.svc)
+
+	_, err := g.invoke(rigWrite, "services.rollback", m{"service": "p/web", "to": 1})
+	wantKind(t, err, actions.ErrDenied)
+	if !strings.Contains(err.Error(), "another image repository") {
+		t.Errorf("%v", err)
+	}
+	_, err = g.invoke(rigWrite, "services.rollback", m{"service": "p/web", "to": 2})
+	wantKind(t, err, actions.ErrDenied)
+	if !strings.Contains(err.Error(), "container port") {
+		t.Errorf("%v", err)
+	}
+	if _, err := g.invoke(adminTok, "services.rollback", m{"service": "p/web", "to": 1}); err != nil {
+		t.Errorf("an admin token: %v", err)
+	}
+}

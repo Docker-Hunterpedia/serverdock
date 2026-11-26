@@ -40,6 +40,8 @@ type fcont struct {
 	image           string
 	notOwned        bool // the agent's inspect says owned:false
 	wrongLabels     bool // the inspect reports other service labels than it was created with
+	dying           bool // a stop was cut short: the app was SIGTERMed and exits at the next look
+	dyingSeen       bool
 }
 
 // fakeOps is the agent as the runner sees it: an in-memory Docker with a call
@@ -57,19 +59,22 @@ type fakeOps struct {
 	pullN      atomic.Int32
 	proxyCalls atomic.Int32
 
-	pullFn      func(ctx context.Context, ref string, on func(agentops.PullProgress)) (agentops.PullResult, error)
-	createFn    func(ctx context.Context, name string, spec dockerapi.CreateSpec, ip string) (agentops.CreateResult, error, bool) // handled
-	startFn     func(c *fcont)                                                                                                    // after start: change the state (crash, ...)
-	healthFn    func(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error)
-	inspectFn   func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
-	listErr     error
-	removeErr   error
-	restartFn   func(c *fcont, grace int) error // container_restart: nil leaves the container running
-	stopGraceFn func(grace int)
-	stopErrFn   func(id string) error // an error for a stop of this container id
-	imagesGone  atomic.Bool           // the local image store has no image (inspect by id says not found)
-	netMissing  atomic.Bool           // the app network is "pruned": create and network_inspect say so
-	labelsSeen  []map[string]string
+	pullFn       func(ctx context.Context, ref string, on func(agentops.PullProgress)) (agentops.PullResult, error)
+	createFn     func(ctx context.Context, name string, spec dockerapi.CreateSpec, ip string) (agentops.CreateResult, error, bool) // handled
+	startFn      func(c *fcont)                                                                                                    // after start: change the state (crash, ...)
+	healthFn     func(ctx context.Context, a agentops.HealthArgs) (agentops.HealthResult, error)
+	inspectFn    func(ctx context.Context, id string) (agentops.ContainerState, error, bool)
+	listErr      error
+	removeErr    error
+	restartAfter []error                              // ctx.Err() of each restart after its hook ran
+	stopAfter    []error                              // ctx.Err() of each stop after its hook ran
+	startWait    func(ctx context.Context, id string) // blocks inside container_start (a slow start)
+	restartFn    func(c *fcont, grace int) error      // container_restart: nil leaves the container running
+	stopGraceFn  func(grace int)
+	stopErrFn    func(id string) error // an error for a stop of this container id
+	imagesGone   atomic.Bool           // the local image store has no image (inspect by id says not found)
+	netMissing   atomic.Bool           // the app network is "pruned": create and network_inspect say so
+	labelsSeen   []map[string]string
 	// afterNetInspect, if set, runs after a successful network_inspect.
 	afterNetInspect func()
 	// removeHook, if set, runs at the start of every container_remove.
@@ -189,6 +194,12 @@ func (f *fakeOps) find(id string) *fcont {
 
 func (f *fakeOps) ContainerStart(ctx context.Context, id string) error {
 	f.rec(ctx, "start", id[:8])
+	f.mu.Lock()
+	wait := f.startWait
+	f.mu.Unlock()
+	if wait != nil {
+		wait(ctx, id)
+	}
 	if err := dead(ctx); err != nil {
 		return err
 	}
@@ -215,6 +226,13 @@ func (f *fakeOps) ContainerStop(ctx context.Context, id string, grace int) error
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.stopAfter = append(f.stopAfter, ctx.Err())
+	if err := dead(ctx); err != nil { // a stop whose context ended mid-way: the app got its SIGTERM and is dying
+		if c := f.cs[id]; c != nil {
+			c.dying = true
+		}
+		return err
+	}
 	if f.stopErrFn != nil {
 		if err := f.stopErrFn(id); err != nil {
 			return err
@@ -245,6 +263,9 @@ func (f *fakeOps) ContainerRestart(ctx context.Context, id string, grace int) er
 		if err := fn(c, grace); err != nil {
 			return err
 		}
+		f.mu.Lock()
+		f.restartAfter = append(f.restartAfter, ctx.Err())
+		f.mu.Unlock()
 		return nil
 	}
 	f.mu.Lock()
@@ -288,6 +309,12 @@ func (f *fakeOps) ContainerInspect(ctx context.Context, id string) (agentops.Con
 	c := f.cs[id]
 	if c == nil {
 		return agentops.ContainerState{}, &agent.OpError{Code: agent.CodeNotFound, Msg: "not found"}
+	}
+	if c.dying { // first look: still running; every later look: gone
+		if c.dyingSeen {
+			c.running, c.exit = false, 143
+		}
+		c.dyingSeen = true
 	}
 	st := agentops.ContainerState{ID: c.id, Running: c.running, Restarting: c.restar, ExitCode: c.exit, OOMKilled: c.oom, ImageID: c.image,
 		ConfiguredIP: c.ip, Labels: map[string]string{}, Owned: !c.notOwned}

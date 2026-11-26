@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,10 +94,16 @@ func stopFirstUnderLoad(t *testing.T, failing bool) {
 		}
 	}
 	maintenance := strings.TrimSpace(proxy.BodyMaintenance)
+	var firstNew atomic.Int64 // unix nanoseconds of the first 2xx from the NEW container (success path)
 	deploying := func(s int, h http.Header, b string) string {
 		switch {
 		case s/100 == 2 && strings.HasPrefix(strings.TrimSpace(b), "app-") && strings.TrimSpace(b) != "app-B":
+			if !failing && strings.TrimSpace(b) != "app-OLD" {
+				firstNew.CompareAndSwap(0, time.Now().UnixNano())
+			}
 			return ""
+		case s == 503 && !failing && firstNew.Load() != 0 && time.Now().UnixNano()-firstNew.Load() > int64(100*time.Millisecond):
+			return fmt.Sprintf("a maintenance 503 more than 100 ms after the new container first answered")
 		case s == 503 && b == proxy.BodyMaintenance && h.Get("Retry-After") == "10" && h.Get("Cache-Control") == "no-store" && h.Get("Content-Type") == "text/plain; charset=utf-8":
 			return ""
 		}
@@ -203,6 +210,9 @@ func stopFirstUnderLoad(t *testing.T, failing bool) {
 			t.Errorf("needs_attention %q", *attention)
 		}
 	} else {
+		if firstNew.Load() == 0 {
+			t.Error("the new container never answered through the route")
+		}
 		if x.activeOf(t, x.svc) != d {
 			t.Error("the new deploy is not active")
 		}
@@ -263,7 +273,9 @@ func TestRollbackRedeployAndRestartMakeZeroCaddyLoads(t *testing.T) {
 	}
 	reg := actions.New(al, log)
 	RegisterServiceActions(reg, ServiceDeps{DB: x.st, Routes: x.rt, Jobs: storeQueue{x.js}, Log: log})
-	writer := actions.TokenActor("1", actions.ScopeWrite)
+	// An admin token: the fixture service's image_ref is not the test image's repository,
+	// and a write token may not roll back across repositories (that is tested apart).
+	writer := actions.TokenActor("1", actions.ScopeAdmin)
 	invoke := func(name string, in any) any {
 		t.Helper()
 		raw, _ := json.Marshal(in)
