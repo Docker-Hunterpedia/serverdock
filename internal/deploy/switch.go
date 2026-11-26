@@ -753,6 +753,7 @@ func (rn *run) recordSucceeded() {
 	if _, err := PruneDeploys(ctx, rn.r.cfg.DB, rn.svc.id); err != nil {
 		rn.r.cfg.Log.Warn("old deploys could not be pruned", "err", err.Error())
 	}
+	rn.pruneLogs(ctx)
 }
 
 // recordShutdownDuringDrain ends a committed deploy that a shutdown cut short in

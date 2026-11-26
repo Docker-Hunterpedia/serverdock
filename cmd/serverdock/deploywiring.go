@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -107,6 +108,18 @@ func (l localCaller) Call(ctx context.Context, op string, args any, onLine func(
 		case <-t.C:
 		}
 	}
+}
+
+// localLogs opens a container's log without following it, through the local
+// agent's hub session (the agent's `logs` op with follow:false).
+type localLogs struct{ h *hub.Hub }
+
+func (l localLogs) LogsOnce(ctx context.Context, container string, tail int) (io.ReadCloser, error) {
+	s, ok := l.h.Get(hub.LocalID)
+	if !ok {
+		return nil, errLocalAgentDown
+	}
+	return s.LogsOnce(ctx, container, tail)
 }
 
 // panelAddrs returns the function that lists the addresses the panel is reachable

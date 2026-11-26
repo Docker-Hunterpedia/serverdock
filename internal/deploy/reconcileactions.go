@@ -101,7 +101,7 @@ func RegisterReconcilerActions(reg *actions.Registry, rc *Reconciler) {
 	})
 }
 
-// removeContainer: keep the log tail (step 11's hook, nil until then), stop with the
+// removeContainer: keep the log tail (*DeployLogs.Keep; nil in tests), stop with the
 // grace, remove (anonymous volumes only: the agent's removal never takes a named
 // volume), and forget it. The agent refuses any container that is not this
 // install's, so a look-alike is never touched.
@@ -119,8 +119,12 @@ func (rc *Reconciler) removeContainer(ctx context.Context, in RemoveContainerIn)
 		var exists bool
 		if err := rc.cfg.DB.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM deploys WHERE id = ?)`, in.Deploy).Scan(&exists); err == nil && exists {
 			kctx, cancel := context.WithTimeout(ctx, recordBound)
-			out.LogKept = rc.cfg.KeepLog(kctx, in.Deploy, in.Container) == nil
+			err := rc.cfg.KeepLog(kctx, in.Deploy, in.Container)
+			out.LogKept = err == nil
 			cancel()
+			if err != nil {
+				rc.cfg.Log.Warn("an orphan's log was not kept", "deploy", in.Deploy, "err", agent.CleanText(err.Error(), 120))
+			}
 		}
 	}
 	sctx, cancel := context.WithTimeout(ctx, time.Duration(in.Grace)*time.Second+StopExtra)

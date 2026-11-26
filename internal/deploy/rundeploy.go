@@ -65,6 +65,7 @@ const (
 
 // Deploy statuses the runner sets (the queue sets queued and superseded-while-queued).
 const (
+	StatusQueued     = "queued"
 	StatusRunning    = "running"
 	StatusSucceeded  = "succeeded"
 	StatusFailed     = "failed"
@@ -165,6 +166,7 @@ type run struct {
 	reverted     bool // the routes were put back (revert ran)
 	committed    bool // the commit transaction succeeded: from here the candidate is the live version and is never removed
 	warnings     []string
+	logNote      string // "log not kept: <reason>" when the candidate's log could not be written (it goes in the failed stage's detail)
 	switchDetail string // the switch stage's detail, written in the commit transaction
 	incomplete   bool   // a write after the commit failed ("record incomplete")
 	jobCtx       context.Context
@@ -1015,7 +1017,7 @@ func (rn *run) finish(f *failure) error {
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(rn.jobCtx), bound)
 	defer cancel()
 	if !f.keep {
-		rn.removeCandidate(fctx)
+		rn.removeCandidate(fctx, f)
 	}
 	if rn.gap || rn.stopSent {
 		// Stop-first. If the candidate is KEPT (the proxy may still point at it, or the
@@ -1058,7 +1060,7 @@ func (rn *run) finish(f *failure) error {
 // switch never reached never served traffic and is stopped with no grace; one the
 // routes pointed at (rn.switched) may have, and gets stop_grace_s. It is forgotten (Untrack) only
 // after its removal succeeded.
-func (rn *run) removeCandidate(ctx context.Context) {
+func (rn *run) removeCandidate(ctx context.Context, f *failure) {
 	ops := rn.r.cfg.Ops
 	ids := map[string]bool{}
 	if rn.cid != "" {
@@ -1079,6 +1081,7 @@ func (rn *run) removeCandidate(ctx context.Context) {
 		}
 	}
 	for id := range ids {
+		rn.keepCandidateLog(ctx, id, f)
 		stopErr := rn.stopCandidate(ctx, id)
 		gone := agentops.IsCode(stopErr, agent.CodeNotFound)
 		if stopErr != nil && !gone {
@@ -1150,7 +1153,7 @@ func (rn *run) recordFinal(ctx context.Context, f *failure) {
 		}
 		if rn.stage != "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE deploy_stages SET state = 'failed', finished_at = ?, detail = ? WHERE deploy_id = ? AND stage = ? AND state IN ('running', 'pending')`,
-				rn.now(), agent.CleanText(f.msg, agent.MaxDetailText), rn.deploy, rn.stage); err != nil {
+				rn.now(), rn.failDetail(f.msg), rn.deploy, rn.stage); err != nil {
 				return err
 			}
 		}
@@ -1163,5 +1166,38 @@ func (rn *run) recordFinal(ctx context.Context, f *failure) {
 	}
 	if _, err := PruneDeploys(ctx, rn.r.cfg.DB, rn.svc.id); err != nil {
 		rn.r.cfg.Log.Warn("old deploys could not be pruned", "err", err.Error())
+	}
+	rn.pruneLogs(ctx)
+}
+
+// failDetail is the failed stage's detail: the failure, then (if the candidate's log
+// could not be kept) the note, which is never the part that gets cut.
+func (rn *run) failDetail(msg string) string {
+	if rn.logNote == "" {
+		return agent.CleanText(msg, agent.MaxDetailText)
+	}
+	note := agent.CleanText(rn.logNote, 140)
+	return agent.CleanText(msg, agent.MaxDetailText-len(note)-2) + "; " + note
+}
+
+// pruneLogs deletes the service's deploy logs beyond its newest ten (lazy: it runs
+// when a deploy finishes, never on a timer).
+func (rn *run) pruneLogs(ctx context.Context) {
+	if rn.r.cfg.PruneLogs != nil {
+		rn.r.cfg.PruneLogs(ctx, rn.svc.id)
+	}
+}
+
+// keepCandidateLog keeps the tail of the candidate's output before it is removed.
+// It returns the note for the failed stage's detail when the log was not kept.
+func (rn *run) keepCandidateLog(ctx context.Context, id string, f *failure) {
+	if rn.r.cfg.KeepLog == nil || id == "" {
+		return
+	}
+	kctx, cancel := context.WithTimeout(withLogNote(ctx, f.msg), recordBound)
+	defer cancel()
+	if err := rn.r.cfg.KeepLog(kctx, rn.deploy, id); err != nil {
+		rn.logNote = "log not kept: " + agent.CleanText(err.Error(), 120)
+		rn.r.cfg.Log.Warn("the candidate's log was not kept", "deploy", rn.deploy, "err", rn.logNote)
 	}
 }

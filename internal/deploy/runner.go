@@ -58,8 +58,9 @@ type RunnerConfig struct {
 	DrainUnit   time.Duration // one second of drain_s: 1 s
 	// KeepLog is the deploy-log hook of step 11: it is called with the previous
 	// container's id before that container is stopped, to keep the tail of its
-	// output in its deploy's log. Nil until step 11. A failure never fails the
-	// deploy: the stage detail says "log not kept: <reason>".
+	// output in its deploy's log (*DeployLogs.Keep); the candidate of a failed
+	// deploy gets the same before it is removed. A failure never fails the deploy:
+	// the stage detail says "log not kept: <reason>".
 	// Stopping, if set, returns a channel closed when the process is shutting down
 	// (*jobs.Scheduler.Stopping). It is independent of the job's cancel cause, which
 	// keeps only the first cause (a supersede hides a later shutdown).
@@ -71,6 +72,9 @@ type RunnerConfig struct {
 	// Empty means no deploy logs are kept on this server.
 	LogRoot string
 	KeepLog func(ctx context.Context, deploy int64, container string) error
+	// PruneLogs, if set, deletes the deploy logs of the service beyond its newest
+	// LogKeep deploys; it runs when a deploy finishes (*DeployLogs.Prune).
+	PruneLogs func(ctx context.Context, service int64)
 }
 
 // Runner runs the jobs of the scheduler (jobs.RunFunc). Every run, and every

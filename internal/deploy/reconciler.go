@@ -71,8 +71,8 @@ type ReconcilerConfig struct {
 	// PanelUp, if set, is closed once the local agent has loaded the panel; the first
 	// connect waits for it (a proxy_apply before the proxy starts would fail).
 	PanelUp <-chan struct{}
-	// KeepLog is the deploy-log hook of step 11 (nil until then): it is called with
-	// the deploy and the container id before an orphan is stopped.
+	// KeepLog is the deploy-log hook (*DeployLogs.Keep): it is called with the deploy
+	// and the container id before an orphan is stopped.
 	KeepLog func(ctx context.Context, deploy int64, container string) error
 	Log     *slog.Logger
 
