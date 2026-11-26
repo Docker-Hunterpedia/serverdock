@@ -49,6 +49,7 @@ const (
 	CodeTimeout       = "timeout"
 	CodeDB            = "db"
 	CodeDenied        = "denied"
+	CodeVersionsKept  = "versions_kept" // refused at run time: two versions of the service may be running (stop-first)
 	CodeSwitchFailed  = "switch_failed" // the proxy could not switch traffic to the candidate (the old routes were put back)
 	CodeCommitFailed  = "commit_failed" // the commit transaction failed (the old routes were put back)
 	CodeBadSnapshot   = "bad_snapshot"
@@ -300,6 +301,12 @@ func (rn *run) execute(ctx context.Context) *failure {
 	// Pull, check and start share one 10-minute bound; stop-first adds the stop of
 	// the previous container (stop_grace_s + 15 s, plan 0004 "Deadlines and contexts").
 	rn.stopFirst = rn.snap.Strategy == jobs.StrategyStopFirst
+	if rn.stopFirst && rn.versionsKept(ctx) {
+		// Read again now that the service lock is held: the flag may have been set by
+		// the job that ran before this one, after this one was queued. Nothing is
+		// started, stopped or routed.
+		return &failure{code: CodeVersionsKept, msg: versionsKeptMessage}
+	}
 	bound := rn.r.cfg.PreSwitchBound
 	if rn.stopFirst {
 		bound += time.Duration(rn.snap.StopGraceS)*time.Second + StopExtra

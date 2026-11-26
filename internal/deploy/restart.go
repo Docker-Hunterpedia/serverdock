@@ -106,6 +106,11 @@ func (r *Runner) runRestart(ctx context.Context, _ actions.Call, jobID int64) (R
 		return RunRestartOut{}, context.Cause(ctx)
 	}
 	defer unlock()
+	if serviceVersionsKept(ctx, r.cfg.DB.R, p.Service) {
+		// Queued before a stop-first deploy left two versions: starting the stopped
+		// container now would run both. Nothing is touched.
+		return RunRestartOut{}, errors.New(versionsKeptMessage)
+	}
 
 	var (
 		project, name, raw string

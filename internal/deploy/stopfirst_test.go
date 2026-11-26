@@ -672,3 +672,73 @@ func TestShutdownRestoreThatRunsOutOfTimeIsUnverifiedNotDown(t *testing.T) {
 		t.Errorf("needs_attention %q for a restore that was only cut short", *attention)
 	}
 }
+
+// Work queued BEFORE a stop-first deploy ends in versions_kept is refused at run
+// time, under the service lock: a stop-first deploy and a restart queued behind it
+// start nothing and change no route.
+func TestWorkQueuedBeforeVersionsKeptIsRefusedAtRunTime(t *testing.T) {
+	g := newRRig(t)
+	old := g.live(g.svc, 1, "10.250.0.2")
+	oldID := g.containerOf(old).id
+	g.expose(g.svc, 9000)
+	g.start(false)
+	g.services()
+	var queued atomic.Bool
+	var restartJob, deployJob atomic.Int64
+	pages := 0
+	g.px.failIf = func(routes []agentops.Route) error {
+		if routes[0].Upstream == "10.250.0.3:8080" { // the switch: queue the work now, while this deploy runs
+			if queued.CompareAndSwap(false, true) {
+				_, j := g.deploy(g.svc, stopFirstMod) // flags the running deploy superseded: past its switch, it runs on
+				deployJob.Store(j)
+				if out, err := g.invoke(rigWrite, "services.restart", m{"service": "p/web"}); err == nil {
+					restartJob.Store(out.(RestartOut).Job)
+				}
+			}
+			return errors.New("proxy down")
+		}
+		if routes[0].Page == agentops.PageMaintenance {
+			if pages++; pages > 1 {
+				return errors.New("proxy down") // the revert is not confirmed: versions_kept
+			}
+		}
+		return nil
+	}
+	d, job := g.deploy(g.svc, stopFirstMod)
+	// (Queuing the second deploy flagged this one superseded, so its job ends cancelled.)
+	if s := g.wait(job); s != jobs.StateFailed && s != jobs.StateCancelled {
+		t.Fatalf("first job %s", s)
+	}
+	_ = d
+	var attention string
+	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
+	if attention != AttentionVersionsKept {
+		t.Fatalf("needs_attention %q", attention)
+	}
+	startsAfterFirst, createsAfterFirst := g.ops.count("start"), g.ops.count("create")
+	routesAfterFirst := g.px.n()
+	if restartJob.Load() == 0 || deployJob.Load() == 0 {
+		t.Fatal("the work was not queued")
+	}
+	if s := g.wait(deployJob.Load()); s != jobs.StateFailed {
+		t.Errorf("the queued stop-first deploy is %s", s)
+	}
+	if r := g.row(g.deployID(deployJob.Load())); r.code != CodeVersionsKept || !strings.Contains(r.reason, "two versions") {
+		t.Errorf("%+v", r)
+	}
+	if s := g.wait(restartJob.Load()); s != jobs.StateFailed {
+		t.Errorf("the queued restart is %s", s)
+	}
+	if !strings.Contains(g.jobError(restartJob.Load()), "two versions") {
+		t.Errorf("restart error %q", g.jobError(restartJob.Load()))
+	}
+	if g.ops.count("start") != startsAfterFirst || g.ops.count("create") != createsAfterFirst || g.ops.count("restart") != 0 || g.ops.count("stop") > 2 {
+		t.Errorf("a container was started or created by refused work: %v", g.ops.names())
+	}
+	if g.ops.find(oldID).running {
+		t.Error("the stopped previous container was started beside the kept candidate")
+	}
+	if g.px.n() != routesAfterFirst {
+		t.Error("refused work changed the routes")
+	}
+}
