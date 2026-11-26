@@ -1385,6 +1385,7 @@ func TestEnqueueDeleteCancelsQueuedFlagsRunningAndRefusesNewWork(t *testing.T) {
 	// The other service is untouched.
 	_ = otherDeploy
 	// A delete that is pending (or running) refuses new work and a second delete.
+	s.Pause() // the running scheduler would pick the job up again at once
 	e.exec(t, `UPDATE jobs SET state = 'queued', finished_at = NULL WHERE id = ?`, out.JobID)
 	if _, err := s.EnqueueDeploy(ctx, deploy(svc)); !errors.Is(err, ErrServiceDeleting) {
 		t.Errorf("deploy: %v", err)

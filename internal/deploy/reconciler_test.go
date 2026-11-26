@@ -517,9 +517,11 @@ func TestDieThenStopEndsExited(t *testing.T) {
 	g.rops.emit("die", id, g.svc)
 	g.rops.emit("stop", id, g.svc)
 	g.until("exited", func() bool { return g.rec.ServiceState(g.svc, d) == ServiceExited })
-	if last := g.px.last(); len(last) != 1 || last[0].Page != agentops.PageNotRunning {
-		t.Errorf("the route of an exited container is %+v", last)
-	}
+	// The state is visible before the apply that follows it has been sent.
+	g.until("the route of an exited container is the not-running page", func() bool {
+		last := g.px.last()
+		return len(last) == 1 && last[0].Page == agentops.PageNotRunning
+	})
 }
 
 func TestDieWithNoRestartIsReportedExited(t *testing.T) {
