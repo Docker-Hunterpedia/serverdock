@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/caddyserver/caddy/v2"
 )
 
 // itReconciler is a reconciler over the real chain of an itRunner (Docker, the agent's
@@ -33,6 +35,68 @@ func (x *itRunner) runReconciler(t *testing.T, rec *Reconciler) {
 	done := make(chan struct{})
 	go func() { rec.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+}
+
+// TestReconcilerEventsDuringDeploysReloadNothing: with the watcher running, two real
+// blue-green deploys of an exposed service (every container event of the candidate, the
+// old version and their removal goes through the reconciler's handler) cause no Caddy
+// load: the events only ever swap the route table, and the app answers 2xx afterwards.
+func TestReconcilerEventsDuringDeploysReloadNothing(t *testing.T) {
+	g, ref := newSwitchRig(t)
+	x := newITRunner(t, g, nil)
+	port := itFreePort(t)
+	mustExec(t, x.st, `UPDATE services SET public_port = ?, container_port = 8080 WHERE id = ?`, port, x.svc)
+	rec := x.reconciler(t)
+	x.runReconciler(t, rec)
+	deadline := time.Now().Add(20 * time.Second)
+	for !rec.Up() {
+		if time.Now().After(deadline) {
+			t.Fatal("the reconciler did not come up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	snap := Snapshot{V: 1, ImageRef: ref, ContainerPort: 8080, Health: SnapHealth{Kind: "tcp", TimeoutS: 30, Passes: 1}, Strategy: "blue_green", DrainS: 10, StopGraceS: 2}
+	ctxBefore := caddy.ActiveContext()
+	var last int64
+	for i := 0; i < 2; i++ {
+		d, err := x.deploy(t, snap)
+		if err != nil {
+			t.Fatalf("deploy %d: %v", i+1, err)
+		}
+		if status, code, reason, _ := x.row(t, d); status != "succeeded" {
+			t.Fatalf("deploy %d: %s %s %q", i+1, status, code, reason)
+		}
+		last = d
+		// The helper runs the job without the scheduler, which would record its end.
+		mustExec(t, x.st, `UPDATE jobs SET state = 'succeeded' WHERE state = 'running'`)
+	}
+	// Let the watcher see the last events (the old container's removal).
+	time.Sleep(500 * time.Millisecond)
+	if caddyLoaded(ctxBefore) {
+		t.Error("Caddy loaded a config while the watcher handled the deploys' container events")
+	}
+	resp, err := http.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/cgi-bin/id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode/100 != 2 || !strings.HasPrefix(string(b), "app-") {
+		t.Errorf("the app answers %d %q", resp.StatusCode, b)
+	}
+	// The watcher's state map holds the live container, and only that one.
+	n := 0
+	for _, c := range x.rt.State().snapshot() {
+		if c.Service == x.svc {
+			n++
+			if c.Deploy != last || c.State != StateRunning {
+				t.Errorf("state map entry %+v, want the last deploy (%d) running", c, last)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d containers of the service in the state map, want 1", n)
+	}
 }
 
 // TestOrphanRemovalRemovesOnlyAnonymousVolumes: the reconciler removes an orphan
