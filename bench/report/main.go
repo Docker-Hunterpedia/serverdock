@@ -334,7 +334,8 @@ func load(dir string) ([]ScenarioResult, string, error) {
 	sort.Ints(ids)
 	mode := "direct"
 	var out []ScenarioResult
-	docker := map[int]bool{} // scenarios whose runs had the host's Docker socket (a ".docker" marker)
+	docker := map[int]bool{}   // scenarios whose runs had the host's Docker socket: "S2 live watcher" (a ".docker" marker)
+	noDocker := map[int]bool{} // S2 runs made without it: "S2 no Docker", report only (a ".nodocker" marker)
 	for _, id := range ids {
 		sort.Strings(byID[id])
 		var runs []RunStats
@@ -356,14 +357,24 @@ func load(dir string) ([]ScenarioResult, string, error) {
 			if _, err := os.Stat(f + ".docker"); err == nil {
 				docker[id] = true
 			}
+			if _, err := os.Stat(f + ".nodocker"); err == nil {
+				noDocker[id] = true
+			}
 			if m, err := os.ReadFile(f + ".mode"); err == nil && strings.TrimSpace(string(m)) == "helper" {
 				mode = "helper"
 			}
 		}
 		sc := scenario(id, runs)
-		if docker[id] {
-			// Same gates; only the label says the server ran against real Docker.
-			sc.Name += " (S2 with Docker socket)"
+		switch {
+		case noDocker[id]:
+			// Report only: the shape without the live watcher is never a gate.
+			sc.Name += " (S2 no Docker, report only)"
+			for i := range sc.Gates {
+				sc.Gates[i].Report = true
+			}
+		case docker[id]:
+			// The gated S2 number: same ceiling and tripwire, the server ran against real Docker.
+			sc.Name += " (S2 live watcher)"
 		}
 		out = append(out, sc)
 	}

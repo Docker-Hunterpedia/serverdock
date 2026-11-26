@@ -142,8 +142,8 @@ func TestTripwireWarnsButNeverFails(t *testing.T) {
 }
 
 // An S2 run made with the host's Docker socket carries a ".docker" marker: the
-// scenario is labelled, and its gates are the same ones (the default S2 is unchanged).
-func TestScenarioWithDockerSocketIsLabelledAndGatedAsS2(t *testing.T) {
+// scenario is labelled "S2 live watcher", and its gates are the same ones.
+func TestScenarioWithTheLiveWatcherIsLabelledAndGatedAsS2(t *testing.T) {
 	dir := t.TempDir()
 	body := tsv(
 		"10.00\t20971520\t25165824\t1\t2\t30000000\t1\t1\t10000000\t1000000",
@@ -166,13 +166,51 @@ func TestScenarioWithDockerSocketIsLabelledAndGatedAsS2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(plain[0].Name, "Docker socket") || !strings.Contains(marked[0].Name, "S2 with Docker socket") {
+	if strings.Contains(plain[0].Name, "S2 ") || !strings.Contains(marked[0].Name, "S2 live watcher") {
 		t.Errorf("names %q / %q", plain[0].Name, marked[0].Name)
 	}
-	if strings.Contains(marked[1].Name, "Docker socket") {
+	if strings.Contains(marked[1].Name, "S2 ") {
 		t.Errorf("scenario 4 labelled: %q", marked[1].Name)
 	}
 	if len(plain[0].Gates) != len(marked[0].Gates) || plain[0].VmRSSMedian != marked[0].VmRSSMedian {
 		t.Errorf("gates differ: %v / %v", plain[0].Gates, marked[0].Gates)
+	}
+}
+
+// An S2 run made without Docker (".nodocker") is labelled and never gates: even a
+// result far over the ceiling and the tripwire passes the report.
+func TestS2NoDockerIsReportOnly(t *testing.T) {
+	dir := t.TempDir()
+	body := tsv(
+		"10.00\t524288000\t524288000\t1\t2\t30000000\t1\t1\t10000000\t1000000",
+		"60.00\t524288000\t524288000\t1\t2\t30000000\t1\t1\t10000000\t1250000",
+		"110.00\t524288000\t524288000\t1\t2\t30000000\t1\t1\t10000000\t1500000",
+	)
+	if err := os.WriteFile(filepath.Join(dir, "s2-r1.tsv"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gated, _, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Report{Scenarios: gated}
+	r.evaluate()
+	if r.Pass {
+		t.Fatal("an oversized S2 without a marker must fail the gate")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s2-r1.tsv.nodocker"), []byte("nodocker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, _, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rep[0].Name, "S2 no Docker, report only") {
+		t.Errorf("name %q", rep[0].Name)
+	}
+	r = Report{Scenarios: rep}
+	r.evaluate()
+	if !r.Pass {
+		t.Error("S2 no Docker must not gate")
 	}
 }

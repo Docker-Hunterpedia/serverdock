@@ -32,18 +32,25 @@
 #   INTERVAL=10   sample interval (s)    RUNS=3     runs per scenario
 #   BURST=500     requests in the burst  SCENARIOS="1 2"
 #   IMAGE=serverdock-bench:local         RESULTS_DIR=bench/results
-#   S2_DOCKER=1   scenario 2 ("S2 with Docker socket", opt-in, default off): the server container
-#                 gets the host's Docker socket (--group-add <socket gid> -v /var/run/docker.sock),
-#                 so its boot runs network_ensure, the first container list and Sync, and the job
-#                 scheduler's start gate opens against REAL Docker, as on a deployed server (plan
-#                 0004 Revision 10, footprint; from step 10 the live watcher). It is the same gated
-#                 scenario 2 (same ceiling and tripwire), labelled "S2 with Docker socket" in the
-#                 report (a ".docker" marker next to each run's samples); without it scenario 2 is
-#                 unchanged. The server creates an app network (label serverdock.instance) on the
+#   S2_DOCKER=1   (default) scenario 2 is "S2 live watcher": the server container gets the host's
+#                 Docker socket and its group (--group-add <socket gid> -v /var/run/docker.sock), so
+#                 its boot runs network_ensure and the reconciler's first resync (events stream,
+#                 container list, rules, first route apply) opens the job scheduler's start gate
+#                 against REAL Docker, and the watcher stays connected during the idle window, as
+#                 on a deployed server (plan 0004 step 10). This is THE gated S2 number: ceiling
+#                 and 80 MB tripwire. Labelled "S2 live watcher" in the report (a ".docker" marker
+#                 next to each run's samples).
+#   S2_DOCKER=0   scenario 2 as "S2 no Docker", REPORT ONLY (not gated; a ".nodocker" marker): no
+#                 socket, so the watcher never connects. It is the pre-step-10 shape, kept for
+#                 comparison with older numbers.
+#                 The live-watcher server creates an app network (label serverdock.instance) on the
 #                 host's Docker, and may create containers (serverdock.managed): the bench removes
 #                 every such network and container that did not exist before the run, after each
-#                 run and in the exit trap, and leaves every other resource alone.
-#                   S2_DOCKER=1 SCENARIOS=2 bench/run.sh
+#                 run and in the exit trap (also when interrupted), and leaves every other
+#                 resource alone. Scenarios 3 and 4 never create any.
+#                   SCENARIOS=2 bench/run.sh                  # S2 live watcher (gated)
+#                   S2_DOCKER=0 SCENARIOS=2 bench/run.sh      # S2 no Docker (report only)
+#                   SCENARIOS=4 bench/run.sh                  # S4 (gated)
 #
 # Exit status: 1 when a gate fails, unless the measurement ran through the
 # Docker Desktop helper container (informational only).
@@ -78,10 +85,10 @@ SUFFIX=""; [ "$QUICK" = 1 ] && SUFFIX="-quick"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sdbench.XXXXXX")
 NET=sdbench-net
 SOCK_GID=""
-S2_DOCKER=${S2_DOCKER:-0}
+S2_DOCKER=${S2_DOCKER:-1}
 case "$S2_DOCKER" in 0|1) ;; *) echo "S2_DOCKER must be 0 or 1" >&2; exit 2 ;; esac
 
-# What the server of "S2 with Docker socket" creates on the host's Docker: its app network
+# What the server of "S2 live watcher" creates on the host's Docker: its app network
 # (label serverdock.instance) and containers (serverdock.managed / serverdock.instance). The
 # resources that exist before the run are recorded, and only the new ones are removed, so another
 # ServerDock on this host is never touched.
@@ -260,7 +267,9 @@ for id in $SCENARIOS; do
         sock_args=""
         if [ "$S2_DOCKER" = 1 ]; then
           sock_args="--group-add $(socket_gid) -v /var/run/docker.sock:/var/run/docker.sock"
-          log "scenario 2 with the Docker socket (S2 with Docker socket)"
+          log "scenario 2: S2 live watcher (Docker socket and its group)"
+        else
+          log "scenario 2: S2 no Docker (report only)"
         fi
         # shellcheck disable=SC2086 # sock_args is deliberately split into words
         docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 $sock_args -p 127.0.0.1::443 "$IMAGE" \
@@ -290,7 +299,9 @@ for id in $SCENARIOS; do
     case "$id" in 3|4) log_stream ;; esac
     log "idle window ${IDLE}s (sampling every ${INTERVAL}s)"
     bench/measure.sh "$TARGET" "$IDLE" "$INTERVAL" "$WORK/s$id-r$r.tsv"
-    if [ "$id" = 2 ] && [ "$S2_DOCKER" = 1 ]; then echo docker >"$WORK/s$id-r$r.tsv.docker"; fi
+    if [ "$id" = 2 ]; then
+      if [ "$S2_DOCKER" = 1 ]; then echo docker >"$WORK/s$id-r$r.tsv.docker"; else echo nodocker >"$WORK/s$id-r$r.tsv.nodocker"; fi
+    fi
     ids=$(docker ps -aq --filter label=sdbench=1); [ -z "$ids" ] || docker rm -f $ids >/dev/null
     clean_host_docker
     docker network rm "$NET" >/dev/null 2>&1 || true
