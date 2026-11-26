@@ -35,12 +35,21 @@ func CleanLogBytes(b []byte, max int) string {
 	}
 	var sb strings.Builder
 	sb.Grow(min(len(b), max))
+	prevBad := false
 	for len(b) > 0 {
 		r, n := utf8.DecodeRune(b)
 		if r == utf8.RuneError && n <= 1 {
-			r, n = '\uFFFD', 1
+			// A run of invalid bytes becomes one U+FFFD, as strings.ToValidUTF8 does.
+			b = b[1:]
+			if prevBad {
+				continue
+			}
+			prevBad = true
+			r = '\uFFFD'
+		} else {
+			prevBad = false
+			b = b[n:]
 		}
-		b = b[n:]
 		if r == '\n' || r == '\t' {
 		} else if unicode.IsControl(r) || isInvisible(r) {
 			continue
