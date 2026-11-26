@@ -55,6 +55,20 @@ The same data raises a separate question for the reviewers: the single large bin
 
 **Follow-up (2026-11-20):** the maintainer accepted [ADR 0008](../decisions/0008-footprint-gates.md). CI now gates scenarios 2 (≤ 80 MB) and 4 (≤ 50 MB); scenarios 1 and 3 are report only until the Phase 2 slim agent.
 
+## M3a: outage while ServerDock is killed and restarted (QM3a-9)
+
+*To be filled in by the maintainer.* Apps are offline while ServerDock is down, because the proxy that serves them is embedded in the ServerDock process (QM3a-9, accepted for Phase 1). Plan 0004 step 10 measures it: for each stage of a blue-green and of a stop-first deploy, the `kill -9` suite (`TestKillNine...` in `cmd/serverdock`, tags `integration,testhooks`) kills the server at that stage with SIGKILL, starts it again on the same data directory and Docker, and logs one parseable line per run:
+
+```
+OUTAGE strategy=<blue_green|stop_first> stage=<stage:before|after> ms=<SIGKILL to the first 2xx from the app after the restart>
+```
+
+| Strategy | Stage | Run 1 (ms) | Run 2 (ms) | Run 3 (ms) | Notes |
+|---|---|---|---|---|---|
+| | | | | | |
+
+Also to fill in: the machine (CPU, Docker version, storage driver), how many runs, whether the restart used `--docker-socket` as the default, and the daemon-restart case (`TestDaemonRestartKeepsRoutesCorrect`: time from `systemctl restart docker` to every public port answering 2xx again from its own service).
+
 ## What the Phase 0 spikes verified (tests, not measurements)
 
 - Caddy reload while an agent is connected through `/agent/connect`: the drop is **delayed, not avoided**. With `stream_close_delay` 5m the agent keeps its session and open streams through the reload, but Caddy still closes the old upgraded connection 5 minutes later, and the agent then reconnects with backoff. Without the setting the agent is dropped immediately. Phase 1 consequence: every Caddy reload (every deploy) drops every remote agent after 5 minutes; serve `/agent/connect` from a listener Caddy does not rebuild (see docs/security.md, Phase 0 review items).

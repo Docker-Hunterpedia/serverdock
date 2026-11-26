@@ -27,5 +27,6 @@
 - The table is package-global: exactly one `Applier` may write it per process (server mode); the remote agent never builds one with apps, and its config is unchanged (golden test).
 - The upstream-health metrics ticker is now exactly one 10 s ticker once at least one public port exists (it was one per upstream route), not rebuilt on a switch; it is rebuilt only by a reload.
 - A deploy, rollback, redeploy or restart of one app reloads nothing and drops no request on other apps or the panel. Adding, changing or clearing a public port, deleting an exposed service, the first sync at boot, "Try again" for a failed port and bind isolation still reload, and keep the Revision 9 behaviour (a connection being opened at that moment can be closed before its request is read; open streams are closed within 10 s). Step 15 measures them.
+- A resync after a Docker events reconnect (plan 0004 step 10) never asks for the retry of failed ports (`retry_failed` false): it reloads nothing because a port is taken, and the route lists it sends are table swaps. Only the first resync after a start (the "first sync at boot" above) and "Try again" retry.
 - Between a load and the table store, a newly added port answers "not running".
 - M4 can key the same handler by `Host` (domain routing) instead of the local port.
