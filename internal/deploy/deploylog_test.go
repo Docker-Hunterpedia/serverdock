@@ -34,8 +34,10 @@ type fakeLogSrc struct {
 	tails []int
 	ops   *fakeOps
 	// hang makes a call block until its context ends (a log source that never answers).
-	hang   bool
-	onOpen func() // runs when a log is opened
+	hang bool
+	// failFrom, if above 0, makes the call with that number (1-based) and later ones fail.
+	failFrom int
+	onOpen   func() // runs when a log is opened
 }
 
 func (f *fakeLogSrc) LogsOnce(ctx context.Context, container string, tail int) (io.ReadCloser, error) {
@@ -51,6 +53,9 @@ func (f *fakeLogSrc) LogsOnce(ctx context.Context, container string, tail int) (
 	}
 	if f.onOpen != nil {
 		f.onOpen()
+	}
+	if f.failFrom > 0 && len(f.calls) >= f.failFrom {
+		return nil, errors.New("the log stream is gone")
 	}
 	if f.hang {
 		f.mu.Unlock()
@@ -1170,5 +1175,53 @@ func TestFirstResyncSweepsLogDirectoriesOfDeletedServices(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(l.Root, "8888")); !os.IsNotExist(err) {
 		t.Error("the link was kept")
+	}
+}
+
+// A re-read that fails (the stream cap, the deadline, the container gone) is an error,
+// never a panic, and leaves no temporary file and no directory.
+func TestDeployLogFailedRereadIsAnErrorAndLeavesNothing(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	g.src.set("c1", strings.Repeat(strings.Repeat("z", 1000)+"\n", LogTail)) // 2 MB: round 0 is cut
+	g.src.failFrom = 2
+	err := g.dl.Keep(context.Background(), d, "c1")
+	if err == nil || !strings.Contains(err.Error(), "could not be read") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(g.root, strconv.FormatInt(g.svc, 10))); !os.IsNotExist(err) {
+		t.Errorf("the service directory is left: %v", err)
+	}
+	// And it is usable again afterwards.
+	g.src.failFrom = 0
+	if err := g.dl.Keep(context.Background(), d, "c1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A candidate whose log cannot be re-read is still stopped and removed, and the deploy
+// ends failed with the note.
+func TestCandidateWithAFailingLogRereadIsStillRemoved(t *testing.T) {
+	g := newLogRig(t)
+	g.live(g.svc, 1, "10.250.0.2")
+	g.expose(g.svc, 9000)
+	g.px.fail, g.px.failN = errors.New("down"), 1
+	g.src.gen = nil
+	g.src.failFrom = 2
+	g.src.texts = map[string]string{}
+	g.src.gen = func(string) io.Reader {
+		return strings.NewReader(strings.Repeat(strings.Repeat("z", 1000)+"\n", LogTail))
+	}
+	g.start(false)
+	d, job := g.deploy(g.svc)
+	g.wait(job)
+	if r := g.row(d); r.status != StatusFailed || r.code != CodeSwitchFailed {
+		t.Fatalf("%+v", r)
+	}
+	if g.containerOf(d) != nil {
+		t.Error("the candidate was left running")
+	}
+	if det := g.stageDetail(d, StageSwitch); !strings.Contains(det, "log not kept") {
+		t.Errorf("switch detail %q", det)
 	}
 }

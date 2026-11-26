@@ -57,9 +57,9 @@ type RunnerConfig struct {
 	CommitBound time.Duration // the commit, route lock wait included: 10 s
 	DrainUnit   time.Duration // one second of drain_s: 1 s
 	// KeepLog is the deploy-log hook of step 11: it is called with the previous
-	// container's id before that container is stopped, to keep the tail of its
-	// output in its deploy's log (*DeployLogs.Keep); the candidate of a failed
-	// deploy gets the same before it is removed. A failure never fails the deploy:
+	// container's id after that container has stopped and before it is removed, to
+	// keep the tail of its output in its deploy's log (*DeployLogs.Keep); the
+	// candidate of a failed deploy gets the same before it is stopped. A failure never fails the deploy:
 	// the stage detail says "log not kept: <reason>".
 	// Stopping, if set, returns a channel closed when the process is shutting down
 	// (*jobs.Scheduler.Stopping). It is independent of the job's cancel cause, which

@@ -236,7 +236,13 @@ func (l *DeployLogs) Keep(ctx context.Context, deploy int64, container string) e
 
 // KeepWithNote is Keep with a line for the header: why the attempt failed (the stage
 // rows do not say yet when a candidate is removed).
-func (l *DeployLogs) KeepWithNote(ctx context.Context, deploy int64, container, note string) error {
+func (l *DeployLogs) KeepWithNote(ctx context.Context, deploy int64, container, note string) (err error) {
+	// Keeping a log must never take a clean-up down with it: a panic here is an error.
+	defer func() {
+		if p := recover(); p != nil {
+			err = errors.New("an internal error while keeping the log")
+		}
+	}()
 	if l == nil || l.Root == "" || l.Src == nil || l.DB == nil {
 		return errors.New("deploy logs are not kept on this server")
 	}
@@ -274,7 +280,11 @@ func (l *DeployLogs) KeepWithNote(ctx context.Context, deploy int64, container, 
 	if err != nil {
 		return err
 	}
-	defer func() { src.Close() }()
+	defer func() {
+		if src != nil {
+			src.Close()
+		}
+	}()
 	dir, err := ensureDir(l.Root, h.service)
 	if err != nil {
 		return fmt.Errorf("the log directory is not usable: %s", cleanErr(err))
@@ -306,9 +316,12 @@ func (l *DeployLogs) KeepWithNote(ctx context.Context, deploy int64, container, 
 	for round := 0; ; round++ {
 		if round > 0 {
 			src.Close()
-			if src, first, err = l.openTail(ctx, container, tail, *buf); err != nil {
+			src = nil // the deferred close must not see a closed or failed stream
+			next, n, err := l.openTail(ctx, container, tail, *buf)
+			if err != nil {
 				return err
 			}
+			src, first = next, n
 			if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 				return fmt.Errorf("the log file could not be written: %s", cleanErr(err))
 			}

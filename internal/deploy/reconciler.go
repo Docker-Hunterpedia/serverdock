@@ -72,7 +72,7 @@ type ReconcilerConfig struct {
 	// connect waits for it (a proxy_apply before the proxy starts would fail).
 	PanelUp <-chan struct{}
 	// KeepLog is the deploy-log hook (*DeployLogs.Keep): it is called with the deploy
-	// and the container id before an orphan is stopped.
+	// and the container id after an orphan has stopped and before it is removed.
 	KeepLog func(ctx context.Context, deploy int64, container string) error
 	// SweepLogs, if set, runs once in the first resync: it removes the deploy-log
 	// directories of services that no longer exist (*DeployLogs.Sweep).

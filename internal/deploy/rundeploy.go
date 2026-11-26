@@ -166,6 +166,7 @@ type run struct {
 	reverted     bool // the routes were put back (revert ran)
 	committed    bool // the commit transaction succeeded: from here the candidate is the live version and is never removed
 	warnings     []string
+	noLogs       bool   // a panic happened: finish keeps no log
 	logNote      string // "log not kept: <reason>" when the candidate's log could not be written (it goes in the failed stage's detail)
 	switchDetail string // the switch stage's detail, written in the commit transaction
 	incomplete   bool   // a write after the commit failed ("record incomplete")
@@ -201,6 +202,7 @@ func (r *Runner) runDeploy(ctx context.Context, _ actions.Call, jobID int64) (ou
 	defer func() {
 		if p := recover(); p != nil {
 			r.cfg.Log.Error("a deploy panicked", "job", jobID, "deploy", rn.deploy, "panic", p)
+			rn.noLogs = true // the clean-up must not depend on anything that may have caused the panic
 			out, err = RunDeployOut{Deploy: rn.svc.deployNumber, Status: rn.statusOf(&failure{})}, rn.finish(&failure{code: CodeInternal, appSafe: AppSafeUnknown,
 				msg: "ServerDock hit an internal error while deploying"})
 		}
@@ -1220,7 +1222,7 @@ func (rn *run) logBound(ctx context.Context) (time.Duration, bool) {
 // the previous version must come back at once, so the stop is not put off by it).
 // When the log is not kept the failed stage's detail says so (rn.logNote).
 func (rn *run) keepCandidateLog(ctx context.Context, id string, f *failure) {
-	if id == "" {
+	if id == "" || rn.noLogs {
 		return
 	}
 	keep := rn.r.cfg.KeepLog
