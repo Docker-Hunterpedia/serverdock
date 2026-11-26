@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1524,6 +1525,20 @@ func TestInterruptedStopFirstCandidateFlagsTheServiceAndRefusesAQueuedRestart(t 
 	if overlap.Load() != 0 || g.exists(candID) || !g.runningC(oldID) || g.attention(g.svc) != "" {
 		t.Errorf("overlap=%d candidate=%v previous running=%v attention=%q", overlap.Load(), g.exists(candID), g.runningC(oldID), g.attention(g.svc))
 	}
+	// A first deploy (the service has no active deploy) is not flagged: nothing would clear it.
+	{
+		h := newRecRig(t, nil)
+		d3, j3 := h.deploy(h.svc, func(s *Snapshot) { s.Strategy = "stop_first" })
+		mustExec(t, h.st, `UPDATE jobs SET state = 'running', boot_id = 'old' WHERE id = ?`, j3)
+		mustExec(t, h.st, `UPDATE deploys SET status = 'running' WHERE id = ?`, d3)
+		mustExec(t, h.st, `INSERT INTO deploy_stages(deploy_id, stage, state) VALUES (?, 'start', 'running')`, d3)
+		if _, err := ResolveInterrupted(context.Background(), h.st, "new", time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if a := h.attention(h.svc); a != "" {
+			t.Errorf("a first deploy flagged the service %q", a)
+		}
+	}
 	// Not flagged: a blue-green deploy, a deploy that never started, another reason on the service.
 	for name, setup := range map[string]func(*recRig, int64, int64){
 		"start pending": func(g *recRig, d, j int64) {
@@ -1676,3 +1691,43 @@ func TestEnsureRoutesKicksTheReconnect(t *testing.T) {
 		t.Error("a route action found the gate closed and did not kick the reconciler")
 	}
 }
+
+// Defence in depth: a flag set at run time on a service with no active deploy is cleared
+// by the finish half once the candidate is gone (there is no previous version to start).
+func TestFinishClearsVersionsKeptOnAServiceWithNoActiveDeploy(t *testing.T) {
+	g := newRecRig(t, nil)
+	cand := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.3")
+	candID := g.put(g.svc, cand, 1, "10.250.0.3", true)
+	mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionVersionsKept, g.svc)
+	g.resync(true)
+	if g.exists(candID) || g.attention(g.svc) != "" {
+		t.Errorf("candidate exists=%v attention=%q", g.exists(candID), g.attention(g.svc))
+	}
+	// Another reason is never cleared.
+	mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionDeleteInterrupted, g.svc)
+	g.put(g.svc, addDeploy(t, g.st, g.svc, 2, "failed", "10.250.0.4"), 1, "10.250.0.4", true)
+	g.resync(false)
+	if a := g.attention(g.svc); a != AttentionDeleteInterrupted {
+		t.Errorf("attention %q", a)
+	}
+}
+
+// The correction's note is in the args, not in the error column of an "ok" row.
+func TestCorrectedOutcomeCarriesItsNoteInTheArgs(t *testing.T) {
+	g := newRecRig(t, nil)
+	al, _ := audit.New(g.st, nil)
+	d, job := g.deploy(g.svc)
+	mustExec(t, g.st, `UPDATE jobs SET request_id = 'job-1-a1' WHERE id = ?`, job)
+	id, _ := al.Append(context.Background(), audit.Entry{ActorKind: "user", ActorID: "u1", Executor: "system", Action: "jobs.run_deploy", Target: "job:1", Risk: "mutate",
+		Phase: audit.PhaseIntent, Result: audit.ResultPending, ArgsJSON: `{"job":1}`, RequestID: "job-1-a1"})
+	_, _ = al.Append(context.Background(), audit.Entry{ActorKind: "user", ActorID: "u1", Executor: "system", Action: "jobs.run_deploy", Target: "job:1", Risk: "mutate",
+		Phase: audit.PhaseOutcome, IntentID: id, Result: audit.ResultError, Error: "unknown", ArgsJSON: `{"job":1}`, RequestID: "job-1-a1"})
+	correctIntent(context.Background(), g.st, al, nil2log(), d)
+	var args, errText, result string
+	g.st.R.QueryRow(`SELECT args_json, error, result FROM audit_log WHERE phase = 'outcome' AND intent_id = ? ORDER BY id DESC LIMIT 1`, id).Scan(&args, &errText, &result)
+	if result != "ok" || errText != "" || !strings.Contains(args, "corrected after a restart") || !strings.Contains(args, `"job":1`) {
+		t.Errorf("%s %q %s", result, errText, args)
+	}
+}
+
+func nil2log() *slog.Logger { return slog.New(slog.DiscardHandler) }

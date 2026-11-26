@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -546,7 +547,8 @@ func TestSubnetRecordedAfterBoot(t *testing.T) {
 		_, err := ops[agent.OpProxyApply](ctx, raw, nil)
 		return err
 	}
-	up := agentops.Route{Port: 9000, Upstream: "10.250.0.2:8080"} // the first choice with no Docker networks
+	// Before the subnet is recorded any upstream address is refused, whatever it is.
+	up := agentops.Route{Port: 9000, Upstream: "10.250.0.2:8080"}
 	page := agentops.Route{Port: 9001, Page: agentops.PageMaintenance}
 	if err := apply(up); !agentops.IsCode(err, agent.CodeNotFound) {
 		t.Fatalf("an upstream before the subnet is recorded: %v", err)
@@ -562,6 +564,16 @@ func TestSubnetRecordedAfterBoot(t *testing.T) {
 	if _, err := an.Subnet(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The choice avoids the host's own interfaces and routes, so which /24 it picks depends
+	// on the machine (a Docker bridge or VPN in 10.250.0.0/16 moves it): read it back.
+	v, _ := an.Recorded(ctx)
+	pfx, err := netip.ParsePrefix(v)
+	if err != nil || pfx.Bits() != 24 {
+		t.Fatalf("recorded %q: %v", v, err)
+	}
+	b := pfx.Addr().As4()
+	at := func(n byte) string { return netip.AddrFrom4([4]byte{b[0], b[1], b[2], n}).String() }
+	up = agentops.Route{Port: 9000, Upstream: at(2) + ":8080"}
 	if err := apply(up, page); err != nil {
 		t.Fatalf("the same upstream after the subnet is recorded: %v", err)
 	}
@@ -569,10 +581,7 @@ func TestSubnetRecordedAfterBoot(t *testing.T) {
 		t.Fatalf("%d applies reached the proxy", len(app.got))
 	}
 	// And the recorded range, not Docker, bounds it.
-	if v, _ := an.Recorded(ctx); v != "10.250.0.0/24" {
-		t.Fatalf("recorded %q", v)
-	}
-	if err := apply(agentops.Route{Port: 9000, Upstream: "10.250.0.1:80"}); !agentops.IsCode(err, agent.CodePolicy) {
+	if err := apply(agentops.Route{Port: 9000, Upstream: at(1) + ":80"}); !agentops.IsCode(err, agent.CodePolicy) {
 		t.Fatalf("the gateway: %v", err)
 	}
 }

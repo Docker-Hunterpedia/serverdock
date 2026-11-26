@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -85,6 +86,7 @@ func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now
 						// the resync (which opens the scheduler's gate before it removes the
 						// candidate) settles it. Another reason on the service is not overwritten.
 						if _, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = (SELECT service_id FROM deploys WHERE id = ?)
+							AND active_deploy_id IS NOT NULL -- a first deploy has no previous version to start, so nothing would ever clear the flag
 							AND (needs_attention IS NULL OR needs_attention = ?)
 							AND EXISTS (SELECT 1 FROM deploys d WHERE d.id = ? AND json_valid(d.snapshot_json) AND json_extract(d.snapshot_json, '$.strategy') = 'stop_first')
 							AND EXISTS (SELECT 1 FROM deploy_stages WHERE deploy_id = ? AND stage = 'start' AND state IN ('running', 'ok'))`,
@@ -195,7 +197,15 @@ func correctIntent(ctx context.Context, st *store.Store, aud audit.Appender, log
 		return // no intent, or its outcome is not an error
 	}
 	e.Executor, e.Phase, e.IntentID, e.Result = "system", audit.PhaseOutcome, id, audit.ResultOK
-	e.Error = "corrected after a restart: the commit was found recorded" // the note that says why a later outcome contradicts the first
+	// The note goes in the args (the outcome repeats the intent's args), not in the error
+	// column: an "ok" row must not carry an error text.
+	args := map[string]any{}
+	if json.Unmarshal([]byte(e.ArgsJSON), &args) == nil {
+		args["note"] = "corrected after a restart: the commit was found recorded"
+		if b, err := json.Marshal(args); err == nil {
+			e.ArgsJSON = string(b)
+		}
+	}
 	if _, err := aud.Append(context.WithoutCancel(ctx), e); err != nil {
 		log.Warn("the corrected audit outcome of a committed deploy could not be written", "deploy", deploy, "err", err.Error())
 	}

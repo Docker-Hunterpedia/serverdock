@@ -379,6 +379,11 @@ func (p *pass) finishLocked(sv *rsvc) {
 	if !p.orphans(sv, mine, nil) {
 		return // another version may still run: the active container is not started
 	}
+	if sv.exists && sv.active < 1 && (sv.attention == AttentionVersionsKept || sv.attention == AttentionPreviousDown) {
+		// No active deploy (a first deploy): there is no previous version to start, and the
+		// candidate is gone, so nothing is left for the flag to say.
+		p.setAttention(sv, "")
+	}
 	if sv.exists {
 		p.startStopped(sv, mine)
 		p.raiseAppSafe(sv, mine) // the container may have been started just now
