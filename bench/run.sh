@@ -15,6 +15,19 @@
 #      through its proxy (measured: the agent)
 #   4  GATE  remote `agent` plus its own embedded Caddy (--proxy-listen), remote node: ceiling 100 MB, tripwire 50 MB (ADR 0011)
 #   Gates: docs/decisions/0008-footprint-gates.md
+#   5  GATE (tripwire)  "S2 with one exposed service" (plan 0004 step 15): the live-watcher S2 server plus ONE app
+#      container of the test image behind a public port (created and deployed through the API, serving 2xx before
+#      the warm-up). Same ceiling and 80 MB tripwire as S2.
+#   6  (report only) "S2 with 10 exposed idle services": the same with ten services. RSS and idle CPU, reported
+#      against the 80 MB tripwire; nothing fails.
+#   7  (report only) RSS around ONE deploy: the S2 server with 2 exposed services, sampled every second, 20 s before
+#      one service is redeployed, during it and for 60 s after it finishes. Reports the idle baseline, the peak,
+#      and the value 60 s after.
+#   8  (report only) the same with TWO concurrent deploys (both services redeployed at once): peak RSS during them.
+#   Scenarios 5-8 need Docker, the host's registry on 127.0.0.1:5000 holding the test image (APP_IMAGE, default
+#   127.0.0.1:5000/sd-testapp:1: see the CI integration job), python-free: bench/drive (Go) signs in and drives the
+#   API. The server runs with --network host (the app network's addresses are not reachable from another bridge)
+#   and --allow-loopback-registry, on two free ports; both are bench-only choices, the binary is the shipped one.
 # Scenarios 3-4 also start a server container (agent TLS listener on the bench network, debug
 # unix socket on a shared volume) and a busybox logger; one log stream is opened and closed
 # during the burst. The agent connects over wss with a pinned CA fingerprint and a generated
@@ -30,8 +43,14 @@
 #   QUICK=1       shortened warm-up 20 s, idle 60 s, 1 run; gates evaluated but labelled "quick"
 #   WARMUP=120    warm-up seconds        IDLE=300   idle window seconds
 #   INTERVAL=10   sample interval (s)    RUNS=3     runs per scenario
-#   BURST=500     requests in the burst  SCENARIOS="1 2"
+#   BURST=500     requests in the burst  SCENARIOS="1 2 3 4" (default); add 5 6 7 8 for step 15
 #   IMAGE=serverdock-bench:local         RESULTS_DIR=bench/results
+#   BUILD_CONTEXT=.   the directory the image is built from (a git worktree of another revision, for an A/B run).
+#                     The Dockerfile is always this checkout's bench/Dockerfile; the context needs web/build.
+#   RESULTS_SUFFIX=   appended to the result file name (-step13, -final ...), so two runs never overwrite each other
+#   APP_IMAGE=127.0.0.1:5000/sd-testapp:1   the app image of scenarios 5-8 (pre-pushed to the local registry)
+#   DEPLOY_BASE=20 DEPLOY_MAX=60 DEPLOY_POST=60   scenarios 7-8: seconds sampled before the deploy, the longest
+#                     a deploy may take, and the seconds sampled after it finishes
 #   S2_DOCKER=1   (default) scenario 2 is "S2 live watcher": the server container gets the host's
 #                 Docker socket and its group (--group-add <socket gid> -v /var/run/docker.sock), so
 #                 its boot runs network_ensure and the reconciler's first resync (events stream,
@@ -51,6 +70,7 @@
 #                   SCENARIOS=2 bench/run.sh                  # S2 live watcher (gated)
 #                   S2_DOCKER=0 SCENARIOS=2 bench/run.sh      # S2 no Docker (report only)
 #                   SCENARIOS=4 bench/run.sh                  # S4 (gated)
+#                   SCENARIOS="5 6 7 8" bench/run.sh          # step 15: apps behind public ports, RSS around deploys
 #
 # Exit status: 1 when a gate fails, unless the measurement ran through the
 # Docker Desktop helper container (informational only).
@@ -74,6 +94,10 @@ BURST=${BURST:-500}
 SCENARIOS=${SCENARIOS:-"1 2 3 4"}
 IMAGE=${IMAGE:-serverdock-bench:local}
 RESULTS_DIR=${RESULTS_DIR:-bench/results}
+BUILD_CONTEXT=${BUILD_CONTEXT:-.}
+RESULTS_SUFFIX=${RESULTS_SUFFIX:-}
+APP_IMAGE=${APP_IMAGE:-127.0.0.1:5000/sd-testapp:1}
+DEPLOY_BASE=${DEPLOY_BASE:-20}; DEPLOY_MAX=${DEPLOY_MAX:-60}; DEPLOY_POST=${DEPLOY_POST:-60}
 
 case "$(docker info --format '{{.Architecture}}')" in
   aarch64|arm64) ARCH=arm64 ;;
@@ -87,6 +111,11 @@ NET=sdbench-net
 SOCK_GID=""
 S2_DOCKER=${S2_DOCKER:-1}
 case "$S2_DOCKER" in 0|1) ;; *) echo "S2_DOCKER must be 0 or 1" >&2; exit 2 ;; esac
+for id in $SCENARIOS; do case "$id" in 1|2|3|4|5|6|7|8) ;; *) echo "unknown scenario $id" >&2; exit 2 ;; esac; done
+# Does this run create things on the host's Docker (the S2 live watcher's network; apps in 5-8)?
+HOST_DOCKER_USED=0
+case " $SCENARIOS " in *" 5 "*|*" 6 "*|*" 7 "*|*" 8 "*) HOST_DOCKER_USED=1 ;; esac
+case " $SCENARIOS " in *" 2 "*) [ "$S2_DOCKER" = 1 ] && HOST_DOCKER_USED=1 ;; esac
 
 # What the server of "S2 live watcher" creates on the host's Docker: its app network
 # (label serverdock.instance) and containers (serverdock.managed / serverdock.instance). The
@@ -99,11 +128,11 @@ host_ctrs() {
 }
 PRE_NETS=""; PRE_CTRS=""; HOST_RECORDED=0
 record_host_docker() {
-  [ "$S2_DOCKER" = 1 ] && [ "$HOST_RECORDED" = 0 ] || return 0
+  [ "$HOST_DOCKER_USED" = 1 ] && [ "$HOST_RECORDED" = 0 ] || return 0
   PRE_NETS=$(host_nets | tr '\n' ' '); PRE_CTRS=$(host_ctrs | tr '\n' ' '); HOST_RECORDED=1
 }
 clean_host_docker() { # call after the bench's own containers are gone (a network with endpoints cannot be removed)
-  [ "$S2_DOCKER" = 1 ] && [ "$HOST_RECORDED" = 1 ] || return 0
+  [ "$HOST_DOCKER_USED" = 1 ] && [ "$HOST_RECORDED" = 1 ] || return 0
   for c in $(host_ctrs); do
     case " $PRE_CTRS " in *" $c "*) continue ;; esac
     docker rm -f -v "$c" >/dev/null 2>&1 || true
@@ -128,8 +157,8 @@ trap 'exit 143' TERM
 
 log() { printf '[bench] %s\n' "$*" >&2; }
 
-log "building $IMAGE"
-docker build -q -f bench/Dockerfile -t "$IMAGE" . >/dev/null
+log "building $IMAGE from $BUILD_CONTEXT"
+docker build -q -f bench/Dockerfile -t "$IMAGE" "$BUILD_CONTEXT" >/dev/null
 
 # Binary sizes (raw and gzip -9) from the image that is measured.
 cid=$(docker create "$IMAGE")
@@ -246,7 +275,35 @@ burst() {
   [ "$ok" -eq "$BURST" ]
 }
 
-case " $SCENARIOS " in *" 2 "*) record_host_docker ;; esac
+# ---- scenarios 5-8: the S2 live-watcher server with real apps behind public ports ----
+DRIVE=""
+app_registry_check() {
+  curl -fsS -o /dev/null "http://127.0.0.1:5000/v2/" 2>/dev/null || { log "scenarios 5-8 need the local registry on 127.0.0.1:5000 holding $APP_IMAGE"; return 1; }
+  docker image inspect "$APP_IMAGE" >/dev/null 2>&1 || docker pull -q "$APP_IMAGE" >/dev/null 2>&1 || { log "cannot pull $APP_IMAGE"; return 1; }
+}
+
+# start_apps_server <container> <napps>: the S2 live-watcher server (host network, two free ports), signed in
+# and with <napps> exposed services serving 2xx. Sets base.
+start_apps_server() {
+  [ -n "$DRIVE" ] || { DRIVE="$WORK/drive"; go build -o "$DRIVE" ./bench/drive; }
+  app_registry_check
+  ports=$("$DRIVE" -addr x -state x freeports); HTTP_PORT=$(echo "$ports" | sed -n 1p); HTTPS_PORT=$(echo "$ports" | sed -n 2p)
+  docker run -d --label sdbench=1 --name "$1" --network host --memory 1g --cpus 1 \
+    --group-add "$(socket_gid)" -v /var/run/docker.sock:/var/run/docker.sock "$IMAGE" \
+    server --data /data --proxy=true --listen ":$HTTP_PORT" --https-listen ":$HTTPS_PORT" --allow-loopback-registry >/dev/null
+  base="https://127.0.0.1:$HTTPS_PORT"
+  wait_ready "$base/healthz"
+  docker cp "$1:/data/setup-token" "$WORK/setup-token" >/dev/null
+  "$DRIVE" -addr "127.0.0.1:$HTTPS_PORT" -state "$WORK/session" setup -token-file "$WORK/setup-token" >/dev/null
+  rm -f "$WORK/setup-token"
+  log "creating $2 exposed service(s) from $APP_IMAGE"
+  "$DRIVE" -addr "127.0.0.1:$HTTPS_PORT" -state "$WORK/session" expose -n "$2" -image "$APP_IMAGE" >&2
+}
+
+# uptime_s: seconds from /proc/uptime of this host (sample clock offsets only; differences are used)
+uptime_s() { cut -d' ' -f1 /proc/uptime; }
+
+record_host_docker
 
 for id in $SCENARIOS; do
   r=1
@@ -290,9 +347,33 @@ for id in $SCENARIOS; do
           wait_ready "$base/healthz"
         fi
         wait_agent ;;
+      5|6|7|8)
+        case "$id" in 5) napps=1 ;; 6) napps=10 ;; *) napps=2 ;; esac
+        log "scenario $id: S2 live watcher with $napps exposed service(s)"
+        start_apps_server "$TARGET" "$napps" ;;
       *) echo "unknown scenario $id" >&2; exit 2 ;;
     esac
     log "warm-up ${WARMUP}s"; sleep "$WARMUP"
+    if [ "$id" = 7 ] || [ "$id" = 8 ]; then
+      burst "$base"
+      # Sample every second from before the deploy to DEPLOY_POST seconds after it finished; the
+      # offsets (host clock differences, so the helper path works too) go next to the samples.
+      total=$((DEPLOY_BASE + DEPLOY_MAX + DEPLOY_POST + 5))
+      svcs=bench/app-1; [ "$id" = 8 ] && svcs=bench/app-1,bench/app-2
+      log "deploy window: ${DEPLOY_BASE}s before, then deploy of $svcs, then ${DEPLOY_POST}s after (sampling every 1 s)"
+      bench/measure.sh "$TARGET" "$total" 1 "$WORK/s$id-r$r.tsv" &
+      mpid=$!
+      m0=$(uptime_s); sleep "$DEPLOY_BASE"
+      d0=$(uptime_s)
+      "$DRIVE" -addr "127.0.0.1:$HTTPS_PORT" -state "$WORK/session" deploy -services "$svcs" -timeout "${DEPLOY_MAX}s" >&2
+      d1=$(uptime_s)
+      sleep "$DEPLOY_POST"
+      wait "$mpid"
+      echo "$(awk -v a="$m0" -v b="$d0" 'BEGIN{printf "%.2f", b-a}') $(awk -v a="$m0" -v b="$d1" 'BEGIN{printf "%.2f", b-a}') $DEPLOY_POST" >"$WORK/s$id-r$r.tsv.events"
+      ids=$(docker ps -aq --filter label=sdbench=1); [ -z "$ids" ] || docker rm -f $ids >/dev/null
+      clean_host_docker
+      r=$((r + 1)); continue
+    fi
     # S4's burst goes through the agent's own Caddy to the server's :80, which now only
     # redirects: the agent's proxy does the same work, so 200 or 308 both count.
     if [ "$id" = 4 ]; then burst "$base" "200|308"; else burst "$base"; fi
@@ -313,7 +394,7 @@ done
 mkdir -p "$RESULTS_DIR"
 QFLAG=""; [ "$QUICK" = 1 ] && QFLAG="-quick"
 status=0
-go run ./bench/report -dir "$WORK" -out "$RESULTS_DIR/$DATE-$ARCH$SUFFIX" -arch "$ARCH" -date "$DATE" \
+go run ./bench/report -dir "$WORK" -out "$RESULTS_DIR/$DATE-$ARCH$SUFFIX$RESULTS_SUFFIX" -arch "$ARCH" -date "$DATE" \
   -binary-bytes "$BIN_BYTES" -binary-gzip-bytes "$GZ_BYTES" $QFLAG >&2 || status=$?
-log "results: $RESULTS_DIR/$DATE-$ARCH$SUFFIX.md / .json"
+log "results: $RESULTS_DIR/$DATE-$ARCH$SUFFIX$RESULTS_SUFFIX.md / .json"
 exit "$status"

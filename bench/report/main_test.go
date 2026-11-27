@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,5 +213,130 @@ func TestS2NoDockerIsReportOnly(t *testing.T) {
 	r.evaluate()
 	if !r.Pass {
 		t.Error("S2 no Docker must not gate")
+	}
+}
+
+// "S2 with one exposed service" (scenario 5) is gated like S2: the ceiling fails the run,
+// the 80 MB tripwire only warns.
+func TestScenarioFiveIsGatedLikeS2(t *testing.T) {
+	run := func(rssMB float64) RunStats { return RunStats{VmRSSMedian: rssMB * mb, IdleCPUPercent: 0.1} }
+	r := Report{Scenarios: []ScenarioResult{scenario(5, []RunStats{run(85)})}}
+	r.evaluate()
+	if !r.Pass {
+		t.Error("85 MB is over the tripwire only: must pass")
+	}
+	var tripped bool
+	for _, g := range r.Scenarios[0].Gates {
+		tripped = tripped || (g.Tripwire && !g.Pass)
+	}
+	if !tripped {
+		t.Error("the tripwire did not warn at 85 MB")
+	}
+	r = Report{Scenarios: []ScenarioResult{scenario(5, []RunStats{run(250)})}}
+	r.evaluate()
+	if r.Pass {
+		t.Error("250 MB is over the ceiling: must fail")
+	}
+	if !strings.Contains(scenarioNames[5], "S2 with one exposed service") || !strings.Contains(scenarioNames[6], "S2 with 10 exposed idle services") {
+		t.Error("the scenario names must carry the plan's labels")
+	}
+}
+
+// "S2 with 10 exposed idle services" (scenario 6) is report only, even far over the tripwire.
+func TestScenarioSixNeverFails(t *testing.T) {
+	r := Report{Scenarios: []ScenarioResult{scenario(6, []RunStats{{VmRSSMedian: 500 * mb, IdleCPUPercent: 5}})}}
+	r.evaluate()
+	if !r.Pass || len(r.Scenarios[0].Gates) != 1 || !r.Scenarios[0].Gates[0].Report {
+		t.Errorf("%+v", r.Scenarios[0].Gates)
+	}
+}
+
+func deploySamples(rss func(t float64) float64, hwm func(t float64) float64, n int) []Sample {
+	var out []Sample
+	for i := 0; i < n; i++ {
+		t := float64(i)
+		out = append(out, Sample{T: 1000 + t, VmRSS: rss(t), VmHWM: hwm(t)})
+	}
+	return out
+}
+
+func TestDeployRun(t *testing.T) {
+	// Baseline 50 MB for 20 s; the deploy runs 20..40 s with a 56 MB sampled peak and a
+	// kernel high-water mark of 58 MB; 52 MB for the 60 s after (back to within 2 MB).
+	rss := func(t float64) float64 {
+		switch {
+		case t < 20:
+			return 50 * mb
+		case t <= 40:
+			return 56 * mb
+		}
+		return 52 * mb
+	}
+	hwm := func(t float64) float64 {
+		if t < 30 {
+			return 51 * mb
+		}
+		return 58 * mb
+	}
+	d, err := deployRun(deploySamples(rss, hwm, 105), 20, 40, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.BaselineRSS != 50*mb || d.PeakRSSSampled != 56*mb || d.PeakRSS != 58*mb || !d.NewHighWater {
+		t.Errorf("%+v", d)
+	}
+	if d.RSSAfter60 != 52*mb || d.After60OverBase != 2*mb || d.BackAtBaseline {
+		t.Errorf("%+v", d)
+	}
+	// A flat HWM means the sampled peak is the peak.
+	d, err = deployRun(deploySamples(rss, func(float64) float64 { return 60 * mb }, 105), 20, 40, 60)
+	if err != nil || d.NewHighWater || d.PeakRSS != 56*mb {
+		t.Errorf("%+v %v", d, err)
+	}
+	// Too short to hold +60 s.
+	if _, err := deployRun(deploySamples(rss, hwm, 70), 20, 40, 60); err == nil {
+		t.Error("expected an error for samples that stop before +60 s")
+	}
+	if _, err := deployRun(deploySamples(rss, hwm, 105), 20, 10, 60); err == nil {
+		t.Error("expected an error for an end before the start")
+	}
+}
+
+func TestLoadDeploysAndMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString("t_s\tvmrss\tvmhwm\trssanon\trssfile\tmem_current\tanon\tfile\tinactive_file\tusage_usec\n")
+	for i := 0; i < 105; i++ {
+		rss := 50e6
+		if i >= 20 && i <= 40 {
+			rss = 57e6
+		}
+		fmt.Fprintf(&b, "%d\t%.0f\t%.0f\t1\t2\t3\t1\t1\t1\t%d\n", 1000+i, rss, 57e6, i*1000)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s7-r1.tsv"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s7-r1.tsv.events"), []byte("20.5 40.2 60\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scen, _, err := load(dir)
+	if err != nil || len(scen) != 0 {
+		t.Fatalf("a deploy-only directory is valid: %v %v", scen, err)
+	}
+	ds, err := loadDeploys(dir)
+	if err != nil || len(ds) != 1 || len(ds[0].Runs) != 1 {
+		t.Fatalf("%v %v", ds, err)
+	}
+	r := Report{Deploys: ds}
+	r.evaluate()
+	md := markdown(r)
+	if !r.Pass || !strings.Contains(md, "Scenario 7") || !strings.Contains(md, "report only") || !strings.Contains(md, "60 s after the deploy finished") {
+		t.Errorf("%s", md)
+	}
+	if err := os.Remove(filepath.Join(dir, "s7-r1.tsv.events")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDeploys(dir); err == nil {
+		t.Error("a deploy run without its events file must be an error")
 	}
 }
