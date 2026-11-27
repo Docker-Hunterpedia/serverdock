@@ -32,9 +32,9 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Install script with pre-flight checks (M7a)
 - [ ] Signed releases (cosign); `serverdock bench` published with each release
 - [x] Action registry (typed ops, risk tiers, audit log) — the base for everything else — built in M1 (`internal/actions`, `internal/audit`, `internal/redact`; policy-table, tamper-detection and sentinel tests; no HTTP route yet, those arrive in M2)
-- [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked)
+- [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked) — **the image part is built in M3a** ([plan 0004](plans/0004-m3a-deploy-from-image.md); public images, one container per service; tests in [security.md](security.md#m3a-surface-as-built-with-the-tests-that-pin-it)); Dockerfile is M5 and Compose is M6, so this stays open
 - [ ] GitHub push-to-deploy + generic webhook, commit status
-- [ ] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys
+- [x] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys — built in M3a ([plan 0004](plans/0004-m3a-deploy-from-image.md) steps 4a–10, 13; tests: `TestBlueGreenSwitchWithZeroNon2xx`, `TestUnhealthyCandidateKeepsOldServingWithZeroNon2xx`, `TestRollbackPinsTheImageIdAndRunsThatSnapshot`, `TestSupersedeDuringHealthGateIsUnhealthy`, the kill -9 suite; [security.md](security.md#m3a-close-out-status)). The zero-reload switch means a switch drops no request; the release measurements and the `security` close-out review are still pending
 - [ ] Domains with automatic HTTPS (embedded Caddy) and actionable diagnostics; TLS problems never take a running app down
 - [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4)
 - [ ] Env vars & secrets (encrypted, audited reveal)
@@ -43,8 +43,8 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Local builds with cgroup caps
 - [ ] Private registry credentials; persistent volumes; per-project network with service DNS
 - [ ] Automatic disk cleanup (old images, build cache) + disk alerts; size-capped BuildKit cache; build concurrency setting
-- [ ] Per-app CPU/RAM limits; stop-first strategy for stateful apps; connection draining on blue-green
-- [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables
+- [ ] Per-app CPU/RAM limits; stop-first strategy for stateful apps; connection draining on blue-green — **stop-first (explicit per service) and the blue-green drain are built in M3a** (`TestStopFirstGapThenCommit`, `TestIntegrationStopFirstGapUnderLoad`); CPU/RAM limits and choosing stop-first automatically for writable volumes are M3b, so this stays open
+- [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables — **built in M3a:** the last 10 deploy logs, live pull progress, restart and redeploy (`TestDeployLogRetentionKeepsTheLastTenPerService`, `TestRestartKeepsTheAddress`, `TestRedeployRecreatesAMissingContainer`); build progress is M5 and deploy context variables are M3b, so this stays open
 - [ ] "Update available" notice for app images
 - [ ] IPv6 support; Docker API version negotiation + supported Docker range + Docker RC in CI *(negotiation and the Engine 25+ range are built (M1 step 4); IPv6 and the RC CI matrix are not)*
 - [x] Token expiry — API tokens require an expiry (default 90 days, at most 365), built in M2 (`TestTokenExpiryDefaultMaximumAndRequired` in `internal/auth/authactions_test.go`; Playwright `web/e2e/security.spec.ts`)
