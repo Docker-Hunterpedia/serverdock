@@ -546,7 +546,7 @@ test.describe('review fixes', () => {
 		await page.goto(`${server.baseURL}/services/shop/api/deploys/1`);
 		await expect(page.getByRole('heading', { name: 'Deploy #1' })).toBeVisible();
 		await expect(page.getByText('just queued')).toHaveCount(0);
-		await expect(page.getByText("does not show a deploy's status yet")).toBeVisible();
+		await expect(page.getByTestId('deploy-status')).toContainText('Succeeded');
 		await expect(page.getByTestId('not-applied')).toHaveCount(0);
 	});
 

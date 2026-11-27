@@ -1,4 +1,7 @@
 import type { Page } from '@playwright/test';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import type { TestServer } from './server';
 
 // Seeded rows for the states that need no containers (plan 0004 step 12). The rows
@@ -39,7 +42,11 @@ export type SeedDeploy = {
 	actorKind?: string;
 	/** the strategy recorded in the deploy's settings (a rollback keeps it) */
 	strategy?: 'blue_green' | 'stop_first';
+	/** the deploy's stage rows (deploy_stages), in order */
+	stages?: SeedStage[];
 };
+
+export type SeedStage = { stage: string; state: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'; detail?: string };
 
 export type SeedService = {
 	project?: string;
@@ -95,6 +102,18 @@ export function seedService(server: TestServer, s: SeedService): number {
 			created,
 			finished
 		);
+		for (const st of d.stages ?? []) {
+			server.sql(
+				`INSERT INTO deploy_stages(deploy_id, stage, state, started_at, finished_at, detail) VALUES ((SELECT id FROM deploys WHERE service_id = ? AND number = ?), ?, ?, ?, ?, ?)`,
+				svc.id,
+				d.number,
+				st.stage,
+				st.state,
+				st.state === 'pending' ? null : created,
+				st.state === 'ok' || st.state === 'failed' || st.state === 'skipped' ? created : null,
+				st.detail ?? null
+			);
+		}
 		if (d.live) {
 			const [row] = server.query<{ id: number }>(`SELECT id FROM deploys WHERE service_id = ? AND number = ?`, svc.id, d.number);
 			server.sql(`UPDATE services SET active_deploy_id = ? WHERE id = ?`, row.id, svc.id);
@@ -244,3 +263,118 @@ export const mockExposure = (page: Page, containers: { name: string; ports: [num
 			ports: c.ports.map(([host, proto, container, ip]) => ({ host_ip: ip ?? '0.0.0.0', host_port: host, container_port: container ?? 80, proto }))
 		}))
 	});
+
+// ---- the Deploy detail page (plan 0004 step 14) -------------------------------------
+
+/** The stage rows of a blue-green deploy with the first `done` stages ok, the next one in `state`, the rest pending. */
+export function stageRows(strategy: 'blue_green' | 'stop_first', done: number, state: SeedStage['state'] = 'running', detail?: string): SeedStage[] {
+	const names = strategy === 'stop_first' ? ['pull', 'check', 'maintenance', 'stop_old_first', 'start', 'health', 'switch', 'commit', 'stop_old'] : ['pull', 'check', 'start', 'health', 'switch', 'commit', 'drain', 'stop_old'];
+	return names.map((stage, i) => ({ stage, state: i < done ? 'ok' : i === done ? state : 'pending', ...(i === done && detail ? { detail } : {}) }));
+}
+
+/** Writes a deploy log file (gzip, 0600 in a 0700 directory) for a seeded deploy, as the server keeps it. */
+export function seedDeployLog(server: TestServer, serviceId: number, deployNumber: number, text: string) {
+	const [row] = server.query<{ id: number }>(`SELECT id FROM deploys WHERE service_id = ? AND number = ?`, serviceId, deployNumber);
+	const dir = join(server.dataDir, 'deploy-logs', String(serviceId));
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	chmodSync(dir, 0o700);
+	const file = join(dir, `${row.id}.log.gz`);
+	writeFileSync(file, gzipSync(text), { mode: 0o600 });
+}
+
+/** A deploy log in the server's format: the header and stage lines ServerDock wrote, the separator, then what the container printed. */
+export function logText(output: string[], opts: { service?: string; number?: number } = {}): string {
+	const head = [
+		'ServerDock deploy log',
+		`service: ${opts.service ?? 'shop/api'}`,
+		`deploy: #${opts.number ?? 1} (deploy)`,
+		'image: registry.example.com/shop/api:2.4.1',
+		'status when this log was kept: failed health',
+		'reason: health_timeout the new version did not become healthy',
+		'container: 0123456789ab',
+		'pull: ok',
+		'check: ok',
+		'start: ok',
+		'health: failed'
+	];
+	return [...head, '--- container output (the newest 2000 lines at most; 1024 KiB in all) ---', ...output, ''].join('\n');
+}
+
+type Over = Record<string, unknown>;
+/** A deploys.get answer: the deploy (merged over a running blue-green pull), its stages, progress and cancellable. */
+export function deployGetFixture(over: { deploy?: Over; stages?: SeedStage[]; progress?: Over | null; cancellable?: boolean } = {}) {
+	const deploy = {
+		number: 3,
+		kind: 'deploy',
+		status: 'running',
+		stage: 'pull',
+		image_ref: 'registry.example.com/shop/api:2.4.1',
+		strategy: 'blue_green',
+		active: false,
+		was_live: false,
+		log_kept: false,
+		triggered_by: 'user',
+		created_at: AT,
+		started_at: AT,
+		...over.deploy
+	} as Over & { status: string; stage: string };
+	const running = deploy.status === 'running' || deploy.status === 'queued';
+	return {
+		service: 'shop/api',
+		deploy,
+		stages: (over.stages ?? (deploy.status === 'queued' ? [] : stageRows('blue_green', 0))).map((s) => ({ ...s, started_at: AT })),
+		...(over.progress === null ? {} : { progress: over.progress ?? (deploy.stage === 'pull' && running ? { layers: 5, layers_done: 2, bytes: 12_000_000, bytes_total: 48_000_000, status: 'Downloading' } : undefined) }),
+		cancellable: over.cancellable ?? (running && !['switch', 'commit', 'drain', 'stop_old', 'done'].includes(deploy.stage))
+	};
+}
+
+/** Each screen state of the Deploy detail page as a deploys.get answer (the plan's state list). */
+export const deployStates = {
+	queued: () => deployGetFixture({ deploy: { status: 'queued', stage: undefined, started_at: undefined } }),
+	pulling: () => deployGetFixture(),
+	pullingUnknownSize: () => deployGetFixture({ progress: { layers: 0, layers_done: 0, bytes: 0, bytes_total: 0 } }),
+	waitingToRetry: () => deployGetFixture({ stages: stageRows('blue_green', 0, 'pending', 'waiting to retry (attempt 2 of 3): the registry did not answer'), progress: null }),
+	healthGate: () => deployGetFixture({ deploy: { stage: 'health' }, stages: stageRows('blue_green', 3), progress: null }),
+	switching: () => deployGetFixture({ deploy: { stage: 'switch' }, stages: stageRows('blue_green', 4), progress: null }),
+	succeeded: () => deployGetFixture({ deploy: { status: 'succeeded', stage: 'done', active: true, was_live: true, finished_at: AT, log_kept: true }, stages: stageRows('blue_green', 8, 'ok') }),
+	failedAppSafe: () =>
+		deployGetFixture({
+			deploy: { status: 'failed', stage: 'health', reason_code: 'health_timeout', reason: 'the new version did not become healthy within 60 s', app_safe: 'yes', finished_at: AT, log_kept: true },
+			stages: stageRows('blue_green', 3, 'failed', 'no answer on port 8080')
+		}),
+	failedNotSafe: () =>
+		deployGetFixture({
+			deploy: { status: 'failed', stage: 'start', strategy: 'stop_first', reason_code: 'start_failed', reason: 'the new version could not be started and the old one did not come back', app_safe: 'no', finished_at: AT, log_kept: true },
+			stages: stageRows('stop_first', 4, 'failed')
+		}),
+	interrupted: () =>
+		deployGetFixture({ deploy: { status: 'failed', stage: 'start', reason_code: 'interrupted', reason: 'ServerDock stopped while the deploy was running', app_safe: 'unknown', finished_at: AT }, stages: stageRows('blue_green', 2, 'failed') }),
+	superseded: () => deployGetFixture({ deploy: { status: 'superseded', stage: undefined, reason_code: 'superseded', superseded_by: 4, finished_at: AT }, stages: [] }),
+	cancelled: () => deployGetFixture({ deploy: { status: 'cancelled', stage: 'pull', reason_code: 'cancelled', finished_at: AT }, stages: stageRows('blue_green', 0, 'skipped') }),
+	diskFull: () =>
+		deployGetFixture({
+			deploy: { status: 'failed', stage: 'pull', reason_code: 'disk_full', reason: "the server's disk is full: no space left on device", app_safe: 'yes', finished_at: AT },
+			stages: stageRows('blue_green', 0, 'failed', 'no space left on device')
+		})
+};
+
+/**
+ * Answers deploys.get from a function of the call number (0, 1, 2, ...): the last call's
+ * answer repeats. Returns the call count and the times of the calls (page clock or real).
+ * Register before navigating.
+ */
+export async function mockDeployGet(page: Page, answer: (call: number) => unknown | { status: number }) {
+	const calls: number[] = [];
+	await page.route('**/api/v1/actions/deploys.get', (route) => {
+		const n = calls.length;
+		calls.push(Date.now());
+		const a = answer(n) as { status?: number } & Record<string, unknown>;
+		if (a && typeof a === 'object' && 'status' in a && Object.keys(a).length === 1) return route.fulfill({ status: a.status, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'down' } }) });
+		return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ audit: 'not_audited', data: a }) });
+	});
+	return { calls };
+}
+
+/** Answers deploys.log with a kept log, or with `message` when none is kept. */
+export const mockDeployLog = (page: Page, log: { text?: string; truncated?: boolean; message?: string }) =>
+	mockAction(page, 'deploys.log', { service: 'shop/api', number: 3, kept: log.text !== undefined, ...(log.text !== undefined ? { text: log.text, truncated: log.truncated } : { message: log.message ?? 'Log no longer kept (only the last 10 deploys keep logs)' }) });
