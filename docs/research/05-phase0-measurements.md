@@ -122,7 +122,7 @@ Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire
 
 ### Restart outage (QM3a-9)
 
-Already measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms except the gap stages at about 2.4 s with a 2 s grace; a Docker daemon restart 12.1 s in CI, on commit `e76aa77`). To be re-run on the release commit if the maintainer wants the final figure: PENDING.
+Already measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms at the other stages, 0.23 to 0.35 s at `start:before` (the old version started again) and about 2.4 s inside the gap with a 2 s grace; a Docker daemon restart 12.1 s in CI, on commit `e76aa77`). To be re-run on the release commit if the maintainer wants the final figure: PENDING.
 
 ### Remaining reload cases with 100 routes (plan 0004 Revision 11, step 15)
 
@@ -132,7 +132,7 @@ A switch, revert, restart, rollback and the maintenance page never reload the pr
 - One real app container is the upstream of all 100 routes; the other 99 services are rows and fixtures.
 - Only 2 app routes carry load (the load generator's targets), plus the panel.
 - The first-sync-at-boot list is a fixture of 100 containers, but the inspects are real.
-- Memory is the **test process's** (Caddy, the route code, the store and the load generator together), not the server's. Only the **delta** across a case is a fair estimate; the absolute value is an upper bound.
+- Memory is the **test process's** (Caddy, the route code, the store and the load generator together), not the server's. Only the **delta** across a case is a fair estimate; the absolute value is not comparable to the server's (the server also holds the API, auth, the hub, the SPA and the reconciler, so its own VmHWM can be higher).
 - Drops are read as "expected never to have been processed" until the measurements confirm it.
 
 Columns (every row): Caddy loads per operation (successful / failed) · drops per load, **per target (panel, app) x class (keep-alive, new connection)** · Go-internal keep-alive retries · requests that **failed after one retry on a new connection after 50 ms** · reload time mean / max (ms) · CPU per reload · VmHWM delta (MB).
