@@ -827,6 +827,10 @@ export interface components {
                 started_at?: string;
                 /** @description queued, running, succeeded, failed, cancelled or superseded */
                 status: string;
+                /** @description for a superseded deploy: the number of the deploy that replaced it in the queue */
+                superseded_by?: number;
+                /** @description who queued it: user, token, mcp, webhook or system */
+                triggered_by?: string;
                 /** @description the deploy committed once: it can be rolled back to */
                 was_live: boolean;
             };
@@ -876,6 +880,10 @@ export interface components {
                 started_at?: string;
                 /** @description queued, running, succeeded, failed, cancelled or superseded */
                 status: string;
+                /** @description for a superseded deploy: the number of the deploy that replaced it in the queue */
+                superseded_by?: number;
+                /** @description who queued it: user, token, mcp, webhook or system */
+                triggered_by?: string;
                 /** @description the deploy committed once: it can be rolled back to */
                 was_live: boolean;
             }[];

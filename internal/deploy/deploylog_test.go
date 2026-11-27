@@ -740,6 +740,18 @@ func TestDeploysListAndGet(t *testing.T) {
 		b.LogKept || !b.Active || !b.WasLive || b.ImageRef != "nginx:1" {
 		t.Errorf("%+v / %+v", a, b)
 	}
+	// The kind of caller (never an id) and the deploy that superseded one.
+	if l.Deploys[0].TriggeredBy != "user" || l.Deploys[0].SupersededBy != 0 {
+		t.Errorf("triggered_by / superseded_by: %+v", l.Deploys[0])
+	}
+	old := addDeploy(t, g.st, g.svc, 3, "superseded", nil)
+	mustExec(t, g.st, `UPDATE deploys SET superseded_by = ? WHERE id = ?`, failed, old)
+	if out, err := g.invoke(rigRead, "deploys.get", m{"service": "p/web", "number": 3}); err != nil {
+		t.Fatal(err)
+	} else if got := out.(DeploysGetOut).Deploy.SupersededBy; got != 2 {
+		t.Errorf("superseded_by = %d, want 2", got)
+	}
+	mustExec(t, g.st, `DELETE FROM deploys WHERE id = ?`, old)
 	if _, err := g.invoke(rigRead, "deploys.list", m{"service": "p/web", "limit": 1000}); !errors.Is(err, actions.ErrInvalidInput) {
 		t.Errorf("limit 1000: %v", err)
 	}

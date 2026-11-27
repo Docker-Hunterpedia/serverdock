@@ -409,6 +409,14 @@
                 "description": "queued, running, succeeded, failed, cancelled or superseded",
                 "type": "string"
               },
+              "superseded_by": {
+                "description": "for a superseded deploy: the number of the deploy that replaced it in the queue",
+                "type": "integer"
+              },
+              "triggered_by": {
+                "description": "who queued it: user, token, mcp, webhook or system",
+                "type": "string"
+              },
               "was_live": {
                 "description": "the deploy committed once: it can be rolled back to",
                 "type": "boolean"
@@ -569,6 +577,14 @@
                 },
                 "status": {
                   "description": "queued, running, succeeded, failed, cancelled or superseded",
+                  "type": "string"
+                },
+                "superseded_by": {
+                  "description": "for a superseded deploy: the number of the deploy that replaced it in the queue",
+                  "type": "integer"
+                },
+                "triggered_by": {
+                  "description": "who queued it: user, token, mcp, webhook or system",
                   "type": "string"
                 },
                 "was_live": {
