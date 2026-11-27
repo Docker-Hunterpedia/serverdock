@@ -71,8 +71,8 @@ test.describe('Deploy detail: what each screen state shows', () => {
 		['queued', 'Queued', all(visible('no-stages', 'what-happened', 'this-deploy', 'log-section'), absent('stages', 'pull-progress'), cancelEnabled, text('log-message', /no log while the deploy runs/))],
 		['pulling', 'Running', all(visible('stages', 'pull-progress', 'pull-text'), stage('pull', 'running'), text('pull-text', /25%.*2 of 5 layers/), cancelEnabled)],
 		['pullingUnknownSize', 'Running', all(visible('pull-progress'), text('pull-text', /Size not known yet/), async (page) => {
-			// Indeterminate: no value, so no invented percentage.
-			await expect(page.locator('#pull-bar')).not.toHaveAttribute('value', /.*/);
+			// No bar without a size (an indeterminate bar animates and cannot be paused): the text says it.
+			await expect(page.locator('progress')).toHaveCount(0);
 		})],
 		['waitingToRetry', 'Running', all(visible('waiting-retry'), text('waiting-retry', /waiting to retry/), absent('pull-progress'), stage('pull', 'pending'), text('stage-pull', /attempt 2 of 3/))],
 		['healthGate', 'Running', all(stage('pull', 'ok'), stage('check', 'ok'), stage('start', 'ok'), stage('health', 'running'), absent('pull-progress'), cancelEnabled)],
@@ -81,8 +81,10 @@ test.describe('Deploy detail: what each screen state shows', () => {
 		['failedAppSafe', 'Failed · app safe', all(stage('health', 'failed'), text('stage-health', /no answer on port 8080/), text('deploy-reason', /did not become healthy within 60 s/), absent('cancel-deploy', 'redeploy', 'rollback', 'disk-full', 'interrupted'))],
 		['failedNotSafe', 'Failed · app not safe', all(text('app-safety', /not safe/), text('deploy-reason', /did not come back/), text('this-deploy', /Stop-first|stop-first/i), absent('cancel-deploy'))],
 		['interrupted', 'Interrupted', all(visible('interrupted'), text('interrupted', /cannot say how far it got/), absent('disk-full', 'cancel-deploy'))],
-		['superseded', 'Superseded by #4', all(text('deploy-reason', /Replaced in the queue by deploy #4/), text('no-stages', /No stage ran/), absent('cancel-deploy', 'stages'))],
-		['cancelled', 'Cancelled', all(text('deploy-reason', /It was cancelled\./), stage('pull', 'skipped'), absent('cancel-deploy'))],
+		['superseded', 'Superseded by #4', all(text('deploy-reason', /^Replaced in the queue by #4 before it started\.$/), text('app-safety', /not changed: this deploy never started/), text('no-stages', /No stage ran/), absent('cancel-deploy', 'stages'))],
+		['supersededStarted', 'Superseded by #4', all(text('deploy-reason', /^Stopped and replaced by #4\.$/), text('app-safety', /unknown: ServerDock could not confirm/), stage('start', 'skipped'), absent('cancel-deploy'))],
+		['cancelled', 'Cancelled', all(text('deploy-reason', /It was cancelled\./), text('app-safety', /unknown: ServerDock could not confirm/), stage('pull', 'skipped'), absent('cancel-deploy'))],
+		['cancelledNotSafe', 'Cancelled', all(text('app-safety', /not safe: the previous version is not serving/), absent('cancel-deploy'))],
 		['diskFull', 'Failed', all(visible('disk-full'), text('disk-full', /Free some space/), text('stage-pull', /no space left on device/), stage('pull', 'failed'), absent('interrupted'))]
 	];
 	for (const [state, word, check] of cases) {
@@ -179,7 +181,10 @@ test.describe('Deploy detail: unknown status', () => {
 		await expect(page.getByTestId('status-unknown')).toHaveCount(0);
 		// 2 s timer + 8 s limit: unknown by about 10 s, not before the limit.
 		await expect(page.getByTestId('status-unknown')).toBeVisible({ timeout: 20_000 });
-		await expect(page.getByTestId('what-happened')).toHaveCount(0);
+		// The last known state stays, marked as possibly out of date, and nothing can be acted on.
+		await expect(page.getByTestId('what-happened')).toBeVisible();
+		await expect(page.getByTestId('status-unknown')).toContainText('may be out of date');
+		await expect(page.getByTestId('cancel-deploy')).toHaveAttribute('aria-disabled', 'true');
 		held.forEach((f) => f());
 	});
 
@@ -199,7 +204,8 @@ test.describe('Deploy detail: unknown status', () => {
 		// The tab slept for 30 s: the timer fires late, the old state must not look current.
 		await page.clock.fastForward(30_000);
 		await expect(page.getByTestId('status-unknown')).toBeVisible();
-		await expect(page.getByTestId('what-happened')).toHaveCount(0);
+		await expect(page.getByTestId('what-happened')).toBeVisible();
+		await expect(page.getByTestId('cancel-deploy')).toHaveAttribute('aria-disabled', 'true');
 		release?.();
 		await expect(page.getByTestId('status-unknown')).toHaveCount(0);
 		await expect(page.getByTestId('what-happened')).toBeVisible();
@@ -239,8 +245,8 @@ test.describe('Deploy detail: announcements', () => {
 		await expect(page.getByTestId('deploy-status')).toContainText('Live');
 		const said = await announced(page);
 		expect(said.status, 'one line per change: the stage, the stage, success').toHaveLength(3);
-		expect(said.status[0]).toBe('Now: health check.');
-		expect(said.status[1]).toMatch(/^Now: .*(switch|traffic)/i);
+		expect(said.status[0]).toBe('Deploy #3: health check started.');
+		expect(said.status[1]).toBe('Deploy #3: traffic switch started.');
 		expect(said.status[2]).toBe('Deploy #3 succeeded. The new version is live.');
 		expect(said.alert).toEqual([]);
 		await expect(page.getByRole('status')).toHaveText('Deploy #3 succeeded. The new version is live.');
@@ -257,14 +263,14 @@ test.describe('Deploy detail: announcements', () => {
 		await expect(page.getByTestId('pull-progress')).toBeVisible();
 		for (let i = 0; i < 4; i++) await pollOnce(page, calls);
 		const said = await announced(page);
-		expect(said.status).toEqual(['Pull the image: waiting to retry (attempt 2 of 3).', 'Now: pull the image.', 'Pull the image: waiting to retry (attempt 3 of 3).']);
+		expect(said.status).toEqual(['Deploy #3: image pull did not succeed. Waiting to retry, attempt 2 of 3.', 'Deploy #3: image pull started.', 'Deploy #3: image pull did not succeed. Waiting to retry, attempt 3 of 3.']);
 	});
 
 	for (const [state, re] of [
-		['failedAppSafe', /Deploy #3 failed\. .*did not become healthy within 60 s.*Your app: safe/],
-		['failedNotSafe', /Deploy #3 failed\. .*Your app: not safe/],
-		['interrupted', /Deploy #3 was interrupted\./],
-		['diskFull', /Deploy #3 failed\. .*disk is full/]
+		['failedAppSafe', /Deploy #3 failed: The new version did not become healthy within 60 s\. Your app is safe: the previous version kept serving\./],
+		['failedNotSafe', /Deploy #3 failed: .*did not come back\. Your app is not safe: /],
+		['interrupted', /Deploy #3 was interrupted: ServerDock stopped while the deploy was running\. Your app status is unknown: /],
+		['diskFull', /Deploy #3 failed: The server's disk is full: no space left on device\. Your app is safe: /]
 	] as const) {
 		test(`a ${state} deploy is announced once, through the alert only, and focus does not move`, async ({ page, server, admin }) => {
 			seed(server);
@@ -362,7 +368,7 @@ test.describe('Deploy detail: polling', () => {
 		await page.evaluate(() => (window as unknown as { __vis: (s: string) => void }).__vis('visible'));
 		await expect.poll(() => calls.length, { message: 'a refresh when visible again' }).toBe(n + 1);
 		await expect(page.getByTestId('stage-health')).toHaveAttribute('data-state', 'running');
-		await expect(page.getByRole('status')).toHaveText('Now: health check.');
+		await expect(page.getByRole('status')).toHaveText('Deploy #3: health check started.');
 		// ...and polling goes on.
 		await pollOnce(page, calls);
 		expect(calls.length).toBe(n + 2);

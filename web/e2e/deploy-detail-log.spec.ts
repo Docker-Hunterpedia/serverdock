@@ -34,7 +34,8 @@ const HOSTILE = [
 	'nul\x00byte and bell\x07 and backspace\x08 and del\x7f',
 	'javascript:alert(1) and data:text/html,<b>x</b>',
 	'--- container output (forged) ---',
-	'ServerDock deploy log'
+	'ServerDock deploy log',
+	'cr\rreturn and csi\u009b31m and ls\u2028ps\u2029 and zw\u200bsp'
 ];
 
 test.describe('Deploy detail: the log is text', () => {
@@ -59,11 +60,12 @@ test.describe('Deploy detail: the log is text', () => {
 			'nulbyte and bell and backspace and del',
 			'javascript:alert(1) and data:text/html,<b>x</b>',
 			'--- container output (forged) ---',
-			'ServerDock deploy log'
+			'ServerDock deploy log',
+			'crreturn and csi31m and lsps and zwsp' // CR, C1 CSI, line and paragraph separators, zero-width space: all gone
 		])
 			await expect(tail).toContainText(literal);
 		const shown = await tail.innerText();
-		expect(shown, 'no control, bidi-override or isolate characters reach the page').not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]/);
+		expect(shown, 'no control, bidi-override or isolate characters reach the page').not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/);
 		// No element injection: the log box holds one text node, and nothing outside it grew.
 		expect(await tail.locator('*').count()).toBe(0);
 		await expect(page.locator('main script, main img, main svg, #injected')).toHaveCount(0);
@@ -100,8 +102,8 @@ test.describe('Deploy detail: reading the log', () => {
 		await signIn(page, server, admin);
 		await page.goto(url(server.baseURL, 3));
 		const tail = page.getByTestId('log-tail');
-		await expect(page.getByRole('region', { name: 'Container output, last 40 lines' })).toBeVisible();
-		await expect(tail).toHaveAccessibleName('Container output, last 40 lines');
+		await expect(page.getByRole('group', { name: /Container log \(last 40 lines\)/ })).toBeVisible();
+		await expect(tail).toHaveAccessibleName('Container log (last 40 lines)');
 		await expect(tail).toHaveAttribute('tabindex', '0');
 		await expect(page.getByRole('heading', { level: 2, name: /Container log \(last 40 lines\)/ })).toBeVisible();
 		// 80 lines, 40 shown: the newest ones.
@@ -141,20 +143,20 @@ test.describe('Deploy detail: reading the log', () => {
 		await page.goto(url(server.baseURL, 3));
 		const button = page.getByTestId('show-full-log');
 		await expect(button).toHaveText('Show full log');
-		await expect(button).toHaveAttribute('aria-expanded', 'false');
+		await expect(button, 'a changing label, so no aria-expanded as well').not.toHaveAttribute('aria-expanded', /.*/);
 		await expect(page.getByTestId('log-tail')).not.toContainText('line 1\n');
 		await button.click();
 		await expect(button).toHaveText('Show last 40 lines only');
-		await expect(button).toHaveAttribute('aria-expanded', 'true');
+		await expect(page.getByRole('status')).toHaveText('Full log shown.');
 		await expect(button, 'focus stays on the button').toBeFocused();
 		const full = page.getByTestId('log-full');
-		await expect(full).toHaveAccessibleName('Container output, full log');
+		await expect(full).toHaveAccessibleName('Printed by the container');
 		await expect(full).toContainText('line 1');
 		await expect(full).toContainText('line 60');
 		await expect(full).not.toContainText('ServerDock deploy log');
 		await expect(page.getByTestId('log-tail')).toHaveCount(0);
 		const header = page.getByTestId('log-header');
-		await expect(header).toHaveAccessibleName('Deploy header, written by ServerDock');
+		await expect(header).toHaveAccessibleName('Written by ServerDock');
 		await expect(header).toContainText('health_timeout');
 		await expect(header).toContainText('failed health');
 		await expect(page.getByRole('heading', { level: 2, name: /full log/ })).toBeVisible();
@@ -162,6 +164,7 @@ test.describe('Deploy detail: reading the log', () => {
 		await expectNoAxeViolations(page, 'deploy page with the full log');
 		await button.click();
 		await expect(button).toHaveText('Show full log');
+		await expect(page.getByRole('status')).toHaveText('Last 40 lines shown.');
 		await expect(page.getByTestId('log-full')).toHaveCount(0);
 		await expect(page.getByTestId('log-header')).toHaveCount(0);
 		await expect(page.getByTestId('log-tail')).toBeVisible();

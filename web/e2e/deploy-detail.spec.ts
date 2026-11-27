@@ -18,7 +18,7 @@ test.describe('Deploy detail: screen states', () => {
 		['failedAppSafe', 'Failed', [/safe, the previous version kept serving/]],
 		['failedNotSafe', 'Failed', [/not safe/]],
 		['interrupted', 'Interrupted', [/ServerDock stopped while this deploy was running/]],
-		['superseded', 'Superseded', [/Replaced in the queue by deploy #4/]],
+		['superseded', 'Superseded', [/Replaced in the queue by #4 before it started/]],
 		['cancelled', 'Cancelled', [/It was cancelled/]],
 		['diskFull', 'Failed', [/disk is full/]]
 	];
@@ -52,8 +52,8 @@ test.describe('Deploy detail: live updates', () => {
 		const alert = page.getByRole('alert');
 		await expect(page.getByTestId('pull-progress')).toBeVisible();
 		await expect(status).toHaveText('');
-		await expect(status).toHaveText('Now: health check.', { timeout: 10_000 });
-		await expect(alert).toContainText('Deploy #3 failed.', { timeout: 10_000 });
+		await expect(status).toHaveText('Deploy #3: health check started.', { timeout: 10_000 });
+		await expect(alert).toContainText('Deploy #3 failed:', { timeout: 10_000 });
 		await expect(status).toHaveText('');
 		const n = calls.length;
 		await page.waitForTimeout(5000);
@@ -68,8 +68,8 @@ test.describe('Deploy detail: live updates', () => {
 		await page.goto(url(server.baseURL));
 		await expect(page.getByTestId('deploy-status')).toContainText('Running');
 		await expect(page.getByTestId('status-unknown')).toContainText('Status unknown: could not reach the server', { timeout: 6000 });
-		await expect(page.getByTestId('what-happened')).toHaveCount(0);
-		await expect(page.getByTestId('status-unknown')).toHaveCount(0, { timeout: 6000 });
+		await expect(page.getByTestId('what-happened')).toBeVisible();
+		await expect(page.getByTestId('status-unknown')).toHaveCount(0, { timeout: 10_000 });
 		await expect(page.getByTestId('what-happened')).toBeVisible();
 	});
 

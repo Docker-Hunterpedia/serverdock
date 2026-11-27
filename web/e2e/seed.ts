@@ -349,8 +349,18 @@ export const deployStates = {
 		}),
 	interrupted: () =>
 		deployGetFixture({ deploy: { status: 'failed', stage: 'start', reason_code: 'interrupted', reason: 'ServerDock stopped while the deploy was running', app_safe: 'unknown', finished_at: AT }, stages: stageRows('blue_green', 2, 'failed') }),
-	superseded: () => deployGetFixture({ deploy: { status: 'superseded', stage: undefined, reason_code: 'superseded', superseded_by: 4, finished_at: AT }, stages: [] }),
-	cancelled: () => deployGetFixture({ deploy: { status: 'cancelled', stage: 'pull', reason_code: 'cancelled', finished_at: AT }, stages: stageRows('blue_green', 0, 'skipped') }),
+	// A queued deploy replaced before it started: the server stored no verdict (NULL app_safe), nothing ran.
+	superseded: () => deployGetFixture({ deploy: { status: 'superseded', stage: undefined, started_at: undefined, reason_code: 'superseded', reason: 'superseded by a newer deploy', superseded_by: 4, finished_at: AT }, stages: [] }),
+	// A running deploy replaced by a newer one: the server's reason, app_safe unknown, stages that ran.
+	supersededStarted: () =>
+		deployGetFixture({
+			deploy: { status: 'superseded', stage: 'start', reason_code: 'superseded', reason: 'superseded by a newer deploy', superseded_by: 4, app_safe: 'unknown', finished_at: AT },
+			stages: stageRows('blue_green', 2, 'skipped')
+		}),
+	// As the server stores a cancelled deploy: reason "cancelled", app_safe "unknown" (also for a first deploy).
+	cancelled: () => deployGetFixture({ deploy: { status: 'cancelled', stage: 'pull', reason_code: 'cancelled', reason: 'cancelled', app_safe: 'unknown', finished_at: AT }, stages: stageRows('blue_green', 0, 'skipped') }),
+	// A cancel that left the app down (stop-first, after the old version was stopped).
+	cancelledNotSafe: () => deployGetFixture({ deploy: { status: 'cancelled', stage: 'start', strategy: 'stop_first', reason_code: 'cancelled', reason: 'cancelled', app_safe: 'no', finished_at: AT }, stages: stageRows('stop_first', 4, 'skipped') }),
 	diskFull: () =>
 		deployGetFixture({
 			deploy: { status: 'failed', stage: 'pull', reason_code: 'disk_full', reason: "the server's disk is full: no space left on device", app_safe: 'yes', finished_at: AT },
