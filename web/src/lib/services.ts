@@ -119,6 +119,9 @@ export function attentionOf(s: Service): Attention[] {
 		case 'versions_kept':
 			out.push({ symbol: '▲', text: 'Two versions may be running after an unfinished stop-first deploy. ServerDock settles this by itself; try again once the service has settled.' });
 			break;
+		case 'delete_confirm_again':
+			out.push({ symbol: '▲', text: 'A delete of this service needed a fresh confirmation and did not run. Nothing was deleted. Open the service and use Delete again.' });
+			break;
 		case 'previous_version_down':
 			out.push({ symbol: '▲', text: 'A stop-first deploy failed and the previous version did not come back. Deploy again or roll back.' });
 			break;
@@ -134,7 +137,9 @@ export function attentionOf(s: Service): Attention[] {
 export const VERSIONS_KEPT_FRAGMENT = 'two versions of this service may be running';
 /** A refused action's message; the versions_kept refusal gets the next step added. */
 export function actionMessage(message: string): string {
-	return message.includes(VERSIONS_KEPT_FRAGMENT) ? `${message}. Try again once the service has settled.` : message;
+	if (!message.includes(VERSIONS_KEPT_FRAGMENT)) return message;
+	// The server ends with "try again afterwards": say it once, with the next step.
+	return `${message.replace(/[;,.]?\s*try again afterwards\.?\s*$/i, '').replace(/[.\s]+$/, '')}. Try again once the service has settled.`;
 }
 
 /** Maps a load error to the page's message; a 401 goes to the Signed-out screen and returns undefined. */
@@ -226,6 +231,13 @@ export function strategyConsequence(s: string): string {
 		: 'This service is blue-green: the app keeps serving until the new version is healthy, then traffic switches.';
 }
 
+/** What a rollback does to the running app: it keeps the strategy the target deploy recorded, not the service's current one. */
+export function rollbackConsequence(strategy: string, target: number): string {
+	return strategy === 'stop_first'
+		? `This rollback keeps the strategy deploy #${target} recorded, stop-first: the app is briefly down while the old version stops and the target starts.`
+		: `This rollback keeps the strategy deploy #${target} recorded, blue-green: the app keeps serving until the target is healthy, then traffic switches.`;
+}
+
 /** The health check in one sentence. */
 export function healthText(s: Service): string {
 	const h = s.health;
@@ -251,8 +263,6 @@ export function intField(v: string, lo: number, hi: number): number | 'bad' | un
 	const n = Number(t);
 	return n < lo || n > hi ? 'bad' : n;
 }
-
-export const CONFIRM_AGAIN_FRAGMENT = 'Confirming again is needed';
 
 /** The shape of services.update's input that the Settings form sends. */
 export type UpdateInput = Schemas['ServicesUpdateInput'];

@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onDestroy, untrack } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import Alerts from '../../../../../../lib/Alerts.svelte';
 	import ConfirmDialog from '../../../../../../lib/ConfirmDialog.svelte';
 	import FormDialog from '../../../../../../lib/FormDialog.svelte';
@@ -12,12 +13,12 @@
 		SEC6_DOCS_URL,
 		appAddress,
 		healthText,
+		mutationMessage,
 		repositoryOf,
 		servicePath,
 		sharesPanelText,
 		strategyConsequence,
 		strategyWord,
-		mutationMessage,
 		type QueuedDeploy
 	} from '../../../../../../lib/services';
 	import { absolute } from '../../../../../../lib/time';
@@ -29,107 +30,148 @@
 	let alerts: Alerts | undefined = $state();
 	let confirmDialog: ConfirmDialog | undefined = $state();
 	let formDialog: FormDialog | undefined = $state();
-	let busy = $state(false);
 	ctx.focusAlert = () => alerts?.focus();
 
-	// Loaded on navigation (another service reuses this layout) and by Refresh; no polling.
-	const params = $derived(`${page.params.project}/${page.params.name}`);
+	// Loaded when another service is opened and by Refresh; no polling. Moving between
+	// Deploys and Settings keeps the same service, so it asks nothing.
+	let loadedRef = '';
 	$effect(() => {
 		const p = page.params.project ?? '';
 		const n = page.params.name ?? '';
 		untrack(() => {
+			if (`${p}/${n}` === loadedRef) return;
+			loadedRef = `${p}/${n}`;
 			ctx.project = p;
 			ctx.name = n;
 			ctx.service = undefined;
 			ctx.deploys = undefined;
+			ctx.busy = false;
 			ctx.clearMessages();
 			void ctx.load(false);
 		});
 	});
 	onDestroy(() => ctx.abort());
 
+	// A dialog that is open when the page moves on (browser Back) is closed: it must not act on another service.
+	beforeNavigate(() => {
+		confirmDialog?.close();
+		formDialog?.close();
+	});
+	// Moving between the sub-pages puts focus on the new section's heading (and #port on the port section).
+	afterNavigate(async (nav) => {
+		if (nav.type === 'enter' || !nav.to) return;
+		const inGroup = (id: string | null | undefined) => !!id?.includes('(service)');
+		const same = nav.from?.params?.project === nav.to.params?.project && nav.from?.params?.name === nav.to.params?.name;
+		const wantPort = nav.to.url.hash === '#port' && inGroup(nav.to.route.id);
+		if (!wantPort && !(same && inGroup(nav.from?.route.id) && inGroup(nav.to.route.id))) return;
+		await tick();
+		await tick();
+		const target = wantPort ? document.getElementById('h-port') : document.querySelector<HTMLElement>('main [data-subpage]');
+		target?.focus();
+	});
+
 	const svc = $derived(ctx.service);
 	const live = $derived(ctx.live);
-	const onSettings = $derived(page.url.pathname.endsWith('/settings'));
+	const onSettings = $derived(page.route.id?.endsWith('/settings') ?? false);
 	const sec6 = $derived(svc?.warnings.find((w) => w.code === 'shares_panel_address'));
 	const noLive = 'The service has no live version yet. Deploy it first.';
 
-	async function act<T>(fn: () => Promise<T>, done: (out: T) => string) {
-		if (busy) return;
-		busy = true;
-		ctx.clearMessages();
+	/** Runs one action: the label is spoken while it runs; the result is said only if this service is still the page. */
+	async function act<T>(ref: string, label: string, fn: () => Promise<T>, done: (out: T) => string) {
+		if (!ctx.begin(label)) return;
 		try {
 			const out = await fn();
+			if (ctx.ref !== ref) return;
 			await ctx.load(false);
-			ctx.say(done(out));
+			if (ctx.ref === ref) ctx.say(done(out));
 		} catch (e) {
-			await ctx.fail(e);
+			if (ctx.ref === ref) await ctx.fail(e);
 		} finally {
-			busy = false;
+			ctx.end();
 		}
 	}
 
 	async function deploy() {
-		if (!svc) return;
-		const repo = repositoryOf(svc.image_ref);
-		await formDialog?.ask(
+		if (!svc || !ctx.idle()) return;
+		const ref = ctx.ref; // what the dialog was opened for, whatever the page shows later
+		const cur = svc;
+		const repo = repositoryOf(cur.image_ref);
+		let closed = false;
+		const asked = formDialog?.ask(
 			{
-				title: `Deploy ${ctx.ref}`,
+				title: `Deploy ${ref}`,
 				lines: [
-					`Starts a new deploy of ${ctx.ref}. It pulls the image below again, so a moving tag such as latest may bring a newer version.`,
+					`Starts a new deploy of ${ref}. It pulls the image below again, so a moving tag such as latest may bring a newer version.`,
 					`The repository stays ${repo}. Change only the tag or digest here; to use another repository, use Settings.`,
-					strategyConsequence(svc.strategy)
+					strategyConsequence(cur.strategy)
 				],
 				label: 'Tag or digest',
 				hint: `For example ${repo}:1.2 or ${repo}@sha256:…`,
-				value: svc.image_ref,
+				value: cur.image_ref,
 				confirm: 'Deploy',
-				invalid: 'Enter the image to deploy, with a tag or a digest.'
+				invalid: 'Enter the image to deploy, with a tag or a digest.',
+				working: 'Deploy request sent, waiting for the answer'
 			},
 			async (image) => {
+				if (!ctx.begin('Deploy request sent, waiting for the answer…')) return 'Another action on this service is still running. Wait for it to finish, then try again.';
 				try {
-					const out = await runAction<QueuedDeploy>('services.deploy', { service: ctx.ref, ...(image !== svc.image_ref ? { image_ref: image } : {}) });
-					await ctx.load(false);
-					ctx.say(queuedMessage('Deploy', out));
+					const out = await runAction<QueuedDeploy>('services.deploy', { service: ref, ...(image !== cur.image_ref ? { image_ref: image } : {}) });
+					if (ctx.ref === ref) {
+						await ctx.load(false);
+						ctx.say(queuedMessage('Deploy', out));
+					}
 					return undefined;
 				} catch (e) {
-					// The server's reason shows in the dialog, with the typed text kept; a 401 leaves the page.
-					if (e instanceof ApiError && e.status !== 401) return mutationMessage(e);
-					await ctx.fail(e);
-					return undefined;
+					if (!(e instanceof ApiError) || e.status === 401) {
+						if (ctx.ref === ref) await ctx.fail(e);
+						return undefined;
+					}
+					const msg = mutationMessage(e);
+					// With the dialog gone, the page's alert says it; with it open, it shows in the dialog and keeps the typed text.
+					if (closed && ctx.ref === ref) await ctx.alert(`The deploy was not queued: ${msg}`);
+					return msg;
+				} finally {
+					ctx.end();
 				}
 			}
 		);
+		void asked?.then(() => (closed = true));
 	}
+
 	async function redeploy() {
-		if (!svc || !live) return;
+		if (!svc || !live || !ctx.idle()) return;
+		const ref = ctx.ref;
+		const cur = svc;
+		const l = live;
 		const ok = await confirmDialog?.ask({
-			title: `Redeploy ${ctx.ref}?`,
+			title: `Redeploy ${ref}?`,
 			lines: [
-				`Starts a new deploy that reuses the exact image of live deploy #${live.number} (${live.image_ref}) with its settings, in a fresh container. Nothing is pulled again.`,
-				strategyConsequence(svc.strategy)
+				`Starts a new deploy that reuses the exact image of live deploy #${l.number} (${l.image_ref}) with its settings, in a fresh container. Nothing is pulled again.`,
+				strategyConsequence(cur.strategy)
 			],
 			confirm: 'Redeploy'
 		});
-		if (ok) await act(() => runAction<QueuedDeploy>('services.redeploy', { service: ctx.ref }), (q) => queuedMessage('Redeploy', q));
+		if (ok && ctx.ref === ref) await act(ref, 'Redeploying…', () => runAction<QueuedDeploy>('services.redeploy', { service: ref }), (q) => queuedMessage('Redeploy', q));
 	}
 
 	async function restart() {
-		if (!svc || !live) return;
+		if (!svc || !live || !ctx.idle()) return;
+		const ref = ctx.ref;
 		const ok = await confirmDialog?.ask({
-			title: `Restart ${ctx.ref}?`,
+			title: `Restart ${ref}?`,
 			lines: [
 				`The app is down while its container restarts: expect a short outage until the health check passes again. The address stays the same.`,
 				'To switch to a fresh container without an outage, use Redeploy instead (blue-green services only).'
 			],
 			confirm: 'Restart now'
 		});
-		if (ok) await act(() => runAction<{ status: string }>('services.restart', { service: ctx.ref }), () => 'Restart queued. The app is briefly down while it restarts. It runs in the background: use Refresh to see how it goes.');
+		if (ok && ctx.ref === ref)
+			await act(ref, 'Restarting…', () => runAction<{ status: string }>('services.restart', { service: ref }), () => `Restart queued. The app is briefly down while it restarts. It runs in the background: use Refresh to see how it goes.`);
 	}
 </script>
 
 <svelte:head>
-	<title>{ctx.notFound ? 'Service not found' : ctx.name} · {ctx.project} · ServerDock</title>
+	<title>{ctx.notFound ? 'Service not found' : `${onSettings ? 'Settings' : 'Deploys'} · ${ctx.name} · ${ctx.project}`} · ServerDock</title>
 </svelte:head>
 
 <ConfirmDialog bind:this={confirmDialog} />
@@ -137,31 +179,40 @@
 
 {#if ctx.notFound}
 	<PageHeading>Service not found</PageHeading>
-	<p>There is no service called <code>{params}</code>. It may have been deleted.</p>
+	<p>There is no service called <code>{ctx.ref}</code>. It may have been deleted.</p>
 	<p><a class="button" href="/services">Back to Services</a></p>
 {:else}
 	<PageHeading>{ctx.name} {#if svc}<span class="state"><StateBadge state={svc.state} /></span>{/if}</PageHeading>
 	<p class="note"><a href="/services">Services</a> / {ctx.project} / {ctx.name}</p>
 
 	<div class="toolbar">
-		<button type="button" class="primary" onclick={deploy} aria-disabled={!svc || busy ? 'true' : undefined}>Deploy</button>
-		<button type="button" onclick={() => (!live ? ctx.alert(noLive) : redeploy())} aria-disabled={!svc || busy || !live ? 'true' : undefined} aria-describedby={svc && !live ? 'no-live' : undefined}>Redeploy</button>
-		<button type="button" onclick={() => (!live ? ctx.alert(noLive) : restart())} aria-disabled={!svc || busy || !live ? 'true' : undefined} aria-describedby={svc && !live ? 'no-live' : undefined}>Restart</button>
+		<button type="button" class="primary" onclick={deploy} aria-disabled={!svc || ctx.busy ? 'true' : undefined}>Deploy</button>
+		<button type="button" onclick={() => (!live ? ctx.alert(noLive) : redeploy())} aria-disabled={!svc || ctx.busy || !live ? 'true' : undefined} aria-describedby={svc && !live ? 'no-live' : undefined}>Redeploy</button>
+		<button type="button" onclick={() => (!live ? ctx.alert(noLive) : restart())} aria-disabled={!svc || ctx.busy || !live ? 'true' : undefined} aria-describedby={svc && !live ? 'no-live' : undefined}>Restart</button>
 		<button type="button" onclick={() => !ctx.loading && ctx.load(true)} aria-disabled={ctx.loading ? 'true' : undefined}>Refresh</button>
 	</div>
 	{#if svc && !live}<p id="no-live" class="hint">Redeploy and Restart need a live version. {noLive}</p>{/if}
 
 	<Alerts error={ctx.error} links={ctx.links} status={ctx.status} bind:this={alerts} />
 
-	{#if ctx.loadError}
-		<p class="note"><span aria-hidden="true">◌</span> Status unknown: could not load this service. Use Refresh to try again.</p>
-	{:else if !svc}
-		<p class="note">Loading the service…</p>
+	{#if !svc}
+		{#if ctx.loadError}
+			<p class="note"><span aria-hidden="true">◌</span> Status unknown: could not load this service. Use Refresh to try again.</p>
+		{:else}
+			<p class="note">Loading the service…</p>
+		{/if}
 	{:else}
+		{#if ctx.loadError}
+			<!-- The last good service stays (the forms below keep what was typed) but its state is not shown as current. -->
+			<p class="note" data-testid="status-unknown"><span aria-hidden="true">◌</span> Status unknown: could not load this service again. What is shown below may be out of date. Use Refresh to try again.</p>
+		{/if}
+		{#if !ctx.loadError}
 		{#if svc.needs_attention === 'versions_kept'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> Two versions of this service may be running after an unfinished stop-first deploy. ServerDock settles this by itself; try again once the service has settled.</p></div>
 		{:else if svc.needs_attention === 'previous_version_down'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A stop-first deploy failed and the previous version did not come back. Deploy again or roll back to a version that was live.</p></div>
+		{:else if svc.needs_attention === 'delete_confirm_again'}
+			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service needed a fresh confirmation and did not run. Nothing was deleted. Deploys that were queued when the delete was queued were cancelled. Open Settings and use Delete again, or Deploy to run the service again.</p></div>
 		{:else if svc.needs_attention === 'delete_interrupted'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service did not finish. Open Settings and delete it again to finish it.</p></div>
 		{/if}
@@ -217,7 +268,9 @@
 			</section>
 		</div>
 
-		<nav aria-label="Service" class="subnav">
+		{/if}
+
+		<nav aria-label="Service sections" class="subnav">
 			<ul>
 				<li><a href={servicePath(svc)} aria-current={onSettings ? undefined : 'page'}>Deploys</a></li>
 				<li><a href="{servicePath(svc)}/settings" aria-current={onSettings ? 'page' : undefined}>Settings</a></li>

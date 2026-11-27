@@ -37,6 +37,8 @@ export type SeedDeploy = {
 	supersededBy?: number;
 	/** user (default), token, mcp, webhook or system */
 	actorKind?: string;
+	/** the strategy recorded in the deploy's settings (a rollback keeps it) */
+	strategy?: 'blue_green' | 'stop_first';
 };
 
 export type SeedService = {
@@ -45,7 +47,7 @@ export type SeedService = {
 	image?: string;
 	containerPort?: number | null;
 	publicPort?: number | null;
-	needsAttention?: 'delete_interrupted' | 'versions_kept' | 'previous_version_down' | null;
+	needsAttention?: 'delete_interrupted' | 'delete_confirm_again' | 'versions_kept' | 'previous_version_down' | null;
 	deploys?: SeedDeploy[];
 };
 
@@ -81,7 +83,7 @@ export function seedService(server: TestServer, s: SeedService): number {
 			svc.id,
 			d.number,
 			d.kind ?? 'deploy',
-			JSON.stringify({ image_ref: d.image ?? image }),
+			JSON.stringify({ image_ref: d.image ?? image, ...(d.strategy ? { strategy: d.strategy } : {}) }),
 			d.ip ?? (d.live ? `10.250.0.${1 + d.number}` : null),
 			status,
 			d.stage ?? null,
@@ -113,9 +115,10 @@ export function seedService(server: TestServer, s: SeedService): number {
  * by #7, #7 Replaced (a redeploy), #8 Live, #9 Queued. Rollback is offered on #1 and #7.
  * Without Docker the state is "unknown"; with a Docker server and no container, "missing".
  */
-export function seedHistory(server: TestServer, project = 'shop', name = 'api') {
+export function seedHistory(server: TestServer, project = 'shop', name = 'api', extra: Partial<SeedService> = {}) {
 	const t = (n: number) => `2026-11-${String(10 + n).padStart(2, '0')}T09:00:00.000Z`;
 	return seedService(server, {
+		...extra,
 		project,
 		name,
 		image: 'registry.example.com/shop/api:2.4.1',

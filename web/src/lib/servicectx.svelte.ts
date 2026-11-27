@@ -15,13 +15,15 @@ export class ServiceCtx {
 	service: Service | undefined = $state();
 	deploys: DeployItem[] | undefined = $state();
 	loading = $state(true);
-	/** The load failed: the page says "status unknown" instead of stale data. */
+	/** The last load failed: the cards say "status unknown" (the last good service stays so the forms keep their input). */
 	loadError: string | null = $state(null);
 	notFound = $state(false);
 	/** The page's alert and status text (actions report here; focus goes to the alert on a failure). */
 	error: string | null = $state(null);
 	links: { id: string; text: string }[] = $state([]);
 	status = $state('');
+	/** One action at a time on this service (a request is in flight). */
+	busy = $state(false);
 	/** Set by the layout: moves focus to the alert region. */
 	focusAlert: (() => void) | undefined;
 	private ctrl: AbortController | undefined;
@@ -50,11 +52,11 @@ export class ServiceCtx {
 			if (announce) this.status = 'Updated.';
 		} catch (e) {
 			if (c !== this.ctrl) return;
-			this.service = undefined;
-			this.deploys = undefined;
 			this.status = '';
 			if (e instanceof ApiError && e.status === 404) {
 				this.notFound = true;
+				this.service = undefined;
+				this.deploys = undefined;
 				return;
 			}
 			const msg = await loadErrorMessage(e);
@@ -70,6 +72,22 @@ export class ServiceCtx {
 
 	abort() {
 		this.ctrl?.abort();
+	}
+
+	/** False (and a spoken reason) when another action on this service is still running. */
+	idle(): boolean {
+		if (this.busy) this.say('Another action on this service is still running. Wait for it to finish, then try again.');
+		return !this.busy;
+	}
+	/** Starts an action; `label` ("Restarting…") goes to the status region while the request runs. */
+	begin(label: string): boolean {
+		if (!this.idle()) return false;
+		this.busy = true;
+		this.say(label);
+		return true;
+	}
+	end() {
+		this.busy = false;
 	}
 
 	say(message: string) {

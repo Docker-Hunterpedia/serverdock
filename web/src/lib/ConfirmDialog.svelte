@@ -24,6 +24,10 @@
 		cancelButton?.focus();
 		return answer;
 	}
+	/** Closes the dialog as if Cancel was chosen (the page navigated away). */
+	export function close() {
+		finish(false);
+	}
 	function finish(ok: boolean) {
 		const r = resolve;
 		resolve = undefined;
@@ -40,7 +44,7 @@
 <dialog bind:this={dialog} aria-labelledby="confirm-title-{uid}" aria-describedby="confirm-body-{uid}" oncancel={(e) => { e.preventDefault(); finish(false); }} onclose={() => finish(false)}>
 	<h2 id="confirm-title-{uid}">{spec.title}</h2>
 	<div id="confirm-body-{uid}">
-		{#each spec.lines as line (line)}<p>{line}</p>{/each}
+		{#each spec.lines as line, i (i)}<p>{line}</p>{/each}
 	</div>
 	<div class="actions">
 		<button type="button" bind:this={cancelButton} onclick={() => finish(false)}>Cancel</button>

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { ApiError, Cancelled, runAction, setStepUpHandler, withStepUp } from '../../../../../../../lib/api';
 	import Alerts from '../../../../../../../lib/Alerts.svelte';
 	import ConfirmDialog from '../../../../../../../lib/ConfirmDialog.svelte';
@@ -10,7 +10,6 @@
 	import { useService } from '../../../../../../../lib/servicectx.svelte';
 	import StepUpDialog from '../../../../../../../lib/StepUpDialog.svelte';
 	import {
-		CONFIRM_AGAIN_FRAGMENT,
 		getService,
 		SEC6_DOCS_URL,
 		appAddress,
@@ -25,12 +24,17 @@
 	const ctx = useService();
 	// The sub-page is only rendered once the service is loaded, so these start from it.
 	const first = ctx.service!;
+	/** The service as saved now (not as it was when this page opened): every comparison uses it. */
+	const current = $derived(ctx.service ?? first);
 
 	let stepUp: StepUpDialog | undefined = $state();
 	let confirmDialog: ConfirmDialog | undefined = $state();
 	let formDialog: FormDialog | undefined = $state();
+	let stepUpFor = '';
 	onMount(() => {
-		setStepUpHandler(() => stepUp!.ask());
+		setStepUpHandler(() => stepUp!.ask(stepUpFor));
+		// "Open Settings to try again" lands on the port section.
+		if (location.hash === '#port') document.getElementById('h-port')?.focus();
 		return () => setStepUpHandler(undefined);
 	});
 
@@ -65,7 +69,7 @@
 		fSummary = summary;
 		fLinks = Object.keys(errs).map((k) => ({ id: idOf(k), text: `${FIELDS[k]}: ${errs[k]}` }));
 		fStatus = '';
-		await Promise.resolve();
+		await tick();
 		fAlerts?.focus();
 	}
 	function clearError(e: Event) {
@@ -84,7 +88,7 @@
 		const errs: Record<string, string> = {};
 		const cp = intField(containerPort, 1, 65535);
 		if (cp === 'bad') errs.containerPort = 'Enter a port from 1 to 65535.';
-		else if (cp === undefined && first.container_port) errs.containerPort = 'The port cannot be removed here. Enter a port, or create a new service for a worker.';
+		else if (cp === undefined && current.container_port) errs.containerPort = 'The port cannot be removed here. Enter a port, or create a new service for a worker.';
 		const t = intField(timeoutS, 5, 600);
 		if (t === 'bad' || t === undefined) errs.timeoutS = 'Enter a number of seconds from 5 to 600.';
 		const pa = intField(passes, 1, 10);
@@ -106,7 +110,7 @@
 			stop_grace_s: gr as number,
 			health: { kind: healthKind, ...(healthKind === 'http' ? { path: healthPath.trim() } : {}), timeout_s: t as number, passes: pa as number }
 		};
-		if (typeof cp === 'number' && cp !== first.container_port) input.container_port = cp;
+		if (typeof cp === 'number' && cp !== current.container_port) input.container_port = cp;
 		fBusy = true;
 		fErrors = {};
 		fSummary = null;
@@ -134,6 +138,7 @@
 	let iStatus = $state('');
 	let iBusy = $state(false);
 	let iAlerts: Alerts | undefined = $state();
+	const focusField = (id: string) => document.getElementById(id)?.focus();
 
 	async function saveSource(e: SubmitEvent) {
 		e.preventDefault();
@@ -144,8 +149,8 @@
 		if (!image.trim()) {
 			iError = 'Enter the image to run, for example registry.example.com/shop/api:2.4.';
 			iSummary = 'The image repository was not changed. Fix the field below and try again.';
-			await Promise.resolve();
-			iAlerts?.focus();
+			await tick();
+			focusField('s-image');
 			return;
 		}
 		iBusy = true;
@@ -163,9 +168,13 @@
 			if (err.status === 400 || err.status === 409) {
 				iError = mutationMessage(err).replace(/^[a-z_.]+:\s*/i, '');
 				iSummary = 'The image repository was not changed. Fix the field below and try again.';
-			} else iSummary = mutationMessage(err);
-			await Promise.resolve();
-			iAlerts?.focus();
+				await tick();
+				focusField('s-image');
+			} else {
+				iSummary = mutationMessage(err);
+				await tick();
+				iAlerts?.focus();
+			}
 		} finally {
 			iBusy = false;
 		}
@@ -176,22 +185,27 @@
 	let pError = $state('');
 	let pSummary: string | null = $state(null);
 	let pStatus = $state('');
-	let pNotice = $state(''); // the server's "not applied" reason, kept visible with Try again
-	let pBusy = $state(false);
+	let pNotice = $state(''); // the last result was "not applied": its reason stays in the alert, and Try again stays offered
 	let pAlerts: Alerts | undefined = $state();
-	const svc = $derived(ctx.service ?? first);
+	const svc = $derived(current);
 	const typedPort = $derived(/^\d+$/.test(publicPort.trim()) ? Number(publicPort.trim()) : null);
-	// Try again is for what the server says is waiting: a route error, a stale proxy, routes not ready, or a notice.
+	// Try again is for what the server says is waiting: a route error, a stale proxy, routes not ready, or a result that was not applied.
 	const canRetry = $derived(!!svc.route_error || svc.routes_stale || (!!svc.public_port && !svc.routes_ready) || !!pNotice);
 
 	async function report(out: ServiceChange, applied: string) {
 		ctx.service = out.service;
 		publicPort = out.service.public_port ? String(out.service.public_port) : '';
-		pNotice = out.applied ? '' : (out.notice ?? '');
-		pStatus = out.applied ? applied : '';
-		if (!out.applied) {
-			pSummary = out.notice || 'Saved, but not applied yet. Use Try again.';
-			await Promise.resolve();
+		pNotice = out.applied ? '' : (out.notice || 'Saved, but not applied yet. Use Try again.');
+		await tick();
+		if (out.applied) {
+			pSummary = null;
+			pStatus = applied;
+			// The button that was pressed may be gone (Stop exposing, Try again): focus stays on the form.
+			focusField('s-publicPort');
+		} else {
+			pStatus = '';
+			pSummary = pNotice; // the whole reason, once, in the alert that takes focus
+			await tick();
 			pAlerts?.focus();
 		}
 	}
@@ -211,13 +225,15 @@
 				const now = await getService(ctx.ref);
 				ctx.service = now;
 				publicPort = now.public_port ? String(now.public_port) : '';
+				const read = now.public_port ? appAddress(now.public_port) : 'not exposed';
 				if ((now.public_port ?? null) === want) {
-					pNotice = `The connection dropped while the proxy reloaded. ServerDock checked: the public port is saved as ${want ? appAddress(want) : 'not exposed'}. Whether the proxy applied it is not confirmed: use Try again, and check that the app answers.`;
-					pSummary = 'The connection dropped while the proxy reloaded. See the note below, then use Try again.';
+					pNotice = `The connection dropped while the proxy reloaded. ServerDock reads the public port as ${read}, as you asked, but cannot confirm that the proxy applied it. Use Try again, then check that the app answers.`;
 				} else {
-					pSummary = 'The connection dropped and the public port was not changed. Nothing is applied.';
+					pNotice = `The connection dropped before the answer arrived. ServerDock still reads the public port as ${read}, so the change was not saved. Use Refresh in a moment before trying again.`;
 				}
-				await Promise.resolve();
+				pSummary = pNotice;
+				pStatus = '';
+				await tick();
 				pAlerts?.focus();
 				return;
 			} catch {
@@ -227,17 +243,22 @@
 		if (err.status === 400 || err.status === 409) {
 			pError = mutationMessage(err).replace(/^[a-z_.]+:\s*/i, '');
 			pSummary = 'The public port was not changed. Fix the field below and try again.';
-		} else pSummary = mutationMessage(err);
-		await Promise.resolve();
+			await tick();
+			focusField('s-publicPort');
+			return;
+		}
+		pSummary = mutationMessage(err);
+		await tick();
 		pAlerts?.focus();
 	}
 
 	async function savePort(e: SubmitEvent) {
 		e.preventDefault();
-		if (pBusy) return;
+		if (!ctx.idle()) return;
 		pStatus = '';
 		pSummary = null;
 		pError = '';
+		const ref = ctx.ref;
 		const n = intField(publicPort, 1024, 65535);
 		if (n === undefined) {
 			pError = svc.public_port ? 'Enter a port, or use "Stop exposing" to make the app private.' : 'Enter a port from 1024 to 65535.';
@@ -246,14 +267,14 @@
 		else if (n === svc.public_port) pError = `The app is already exposed on port ${n}.`;
 		if (pError) {
 			pSummary = 'The public port was not changed. Fix the field below and try again.';
-			await Promise.resolve();
-			pAlerts?.focus();
+			await tick();
+			focusField('s-publicPort');
 			return;
 		}
 		const port = n as number;
 		const old = svc.public_port;
 		const ok = await confirmDialog?.ask({
-			title: old ? `Change the public port of ${ctx.ref} to ${port}?` : `Expose ${ctx.ref} on port ${port}?`,
+			title: old ? `Change the public port of ${ref} to ${port}?` : `Expose ${ref} on port ${port}?`,
 			lines: [
 				`Applied now: exposes the app on the internet at ${appAddress(port)}, unless your host's firewall blocks the port.`,
 				...(old ? [`It is no longer reachable at ${appAddress(old)}.`] : []),
@@ -265,25 +286,27 @@
 			pStatus = 'Cancelled. The public port was not changed.';
 			return;
 		}
-		pBusy = true;
+		if (!ctx.begin('')) return;
+		pStatus = 'Sending the change to the proxy…';
 		try {
-			const out = await runAction<ServiceChange>('services.set_public_port', { service: ctx.ref, public_port: port });
+			const out = await runAction<ServiceChange>('services.set_public_port', { service: ref, public_port: port });
 			await report(out, `Applied now: the app is exposed at ${appAddress(port)}.`);
 		} catch (err) {
 			await portFailure(err, port);
 		} finally {
-			pBusy = false;
+			ctx.end();
 		}
 	}
 
 	async function clearPort() {
-		if (pBusy || !svc.public_port) return;
+		if (!svc.public_port || !ctx.idle()) return;
 		pStatus = '';
 		pSummary = null;
 		pError = '';
+		const ref = ctx.ref;
 		const old = svc.public_port;
 		const ok = await confirmDialog?.ask({
-			title: `Stop exposing ${ctx.ref}?`,
+			title: `Stop exposing ${ref}?`,
 			lines: [`Applied now: the app is no longer reachable at ${appAddress(old)}. It keeps running, and other apps on the server can still reach it.`],
 			confirm: 'Stop exposing'
 		});
@@ -291,21 +314,21 @@
 			pStatus = 'Cancelled. The public port was not changed.';
 			return;
 		}
-		pBusy = true;
+		if (!ctx.begin('')) return;
+		pStatus = 'Sending the change to the proxy…';
 		try {
-			const out = await runAction<ServiceChange>('services.set_public_port', { service: ctx.ref, clear: true });
+			const out = await runAction<ServiceChange>('services.set_public_port', { service: ref, clear: true });
 			await report(out, `Applied now: the app is no longer reachable at ${appAddress(old)}.`);
 		} catch (err) {
 			await portFailure(err, null);
 		} finally {
-			pBusy = false;
+			ctx.end();
 		}
 	}
 
 	async function tryAgain() {
-		if (pBusy) return;
-		pBusy = true;
-		pStatus = '';
+		if (!ctx.begin('')) return;
+		pStatus = 'Asking the proxy to apply the saved routes again…';
 		pSummary = null;
 		pError = '';
 		try {
@@ -315,46 +338,51 @@
 		} catch (err) {
 			await portFailure(err);
 		} finally {
-			pBusy = false;
+			ctx.end();
 		}
 	}
 
 	// ---- delete (services.delete) -----------------------------------------------
 	let dStatus = $state('');
 	let dSummary: string | null = $state(null);
-	let dBusy = $state(false);
 	let again = $state(false);
 	let dAlerts: Alerts | undefined = $state();
-	const deleteAgain = $derived(again || svc.needs_attention === 'delete_interrupted');
+	const deleteAgain = $derived(again || svc.needs_attention === 'delete_confirm_again' || svc.needs_attention === 'delete_interrupted');
 
 	async function deleteService() {
-		if (dBusy) return;
+		if (!ctx.idle()) return;
 		dStatus = '';
 		dSummary = null;
 		const ref = ctx.ref;
+		const project = ctx.project;
+		const label = deleteAgain ? 'Delete service again' : 'Delete service';
 		const r = await formDialog?.ask({
 			title: `Delete ${ref}?`,
 			lines: [
-				`This stops and removes the containers of ${ref}, so the app goes offline, and deletes its deploy history and logs. Anything stored inside its containers is lost. If it is the last service in project ${ctx.project}, the project goes too. This cannot be undone.`,
-				'Queued and running deploys of this service are cancelled first. Your next step is a fresh authenticator code.'
+				`This stops and removes the containers of ${ref}, so the app goes offline, and deletes its deploy history and logs. Anything stored inside its containers is lost. If it is the last service in project ${project}, the project goes too. This cannot be undone.`,
+				'Queued and running deploys of this service are cancelled when the delete is queued. Your next step is a fresh authenticator code.'
 			],
 			label: `Type ${ref} to confirm`,
 			value: '',
-			confirm: deleteAgain ? 'Delete service again' : 'Delete service',
+			confirm: label,
 			match: ref,
-			invalid: `Type ${ref} exactly as shown, then choose Delete service.`
+			invalid: `Type ${ref} exactly as shown, then choose ${label}.`,
+			confirmHint: `${label} works once the name above matches exactly.`
 		});
-		if (!r?.ok) {
+		if (!r?.ok || ctx.ref !== ref) {
 			dStatus = 'Cancelled. Nothing was deleted.';
 			return;
 		}
-		dBusy = true;
+		if (!ctx.begin('')) return;
+		dStatus = 'Delete request sent, waiting for the answer…';
+		stepUpFor = `to delete ${ref}`;
 		try {
 			// The exact target goes in SD-Confirm; a fresh code is asked for if the 5-minute window has passed.
 			const out = await withStepUp(() => runAction<{ cancelled?: number; flagged?: number }>('services.delete', { service: ref }, undefined, ref));
-			listNotice.message = `Delete of ${ref} queued. It runs in the background and the service leaves this list when it is done${out.flagged ? ' (a running deploy was told to stop first)' : ''}. If it is still listed after a few minutes, open it and use Delete again.`;
+			listNotice.message = `Delete of ${ref} queued. It runs in the background and the service leaves this list when it is done${out.flagged ? ' (a running deploy was told to stop first)' : ''}${out.cancelled ? `; ${out.cancelled} queued ${out.cancelled === 1 ? 'job was' : 'jobs were'} cancelled` : ''}. If it is still listed after a few minutes, open it and use Delete again.`;
 			await goto('/services');
 		} catch (err) {
+			dStatus = '';
 			if (err instanceof Cancelled) {
 				dStatus = 'Cancelled. Nothing was deleted.';
 				return;
@@ -364,14 +392,15 @@
 				await ctx.fail(err);
 				return;
 			}
-			if (err.needsStepUp || err.message.includes(CONFIRM_AGAIN_FRAGMENT)) {
+			if (err.needsStepUp) {
+				// The code was accepted and the server still wants a fresh one: the window ended again.
 				again = true;
-				dSummary = 'Confirming again is needed: the 5-minute confirmation window passed before the delete could start. Nothing was deleted. Choose Delete again.';
+				dSummary = 'Confirming again is needed. Nothing was deleted. Choose Delete again.';
 			} else dSummary = mutationMessage(err);
-			await Promise.resolve();
+			await tick();
 			dAlerts?.focus();
 		} finally {
-			dBusy = false;
+			ctx.end();
 		}
 	}
 </script>
@@ -382,7 +411,7 @@
 
 <div class="settings">
 	<section aria-labelledby="h-fields" class="block">
-		<h2 id="h-fields">Service settings</h2>
+		<h2 id="h-fields" tabindex="-1" data-subpage>Service settings</h2>
 		<p class="note">Changes are saved now and used by the next deploy.</p>
 		<Alerts error={fSummary} links={fLinks} status={fStatus} bind:this={fAlerts} />
 		<form novalidate onsubmit={saveFields} oninput={clearError}>
@@ -415,7 +444,7 @@
 			</fieldset>
 			<Field id={idOf('drainS')} label="Drain time (seconds)" bind:value={drainS} inputmode="numeric" error={fErrors.drainS} hint="Blue-green: how long the old version keeps finishing requests. 10 to 300." />
 			<Field id={idOf('graceS')} label="Stop grace (seconds)" bind:value={graceS} inputmode="numeric" error={fErrors.graceS} hint="How long a stopping container may take before it is killed. 0 to 300." />
-			<div class="actions"><button type="submit" class="primary" aria-disabled={fBusy ? 'true' : undefined}>{fBusy ? 'Saving…' : 'Save settings'}</button></div>
+			<div class="actions"><button type="submit" class="primary" aria-disabled={fBusy ? 'true' : undefined}>{fBusy ? 'Saving…' : 'Save settings'}</button><span class="inline" aria-hidden="true">{fStatus}</span></div>
 		</form>
 	</section>
 
@@ -423,14 +452,14 @@
 		<h2 id="h-source">Image repository</h2>
 		<p class="note">Where the image comes from. To deploy another tag or digest of the same repository, use Deploy instead.</p>
 		<Alerts error={iSummary} status={iStatus} bind:this={iAlerts} />
-		<form novalidate onsubmit={saveSource} oninput={() => (iError = '')}>
+		<form novalidate onsubmit={saveSource} oninput={() => { iError = ''; iSummary = null; }}>
 			<Field id="s-image" label="Image" bind:value={image} error={iError} hint="Any repository or registry. It is used by the next deploy; nothing changes until you deploy." />
-			<div class="actions"><button type="submit" aria-disabled={iBusy ? 'true' : undefined}>{iBusy ? 'Saving…' : 'Change image repository'}</button></div>
+			<div class="actions"><button type="submit" aria-disabled={iBusy ? 'true' : undefined}>{iBusy ? 'Saving…' : 'Change image repository'}</button><span class="inline" aria-hidden="true">{iStatus}</span></div>
 		</form>
 	</section>
 
 	<section aria-labelledby="h-port" class="block" id="port">
-		<h2 id="h-port">Public port</h2>
+		<h2 id="h-port" tabindex="-1">Public port</h2>
 		<p class="note">{svc.public_port ? `Exposed at ${appAddress(svc.public_port)} (plain HTTP).` : 'Not exposed: the app is private.'} A change here is applied at once, after you confirm.</p>
 		{#if svc.route_error}
 			<p class="banner" data-testid="port-route-error"><span aria-hidden="true">▲</span> Route problem: {svc.route_error}</p>
@@ -438,11 +467,8 @@
 		{#if svc.public_port && !svc.routes_ready}
 			<p class="note"><span aria-hidden="true">◌</span> Routes are not served yet: ServerDock is still reading the container list.</p>
 		{/if}
-		{#if pNotice}
-			<p class="banner" data-testid="port-notice"><span aria-hidden="true">▲</span> {pNotice}</p>
-		{/if}
-		<Alerts error={pSummary} status={pStatus} bind:this={pAlerts} />
-		<form novalidate onsubmit={savePort} oninput={() => (pError = '')}>
+		<div data-testid={pNotice ? 'port-notice' : undefined}><Alerts error={pSummary} status={pStatus} bind:this={pAlerts} /></div>
+		<form novalidate onsubmit={savePort} oninput={() => { pError = ''; pSummary = null; }}>
 			<Field
 				id="s-publicPort"
 				label="Public port"
@@ -460,18 +486,20 @@
 				<a href={SEC6_DOCS_URL} target="_blank" rel="noopener noreferrer">Read about this (opens GitHub)</a>
 			</p>
 			<div class="actions">
-				<button type="submit" class="primary" aria-disabled={pBusy ? 'true' : undefined}>{svc.public_port ? 'Change public port' : 'Expose on this port'}</button>
-				{#if svc.public_port}<button type="button" onclick={clearPort} aria-disabled={pBusy ? 'true' : undefined}>Stop exposing</button>{/if}
-				{#if canRetry}<button type="button" onclick={tryAgain} aria-disabled={pBusy ? 'true' : undefined}>Try again</button>{/if}
+				<button type="submit" class="primary" aria-disabled={ctx.busy ? 'true' : undefined}>{svc.public_port ? 'Change public port' : 'Expose on this port'}</button>
+				{#if svc.public_port}<button type="button" onclick={clearPort} aria-disabled={ctx.busy ? 'true' : undefined}>Stop exposing</button>{/if}
+				{#if canRetry}<button type="button" onclick={tryAgain} aria-disabled={ctx.busy ? 'true' : undefined}>Try again</button>{/if}
+				<span class="inline" aria-hidden="true">{pStatus}</span>
 			</div>
 		</form>
 	</section>
 
 	<section aria-labelledby="h-danger" class="block danger">
 		<h2 id="h-danger">Danger zone</h2>
+		{#if svc.needs_attention === 'delete_confirm_again'}<p><span aria-hidden="true">▲</span> A delete of this service was queued and did not run: it needed a fresh confirmation. Nothing was deleted. Deploys that were queued then were cancelled.</p>{/if}
 		<p>Delete {ctx.ref}: stops and removes its containers and deletes its deploy history and logs. This cannot be undone.</p>
 		<Alerts error={dSummary} status={dStatus} bind:this={dAlerts} />
-		<div class="actions"><button type="button" class="danger-button" onclick={deleteService} aria-disabled={dBusy ? 'true' : undefined}>{deleteAgain ? 'Delete again' : 'Delete service'}</button></div>
+		<div class="actions"><button type="button" class="danger-button" onclick={deleteService} aria-disabled={ctx.busy ? 'true' : undefined}>{deleteAgain ? 'Delete again' : 'Delete service'}</button></div>
 	</section>
 </div>
 
@@ -524,6 +552,10 @@
 		border: 2px solid var(--danger);
 		border-radius: 0.5rem;
 		padding: 0.75rem 1rem;
+	}
+	.inline {
+		align-self: center;
+		color: var(--muted);
 	}
 	.danger-button {
 		border: 2px solid var(--danger);

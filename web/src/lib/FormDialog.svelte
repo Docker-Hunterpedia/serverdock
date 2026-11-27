@@ -11,6 +11,10 @@
 		match?: string;
 		/** Said when the typed text is empty or does not match. */
 		invalid?: string;
+		/** Said in the status region while the request runs (the dialog stays open and cannot be closed). */
+		working?: string;
+		/** A hint linked to the confirm button while it is not usable yet. */
+		confirmHint?: string;
 	};
 </script>
 
@@ -39,6 +43,11 @@
 	let run: ((value: string) => Promise<string | undefined>) | undefined;
 
 	const matches = $derived(spec.match === undefined || value.trim() === spec.match);
+
+	/** Closes the dialog as if Cancel was chosen (the page navigated away), even while a request runs. */
+	export function close() {
+		finish(false);
+	}
 
 	export async function ask(s: FormSpec, onConfirm?: (value: string) => Promise<string | undefined>): Promise<{ ok: boolean; value: string }> {
 		opener = currentOpener();
@@ -81,10 +90,13 @@
 		if (run) {
 			busy = true;
 			error = '';
+			status = spec.working ?? 'Working…';
 			try {
 				const msg = await run(v);
 				if (msg) {
-					await complain(msg);
+					// The dialog may have been closed meanwhile (the page moved on): then the
+					// caller already routes the error to the page, and there is nothing to show here.
+					if (dialog?.open) await complain(msg);
 					return;
 				}
 			} finally {
@@ -95,18 +107,19 @@
 	}
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="form-title-{uid}" aria-describedby="form-body-{uid}" oncancel={(e) => { e.preventDefault(); finish(false); }} onclose={() => finish(false)}>
+<dialog bind:this={dialog} aria-labelledby="form-title-{uid}" aria-describedby="form-body-{uid}" oncancel={(e) => { e.preventDefault(); if (!busy) finish(false); }} onclose={() => finish(false)}>
 	<form onsubmit={submit} novalidate aria-busy={busy}>
 		<h2 id="form-title-{uid}">{spec.title}</h2>
 		<div id="form-body-{uid}">
-			{#each spec.lines as line (line)}<p>{line}</p>{/each}
+			{#each spec.lines as line, i (i)}<p>{line}</p>{/each}
 		</div>
 		<div role="status" class="sr">{status}</div>
 		<Field id="form-field-{uid}" label={spec.label} bind:value bind:el={field} hint={spec.hint} {error} />
 		<div class="actions">
-			<button type="button" bind:this={cancelButton} onclick={() => finish(false)}>Cancel</button>
-			<button type="submit" class="primary" aria-disabled={busy || !matches ? 'true' : undefined}>{busy ? 'Working…' : spec.confirm}</button>
+			<button type="button" bind:this={cancelButton} aria-disabled={busy ? 'true' : undefined} onclick={() => !busy && finish(false)}>Cancel</button>
+			<button type="submit" class="primary" aria-disabled={busy || !matches ? 'true' : undefined} aria-describedby={!matches && spec.confirmHint ? `form-hint-${uid}` : undefined}>{busy ? 'Working…' : spec.confirm}</button>
 		</div>
+		{#if spec.confirmHint}<p id="form-hint-{uid}" class="hint">{spec.confirmHint}</p>{/if}
 	</form>
 </dialog>
 

@@ -35,7 +35,14 @@ export const test = base.extend<Fixtures>({
 		async ({ page }, use) => {
 			const problems: string[] = [];
 			allowed.value = false;
+			// What failed to load among the app's own files: not a problem by itself (a navigation aborts requests),
+			// but when a console error like "Unable to preload CSS" does fail the test, it names its cause.
+			const assetTrouble: string[] = [];
+			page.on('requestfailed', (r) => {
+				if (new URL(r.url()).pathname.startsWith('/_app/')) assetTrouble.push(`${r.url()} failed: ${r.failure()?.errorText}`);
+			});
 			page.on('response', (r) => {
+				if (new URL(r.url()).pathname.startsWith('/_app/') && (r.status() < 200 || r.status() > 299)) assetTrouble.push(`${r.url()} answered ${r.status()}`);
 				// The Overview asks system.exposure on every load; a server started without Docker answers 503 by design and the page says it could not check.
 				if (r.status() >= 500 && r.url().includes('/api/v1/') && !(r.url().endsWith('/actions/system.exposure') && !isDockerServer(r.url()))) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
 			});
@@ -53,6 +60,7 @@ export const test = base.extend<Fixtures>({
 				problems.push('console: ' + m.text());
 			});
 			await use(problems);
+			if (problems.length && assetTrouble.length) problems.push('app files that failed or answered non-2xx: ' + assetTrouble.join('; '));
 			if (allowed.value) problems.splice(0, problems.length, ...problems.filter((p) => !p.startsWith('API 5')));
 			expect(problems, 'CSP violations, page errors or console errors').toEqual([]);
 		},

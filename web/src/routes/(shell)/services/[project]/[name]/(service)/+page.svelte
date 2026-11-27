@@ -3,12 +3,11 @@
 	import ResponsiveTable from '../../../../../../lib/ResponsiveTable.svelte';
 	import { runAction } from '../../../../../../lib/api';
 	import { queuedMessage, useService } from '../../../../../../lib/servicectx.svelte';
-	import { KIND_WORDS, canRollBackTo, deployPath, deployResult, stagesSummary, strategyConsequence, triggeredBy, type DeployItem, type QueuedDeploy } from '../../../../../../lib/services';
+	import { KIND_WORDS, canRollBackTo, deployPath, deployResult, stagesSummary, rollbackConsequence, triggeredBy, type DeployItem, type QueuedDeploy } from '../../../../../../lib/services';
 	import { absolute } from '../../../../../../lib/time';
 
 	const ctx = useService();
 	let dialog: ConfirmDialog | undefined = $state();
-	let busy = $state(false);
 
 	const columns = [
 		{ key: 'number', label: 'Deploy' },
@@ -22,27 +21,29 @@
 
 	async function rollBack(d: DeployItem) {
 		const svc = ctx.service;
-		if (!svc || busy) return;
+		if (!svc || !ctx.idle()) return;
+		const ref = ctx.ref;
+		// A rollback keeps the settings (and the strategy) the target deploy recorded.
+		const strategy = d.strategy || svc.strategy;
 		const ok = await dialog?.ask({
-			title: `Roll back ${ctx.ref} to #${d.number}?`,
+			title: `Roll back ${ref} to #${d.number}?`,
 			lines: [
 				`Starts a new deploy that runs the image of deploy #${d.number} (${d.image_ref}) with the settings it had then. The deploy history keeps every deploy; this one is added as a new rollback.`,
-				strategyConsequence(svc.strategy),
+				rollbackConsequence(strategy, d.number),
 				'Only deploys that were once live can be rolled back to. If the image is no longer on this server, the rollback fails and the live version keeps serving.'
 			],
 			confirm: `Roll back to #${d.number}`
 		});
-		if (!ok) return;
-		busy = true;
-		ctx.clearMessages();
+		if (!ok || ctx.ref !== ref || !ctx.begin('Rollback request sent, waiting for the answer…')) return;
 		try {
-			const q = await runAction<QueuedDeploy>('services.rollback', { service: ctx.ref, to: d.number });
+			const q = await runAction<QueuedDeploy>('services.rollback', { service: ref, to: d.number });
+			if (ctx.ref !== ref) return;
 			await ctx.load(false);
 			ctx.say(queuedMessage(`Rollback to #${d.number}`, q));
 		} catch (e) {
-			await ctx.fail(e);
+			if (ctx.ref === ref) await ctx.fail(e);
 		} finally {
-			busy = false;
+			ctx.end();
 		}
 	}
 </script>
@@ -50,10 +51,11 @@
 <ConfirmDialog bind:this={dialog} />
 
 <section aria-labelledby="deploys-h">
-	<h2 id="deploys-h">Deploys</h2>
+	<h2 id="deploys-h" tabindex="-1" data-subpage>Deploys</h2>
 	{#if ctx.deploys && ctx.deploys.length === 0}
 		<p class="note">No deploys yet. Use Deploy above to run this service for the first time.</p>
 	{:else if ctx.deploys}
+		{#if ctx.loadError}<p class="note"><span aria-hidden="true">◌</span> Status unknown: this list may be out of date.</p>{/if}
 		<p class="note">Times are UTC. A queued or running deploy changes only when you use Refresh; its page shows more.</p>
 		<ResponsiveTable
 			caption="Deploys of {ctx.ref}, newest first"
@@ -82,7 +84,7 @@
 					<span class="acts">
 						<a href={deployPath(ctx.project, ctx.name, r.number)} aria-label="Details of deploy #{r.number}">Details</a>
 						{#if canRollBackTo(r)}
-							<button type="button" onclick={() => rollBack(r)} aria-disabled={busy ? 'true' : undefined}>Roll back to #{r.number}</button>
+							<button type="button" onclick={() => rollBack(r)} aria-disabled={ctx.busy ? 'true' : undefined}>Roll back to #{r.number}</button>
 						{/if}
 					</span>
 				{/if}

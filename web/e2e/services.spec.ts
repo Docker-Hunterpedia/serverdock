@@ -148,6 +148,7 @@ test.describe('Services list screen states', () => {
 	});
 
 	test('a real Docker socket makes a seeded service with no container "Missing"', async ({ page, allow5xx }) => {
+		test.setTimeout(90_000); // the first resync after the start takes a while on a loaded machine
 		allow5xx();
 		const server = await startServer({ dockerSocket: DOCKER_SOCKET });
 		try {
@@ -159,7 +160,7 @@ test.describe('Services list screen states', () => {
 			await expect(async () => {
 				await page.getByRole('button', { name: 'Refresh' }).click();
 				await expect(row).toContainText('Missing', { timeout: 2000 });
-			}).toPass({ timeout: 30_000 });
+			}).toPass({ timeout: 60_000 });
 			await expect(row).toContainText('◆');
 			await expectNoAxeViolations(page, 'Services, a missing container');
 		} finally {

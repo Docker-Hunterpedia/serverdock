@@ -14,6 +14,7 @@
 	let error = $state('');
 	let busy = $state(false);
 	let status = $state('');
+	let reason = $state('');
 	// Countdown steps go only to the status region (never into `error`); the red error
 	// goes away when the wait ends.
 	const countdown = new Countdown((m) => {
@@ -31,7 +32,9 @@
 	onMount(trackOpener);
 	let resolve: ((ok: boolean) => void) | undefined;
 
-	export function ask(): Promise<boolean> {
+	/** `why` names what the code is for, e.g. "to delete shop/api". */
+	export function ask(why = ''): Promise<boolean> {
+		reason = why;
 		code = '';
 		error = '';
 		status = '';
@@ -100,7 +103,7 @@
 <dialog bind:this={dialog} aria-labelledby="stepup-title" aria-describedby="stepup-body" oncancel={(e) => { e.preventDefault(); finish(false); }} onclose={() => finish(false)}>
 	<form onsubmit={submit} aria-busy={busy} novalidate>
 		<h2 id="stepup-title">Confirm it is you</h2>
-		<p id="stepup-body">This change needs a fresh code from your authenticator app.</p>
+		<p id="stepup-body">This change needs a fresh code from your authenticator app{reason ? `, ${reason}` : ''}.</p>
 		{#if countdown.active}<p class="banner">Try again in {countdown.text}</p>{/if}
 		<div role="status" class="sr">{status}</div>
 		<!-- One announcement path: the error is the field's own (aria-describedby, aria-invalid) and focus returns to the field, so it is read once. -->

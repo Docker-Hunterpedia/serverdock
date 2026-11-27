@@ -30,7 +30,7 @@ test.describe('Service detail: seeded history', () => {
 		await expect(page.getByTestId('card-traffic')).toContainText(':8081');
 		await expect(page.getByTestId('card-traffic')).toContainText('same address as the panel');
 		await expect(page.getByTestId('card-strategy')).toContainText('Blue-green');
-		const nav = page.getByRole('navigation', { name: 'Service' });
+		const nav = page.getByRole('navigation', { name: 'Service sections' });
 		await expect(nav.getByRole('link', { name: 'Deploys' })).toHaveAttribute('aria-current', 'page');
 		await expect(nav.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current', 'page');
 		const row = (n: number) => page.locator(`[data-row="${n}"]:visible`);
@@ -74,11 +74,11 @@ test.describe('Service detail: seeded history', () => {
 		await signIn(page, server, admin);
 		for (const sub of ['', '/settings']) {
 			await open(page, server.baseURL, 'shop/api', sub);
-			await expect(page.getByRole('navigation', { name: 'Service' })).toBeVisible();
+			await expect(page.getByRole('navigation', { name: 'Service sections' })).toBeVisible();
 			const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 			expect(over, `horizontal overflow on ${sub || 'Deploys'}`).toBeLessThanOrEqual(0);
 			const small = await page.evaluate(() =>
-				[...document.querySelectorAll<HTMLElement>('main button, main a[href], nav[aria-label="Service"] a')]
+				[...document.querySelectorAll<HTMLElement>('main button, main a[href], nav[aria-label="Service sections"] a')]
 					.filter((e) => e.getBoundingClientRect().width > 0 && !e.closest('p, li > p, .hint, .note') )
 					.filter((e) => e.getBoundingClientRect().height < 43.5)
 					.map((e) => `${e.tagName} ${e.textContent?.trim().slice(0, 30)} ${Math.round(e.getBoundingClientRect().height)}`)
@@ -139,17 +139,6 @@ test.describe('Service detail: dialogs', () => {
 		await page.keyboard.press('Escape');
 		await expect(bd).toBeHidden();
 	});
-
-	test('a refused restart (versions_kept) says to try again once the service has settled', async ({ page, server, admin }) => {
-		seedHistory(server);
-		await signIn(page, server, admin);
-		await mockActionError(page, 'services.restart', 409, 'conflict', 'two versions of this service may be running after an unfinished stop-first deploy; not now');
-		await open(page, server.baseURL, 'shop/api');
-		await page.getByRole('button', { name: 'Restart', exact: true }).click();
-		await dialog(page, 'Restart shop/api?').getByRole('button', { name: 'Restart now' }).click();
-		await expect(page.getByRole('alert')).toContainText('Try again once the service has settled.');
-		await expectNoAxeViolations(page, 'restart refused');
-	});
 });
 
 test.describe('Service detail: cards for states that need no containers', () => {
@@ -190,7 +179,7 @@ test.describe('Service detail: Settings', () => {
 		seedHistory(server);
 		await signIn(page, server, admin);
 		await open(page, server.baseURL, 'shop/api', '/settings');
-		await expect(page.getByRole('navigation', { name: 'Service' }).getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
+		await expect(page.getByRole('navigation', { name: 'Service sections' }).getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
 		await page.getByLabel('Drain time (seconds)').fill('20');
 		await page.getByRole('button', { name: 'Save settings' }).click();
 		await expect(page.getByRole('status').filter({ hasText: 'Saved. Deploy to apply.' }).first()).toBeVisible();
@@ -330,7 +319,7 @@ test.describe('Service detail with real Docker', () => {
 
 			// Public port: Cancel changes nothing; Confirm applies at once and the app answers.
 			const port = 30000 + Math.floor(Math.random() * 20000);
-			await page.getByRole('navigation', { name: 'Service' }).getByRole('link', { name: 'Settings' }).click();
+			await page.getByRole('navigation', { name: 'Service sections' }).getByRole('link', { name: 'Settings' }).click();
 			await page.getByRole('textbox', { name: 'Public port' }).fill(String(port));
 			await page.getByRole('button', { name: 'Expose on this port' }).click();
 			await dialog(page, `Expose ${ref} on port ${port}?`).getByRole('button', { name: 'Cancel' }).click();
@@ -567,15 +556,16 @@ test.describe('Service detail: every dialog', () => {
 });
 
 test.describe('Service detail: refusals and errors', () => {
-	test('versions_kept: the dialog closes, the alert says to wait, and the service is untouched', async ({ page, server, admin }) => {
-		seedHistory(server);
+	test('versions_kept: a real refusal says to wait once, and the service is untouched', async ({ page, server, admin }) => {
+		seedHistory(server, 'shop', 'api', { needsAttention: 'versions_kept' });
 		await signIn(page, server, admin);
-		await mockActionError(page, 'services.restart', 409, 'conflict', 'two versions of this service may be running after an unfinished stop-first deploy; not now');
 		await open(page, server.baseURL, 'shop/api');
 		await page.getByRole('button', { name: 'Restart', exact: true }).click();
 		await dialog(page, 'Restart shop/api?').getByRole('button', { name: 'Restart now' }).click();
 		const alert = page.getByRole('alert').filter({ hasText: 'Try again once the service has settled.' });
 		await expect(alert).toBeVisible();
+		await expect(alert).not.toContainText('afterwards'); // the server's "try again afterwards" is not repeated
+		expect((await alert.innerText()).match(/try again/gi)?.length).toBe(1);
 		await expect(page.getByRole('status').filter({ hasText: 'Restart queued' })).toHaveCount(0);
 		await expectNoAxeViolations(page, 'restart refused (versions_kept)');
 		// "Try again" really is another go: the next restart is asked for again.
@@ -940,5 +930,192 @@ test.describe('Service detail with real Docker', () => {
 		} finally {
 			await server.stop();
 		}
+	});
+});
+
+
+// ---- step 13 review fixes ---------------------------------------------------------------
+
+test.describe('Service detail: review fixes', () => {
+	test('settings compare with what is saved now: 8080 to 9090 and back to 8080 is really saved', async ({ page, server, admin }) => {
+		seedService(server, { project: 'shop', name: 'api', containerPort: 8080, deploys: [{ number: 1, live: true }] });
+		await signIn(page, server, admin);
+		await open(page, server.baseURL, 'shop/api', '/settings');
+		const port = () => server.query<{ container_port: number }>(`SELECT container_port FROM services WHERE name = 'api'`)[0].container_port;
+		const field = page.getByLabel('Port your app listens on');
+		await field.fill('9090');
+		await page.getByRole('button', { name: 'Save settings' }).click();
+		await expect(page.getByRole('status').filter({ hasText: 'Saved. Deploy to apply.' })).toBeVisible();
+		expect(port()).toBe(9090);
+		await field.fill('8080');
+		await page.getByRole('button', { name: 'Save settings' }).click();
+		await expect.poll(port).toBe(8080);
+	});
+
+	test('the Roll back dialog states the strategy of the target, not the service', async ({ page, server, admin }) => {
+		seedService(server, {
+			project: 'shop',
+			name: 'api',
+			containerPort: 8080,
+			deploys: [
+				{ number: 1, wasLive: true, strategy: 'stop_first', stage: 'done' },
+				{ number: 2, live: true, stage: 'done' }
+			]
+		});
+		await signIn(page, server, admin);
+		await open(page, server.baseURL, 'shop/api');
+		await page.locator('[data-row="1"]:visible').getByRole('button', { name: 'Roll back to #1' }).click();
+		const d = dialog(page, 'Roll back shop/api to #1?');
+		await expect(d).toContainText('keeps the strategy deploy #1 recorded, stop-first');
+		await expect(d).not.toContainText('blue-green');
+		await page.keyboard.press('Escape');
+		// Redeploy uses the service's strategy (blue-green here).
+		await page.getByRole('button', { name: 'Redeploy', exact: true }).click();
+		await expect(dialog(page, 'Redeploy shop/api?')).toContainText('blue-green');
+	});
+
+	test('a delete that needed a fresh confirmation shows its banner and offers Delete again', async ({ page, server, admin }) => {
+		seedHistory(server, 'shop', 'api', { needsAttention: 'delete_confirm_again' });
+		await signIn(page, server, admin);
+		await open(page, server.baseURL, 'shop/api');
+		await expect(page.getByTestId('needs-attention')).toContainText('Nothing was deleted');
+		await expect(page.getByTestId('needs-attention')).toContainText('queued were cancelled');
+		await expectNoAxeViolations(page, 'service detail, delete_confirm_again');
+		await page.getByRole('navigation', { name: 'Service sections' }).getByRole('link', { name: 'Settings' }).click();
+		await expect(page.getByRole('button', { name: 'Delete again' })).toBeVisible();
+		await page.getByRole('button', { name: 'Delete again' }).click();
+		const d = dialog(page, 'Delete shop/api?');
+		await expect(d.getByRole('button', { name: 'Delete service again' })).toHaveAccessibleDescription(/works once the name above matches/);
+		await page.keyboard.press('Escape');
+		await page.goto(`${server.baseURL}/`);
+		await expect(page.getByTestId('needs-attention')).toContainText('shop/api');
+	});
+
+	test('Escape and Cancel do nothing while a deploy request is in flight; the refusal then shows in the dialog', async ({ page, server, admin }) => {
+		seedHistory(server);
+		await signIn(page, server, admin);
+		await page.route('**/api/v1/actions/services.deploy', async (route) => {
+			await new Promise((r) => setTimeout(r, 1500));
+			await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_input', message: 'image_ref: not a valid image reference' } }) });
+		});
+		await open(page, server.baseURL, 'shop/api');
+		await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+		const d = dialog(page, 'Deploy shop/api');
+		await d.getByRole('button', { name: 'Deploy', exact: true }).click();
+		await expect(d.getByRole('status')).toContainText('Deploy request sent, waiting for the answer');
+		await expect(d.getByRole('button', { name: 'Cancel' })).toHaveAttribute('aria-disabled', 'true');
+		await page.keyboard.press('Escape');
+		await d.getByRole('button', { name: 'Cancel' }).click({ force: true });
+		await expect(d).toBeVisible();
+		await expect(d).toContainText('not a valid image reference');
+		await expect(d.getByRole('button', { name: 'Cancel' })).not.toHaveAttribute('aria-disabled', 'true');
+		await page.keyboard.press('Escape');
+		await expect(d).toBeHidden();
+	});
+
+	test('a dialog open at browser Back is closed and acts on nothing', async ({ page, server, admin }) => {
+		seedHistory(server, 'shop', 'api');
+		seedService(server, { project: 'shop', name: 'worker', deploys: [{ number: 1, live: true }] });
+		await signIn(page, server, admin);
+		let restarts = 0;
+		await page.route('**/api/v1/actions/services.restart', (r) => {
+			restarts++;
+			return r.continue();
+		});
+		await page.goto(`${server.baseURL}/services`);
+		await page.locator('[data-row="shop/api"]:visible').getByRole('link', { name: 'api' }).click();
+		await expect(page.getByRole('heading', { level: 1 })).toContainText('api');
+		await page.getByRole('button', { name: 'Restart', exact: true }).click();
+		await expect(dialog(page, 'Restart shop/api?')).toBeVisible();
+		await page.goBack();
+		await expect(page.getByRole('heading', { name: 'Services', level: 1 })).toBeVisible();
+		await expect(page.getByRole('dialog')).toHaveCount(0);
+		expect(restarts).toBe(0);
+		// And forward again: the service page opens, nothing was queued.
+		await page.goForward();
+		await expect(page.getByRole('heading', { level: 1 })).toContainText('api');
+		expect(restarts).toBe(0);
+	});
+
+	test('focus stays in the port section after Stop exposing and Try again remove their button', async ({ page, server, admin }) => {
+		const base = { project: 'shop', name: 'api', public_port: 8081 };
+		await mockServiceDetail(page, serviceFixture({ ...base, route_error: 'port 8081 is in use by another program' }), [deployFixture({ number: 1, active: true, was_live: true })]);
+		await signIn(page, server, admin);
+		const answer = (service: object) => ({ audit: 'not_audited', data: { service, applied: true } });
+		await page.route('**/api/v1/actions/services.retry_port', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(answer(serviceFixture(base))) }));
+		await page.route('**/api/v1/actions/services.set_public_port', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(answer(serviceFixture({ ...base, public_port: null }))) }));
+		await open(page, server.baseURL, 'shop/api', '/settings');
+		await page.getByRole('button', { name: 'Try again' }).click();
+		await expect(page.getByRole('status').filter({ hasText: 'Applied now' })).toBeVisible();
+		await expect(page.getByRole('textbox', { name: 'Public port' })).toBeFocused();
+		await page.getByRole('button', { name: 'Stop exposing' }).click();
+		await dialog(page, 'Stop exposing shop/api?').getByRole('button', { name: 'Stop exposing' }).click();
+		await expect(page.getByRole('status').filter({ hasText: 'no longer reachable' })).toBeVisible();
+		await expect(page.getByRole('textbox', { name: 'Public port' })).toBeFocused();
+	});
+
+	test('a dropped answer reports what ServerDock reads, once, in the focused alert', async ({ page, server, admin }) => {
+		seedHistory(server);
+		await signIn(page, server, admin);
+		await page.route('**/api/v1/actions/services.set_public_port', (r) => r.abort('connectionreset'));
+		await open(page, server.baseURL, 'shop/api', '/settings');
+		await page.getByRole('textbox', { name: 'Public port' }).fill('8090');
+		await page.getByRole('button', { name: 'Change public port' }).click();
+		await dialog(page, 'Change the public port of shop/api to 8090?').getByRole('button', { name: 'Change to port 8090' }).click();
+		const alert = page.getByRole('alert').filter({ hasText: 'dropped' });
+		await expect(alert).toBeFocused();
+		await expect(alert).toContainText('still reads the public port as http://127.0.0.1:8081');
+		await expect(alert).not.toContainText('below');
+		await expect(page.getByText('still reads the public port')).toHaveCount(1);
+		await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+	});
+
+	test('sub-pages: titles, the section nav, focus on the section heading, #port, and no reload between them', async ({ page, server, admin }) => {
+		seedHistory(server);
+		await signIn(page, server, admin);
+		await open(page, server.baseURL, 'shop/api');
+		await expect(page).toHaveTitle('Deploys · api · shop · ServerDock');
+		const nav = page.getByRole('navigation', { name: 'Service sections' });
+		const reqs = countApiRequests(page);
+		await nav.getByRole('link', { name: 'Settings' }).click();
+		await expect(page).toHaveTitle('Settings · api · shop · ServerDock');
+		await expect(page.getByRole('heading', { name: 'Service settings', level: 2 })).toBeFocused();
+		expect(reqs.seen.filter((p) => /services\.get|deploys\.list/.test(p))).toEqual([]);
+		await nav.getByRole('link', { name: 'Deploys' }).click();
+		await expect(page.getByRole('heading', { name: 'Deploys', level: 2 })).toBeFocused();
+		expect(reqs.seen.filter((p) => /services\.get|deploys\.list/.test(p))).toEqual([]);
+		// The route error's link lands on the port section.
+		await page.goto(`${server.baseURL}/services/shop/api/settings#port`);
+		await expect(page.getByRole('heading', { name: 'Public port', level: 2 })).toBeFocused();
+	});
+
+	test('a failed Refresh keeps the Settings forms and what was typed, and says the status is unknown', async ({ page, server, admin, allow5xx }) => {
+		allow5xx();
+		seedHistory(server);
+		await signIn(page, server, admin);
+		await open(page, server.baseURL, 'shop/api', '/settings');
+		await page.getByLabel('Drain time (seconds)').fill('42');
+		await page.route('**/api/v1/actions/services.get', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"boom"}}' }));
+		await page.getByRole('button', { name: 'Refresh' }).click();
+		await expect(page.getByTestId('status-unknown')).toBeVisible();
+		await expect(page.getByTestId('card-running')).toHaveCount(0);
+		await expect(page.getByLabel('Drain time (seconds)')).toHaveValue('42');
+		await expectNoAxeViolations(page, 'settings, refresh failed');
+	});
+
+	test('while one action runs another says why nothing happened', async ({ page, server, admin }) => {
+		seedHistory(server);
+		await signIn(page, server, admin);
+		await page.route('**/api/v1/actions/services.redeploy', async (route) => {
+			await new Promise((r) => setTimeout(r, 1500));
+			await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'conflict', message: 'not now' } }) });
+		});
+		await open(page, server.baseURL, 'shop/api');
+		await page.getByRole('button', { name: 'Redeploy', exact: true }).click();
+		await dialog(page, 'Redeploy shop/api?').getByRole('button', { name: 'Redeploy', exact: true }).click();
+		await expect(page.getByRole('status').filter({ hasText: 'Redeploying…' })).toBeVisible();
+		await page.getByRole('button', { name: 'Restart', exact: true }).click({ force: true });
+		await expect(page.getByRole('status').filter({ hasText: 'still running' })).toBeVisible();
+		await expect(page.getByRole('dialog')).toHaveCount(0);
 	});
 });
