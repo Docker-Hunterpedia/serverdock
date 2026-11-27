@@ -375,7 +375,7 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	rssRoutes := settle(t)
 	fmt.Printf("RESULT case=idle_rss_with_routes routes=%d rss_no_routes_mb=%.1f rss_with_routes_mb=%.1f delta_mb=%.1f note=test_process_idle_after_gc\n",
 		len(g.applier.Applied()), rssNoRoutes/1e6, rssRoutes/1e6, (rssRoutes-rssNoRoutes)/1e6)
-	fmt.Println("NOTE loads are counted without a product hook; drops are requests with no response, retried once on a new connection after 50 ms; rss/hwm/cpu are of the whole test process")
+	fmt.Println("NOTE load attempts are counted by proxy.LoadAttempts (one atomic add per load, test use only), successful loads by watching the active Caddy context; drops are requests with no response, retried once on a new connection after 50 ms; rss/hwm/cpu are of the whole test process")
 
 	panel := "https://127.0.0.1:" + strconv.Itoa(g.panelPort) + "/"
 	appURL := func(s svc) rcURL { return rcURL{"http://127.0.0.1:" + strconv.Itoa(s.port) + "/cgi-bin/id", tgtApp} }

@@ -142,14 +142,17 @@ func without(routes []AppRoute, drop ...int) []AppRoute {
 // another service's port is taken. A change of the port set loads even without
 // retryFailed, and a still-wanted failed port is part of that load (one failed
 // load, then the isolating one). Otherwise (a different port set, or retryFailed) it loads;
-// when caddy.Load fails, Caddy keeps the previous config running, and Apply
-// retries without each newly added port in turn, so one port held by another
-// program cannot take the other apps down. If several new ports fail, it starts
-// from none of them and adds them back one at a time. A load whose port set
-// equals the served one is skipped. After every successful load the table is
-// stored for the ports then served. If no load succeeds, the previous table,
-// served routes and failed set are kept and the error is returned. A cancelled
-// ctx stops the retries between loads.
+// when caddy.Load fails, Caddy keeps the previous config running. While the
+// bind error names a newly added port, Apply drops that port and loads again,
+// so k ports held by other programs cost k failed loads plus one that works
+// (none when what is left is already served). A bind error that names a port
+// already served, or one already dropped, is returned at once with the previous
+// routes still running. Only a load error that names no port at all makes Apply
+// probe the new ports one at a time. A load whose port set equals the served one
+// is skipped. Nothing is committed until a load works; then the table is stored
+// for the ports served and the dropped ports become the failed set. If no load
+// succeeds, the previous table, served routes and failed set are kept and the
+// error is returned. A cancelled ctx stops the retries between loads.
 func (a *Applier) Apply(ctx context.Context, routes []AppRoute, retryFailed bool) (failed []int, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
