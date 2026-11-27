@@ -355,7 +355,8 @@ for id in $SCENARIOS; do
         docker run -d --label sdbench=1 --name "$TARGET" --memory 1g --cpus 1 $sock_args -p 127.0.0.1::443 "$IMAGE" \
           server --data /data --proxy=true --listen :80 >/dev/null
         base="https://$(docker port "$TARGET" 443/tcp | head -n1)"
-        wait_ready "$base/healthz" ;;
+        wait_ready "$base/healthz"
+        if [ "$S2_DOCKER" = 1 ]; then learn_instance; fi ;;
       3|4)
         start_server_stack
         extra=""; base="https://$SRV_HTTP"

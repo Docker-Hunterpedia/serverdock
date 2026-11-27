@@ -22,7 +22,7 @@ import (
 //     admin app is provisioned before the servers start and bind), so the number of those
 //     lines on stderr is the number of load ATTEMPTS;
 //   - a successful load installs a new root context (caddy.ActiveContext), so a poller that
-//     sees it change counts the successful ones (loads are milliseconds apart).
+//     sees it change counts the successful ones (a load takes several milliseconds; the poller ticks every millisecond).
 //
 // Failed = attempts - successful. The counter replaces os.Stderr for its lifetime, passes
 // every other line through, and puts the original back on Close.
@@ -53,11 +53,13 @@ func startLoadCounter() (*loadCounter, error) {
 	go func() {
 		defer c.wg.Done()
 		last := caddy.ActiveContext().Context
+		tick := time.NewTicker(time.Millisecond)
+		defer tick.Stop()
 		for {
 			select {
 			case <-c.stop:
 				return
-			case <-time.After(100 * time.Microsecond):
+			case <-tick.C:
 			}
 			if cur := caddy.ActiveContext().Context; cur != last {
 				last = cur
@@ -90,6 +92,9 @@ func (c *loadCounter) snap() (ok, failed int64) {
 	ok, a := c.ok.Load(), c.attempts.Load()
 	return ok, max(a-ok, 0)
 }
+
+// consistent reports that no more loads succeeded than were attempted (before snap clamps).
+func (c *loadCounter) consistent() bool { return c.attempts.Load() >= c.ok.Load() }
 
 // Close restores os.Stderr and stops both goroutines.
 func (c *loadCounter) Close() {

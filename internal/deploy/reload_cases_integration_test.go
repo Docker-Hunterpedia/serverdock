@@ -587,11 +587,11 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 				t.Fatalf("the boot list holds %d containers, want 100", len(all))
 			}
 			// As the reconciler runs it: a context with a cancel and no deadline.
-			// (the rig's own context has a 4-minute deadline, so this one does not derive from it).
+			// The boot Load runs without a deadline: Reconciler.session (reconciler.go) derives its
+			// context from Run's server context with WithCancel only, and neither Routes.apply
+			// (detach false) nor Applier.Apply adds one. The rig's own context has a 4-minute
+			// deadline, so this one does not derive from it.
 			bctx, cancel := context.WithCancel(context.Background())
-			if _, hasDeadline := bctx.Deadline(); hasDeadline {
-				t.Fatal("the boot context must have no deadline")
-			}
 			op(c, bl, func() error { return r2.Load(bctx, all, true, nil) })
 			cancel()
 			for k := 0; k < taken; k++ {
@@ -609,11 +609,16 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 				load.firstBad.CompareAndSwap(nil, v)
 			}
 		}
-		want := 1 // no port is taken: one load
-		if taken > 0 {
-			want = 2*taken + 3 // plan 0004 Revision 9's estimate
+		// N is the number of NEW ports (all 100 at boot), not the taken ones. One taken port:
+		// the failed load, then the load without it (2). Two: plan 0004 Revision 9's 2N+3.
+		want := 1
+		switch {
+		case taken == 1:
+			want = 2
+		case taken >= 2:
+			want = 2*len(ports) + 3
 		}
-		c.extra = fmt.Sprintf("containers=100 taken_ports=%d boot_ctx_has_deadline=false expected_loads_about=%d", taken, want)
+		c.extra = fmt.Sprintf("containers=100 new_ports=%d taken_ports=%d expected_loads_about=%d", len(ports), taken, want)
 	}
 	boot("first_sync_at_boot", 0, min(n, 3))
 	boot("first_sync_at_boot_with_taken_ports_1", 1, min(n, 2))
@@ -635,6 +640,26 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 			}
 			if tot < 20 {
 				t.Errorf("%s: only %d requests in the %s class; the load did not run", c.name, tot, rcClassNames[k])
+			}
+		}
+	}
+	// In-run sanity checks of the load counter and of the cases' shape.
+	if !counter.consistent() {
+		t.Errorf("the load counter saw more successful loads than attempts")
+	}
+	for _, c := range results {
+		switch c.name {
+		case "table_swap_switch_no_reload":
+			if c.loadsOK != 0 || c.loadsFailed != 0 {
+				t.Errorf("%s: %d ok and %d failed loads, want none", c.name, c.loadsOK, c.loadsFailed)
+			}
+		case "try_again_port_freed":
+			if c.loadsOK < 1 {
+				t.Errorf("%s: no successful load", c.name)
+			}
+		case "one_new_port_taken_fast_path":
+			if c.loadsFailed < 1 || c.loadsOK != 0 {
+				t.Errorf("%s: %d ok and %d failed loads, want at least one failed and no ok", c.name, c.loadsOK, c.loadsFailed)
 			}
 		}
 	}
