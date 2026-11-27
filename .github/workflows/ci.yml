@@ -82,12 +82,64 @@ jobs:
   # Playwright + axe against the real binary (-tags spa) on high ports with a temp
   # data directory: the A5 projects (desktop, phone, 320 px, 200% zoom, dark,
   # reduced motion, forced colours, WebKit). Zero axe violations, no CSP violations.
-  e2e:
+  # Three jobs: the UI projects in three shards (no Docker needed), the real-Docker
+  # flows apart (a Docker network or container appearing changes the host's network
+  # interfaces, and Chromium aborts every other test's in-flight requests when that
+  # happens: net::ERR_NETWORK_CHANGED), and one small job that reads every report so
+  # the flaky limit stays global.
+  e2e-ui:
     needs: web
     runs-on: ubuntu-latest
-    # 45: the run took 26 of 30 minutes at M3a step 13 (UI projects, then the real-Docker
-    # specs, one worker), and step 14 adds specs to both.
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
+      - name: build the binary with the app embedded
+        run: |
+          CGO_ENABLED=0 go build -tags spa -trimpath -o bin/serverdock ./cmd/serverdock
+          bin/serverdock version | tee /dev/stderr | grep -q ' ui=spa$'
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - name: install the browsers
+        run: npx playwright install --with-deps chromium webkit
+        working-directory: web
+      - name: playwright (UI projects, shard ${{ matrix.shard }} of 3)
+        run: E2E_SET=ui E2E_REPORT=ui-${{ matrix.shard }} npx playwright test --shard=${{ matrix.shard }}/3
+        working-directory: web
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-report-ui-${{ matrix.shard }}
+          path: web/e2e/.reports
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: playwright-results-ui-${{ matrix.shard }}
+          path: web/e2e/.results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  e2e-docker:
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # registry:2, pinned by digest (the same multi-arch index as the integration job).
       REGISTRY_IMAGE: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
@@ -128,33 +180,54 @@ jobs:
           docker build -t "$SD_TEST_APP_IMAGE" internal/agent/dockerapi/testdata/app
           docker push "$SD_TEST_APP_IMAGE"
       - name: install the browsers
-        run: npx playwright install --with-deps chromium webkit
-        working-directory: web
-      - name: playwright (UI projects)
-        run: E2E_SET=ui npx playwright test
+        run: npx playwright install --with-deps chromium
         working-directory: web
       - name: playwright (real Docker flows, one worker)
-        # Apart from the UI run: a Docker network or container appearing changes the
-        # host's network interfaces, and Chromium aborts every other test's in-flight
-        # requests when that happens (net::ERR_NETWORK_CHANGED).
-        run: E2E_SET=docker npx playwright test --workers=1
+        run: E2E_SET=docker E2E_REPORT=docker npx playwright test --workers=1
         working-directory: web
-      - name: flaky tests (fails above 3)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        run: node e2e/flaky-report.mjs
-        working-directory: web
+        with:
+          name: e2e-report-docker
+          path: web/e2e/.reports
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: playwright-results
-          path: |
-            web/e2e/.results
-            web/e2e/.reports
+          name: playwright-results-docker
+          path: web/e2e/.results
           if-no-files-found: ignore
           retention-days: 7
       - name: registry log on failure
         if: failure()
         run: docker logs sd-registry || true
+
+  # Reads every shard's report once, so "more than 3 flaky tests" counts the whole run.
+  e2e:
+    needs: [e2e-ui, e2e-docker]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-report-*
+          merge-multiple: true
+          path: web/e2e/.reports
+      - name: a job that did not finish fails the run
+        if: needs.e2e-ui.result != 'success' || needs.e2e-docker.result != 'success'
+        run: |
+          echo "e2e-ui: ${{ needs.e2e-ui.result }}, e2e-docker: ${{ needs.e2e-docker.result }}"
+          exit 1
+      - name: flaky tests (fails above 3)
+        if: always()
+        run: node e2e/flaky-report.mjs
+        working-directory: web
 
   build:
     needs: [lint-test, web]

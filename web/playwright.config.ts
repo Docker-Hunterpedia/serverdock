@@ -26,7 +26,7 @@ export default defineConfig({
 	// is visible and cannot hide behind the retry.
 	retries: process.env.CI ? 1 : 0,
 	workers: process.env.CI ? 2 : undefined,
-	reporter: process.env.CI ? [['list'], ['github'], ['json', { outputFile: `e2e/.reports/report-${SET}.json` }]] : 'list',
+	reporter: process.env.CI ? [['list'], ['github'], ['json', { outputFile: `e2e/.reports/report-${process.env.E2E_REPORT ?? SET}.json` }]] : 'list',
 	globalSetup: './e2e/global-setup.ts',
 	use: {
 		baseURL: BASE_URL,
