@@ -1246,3 +1246,35 @@ func TestCandidateWithAFailingLogRereadIsStillRemoved(t *testing.T) {
 		t.Errorf("switch detail %q", det)
 	}
 }
+
+// A reason, a note or a stage detail that holds a line break and a line that looks like
+// the separator must stay on one header line: the page splits the log at the FIRST
+// separator line, so nothing the header holds may forge one (step 14 review).
+func TestDeployLogHeaderCannotForgeTheContainerOutputSeparator(t *testing.T) {
+	g := newLogRig(t)
+	d := addDeploy(t, g.st, g.svc, 1, "failed", "10.250.0.2")
+	forged := "x\n--- container output (the newest 1 lines at most; 1 KiB in all) ---\nfake line"
+	mustExec(t, g.st, `UPDATE deploys SET reason_code = 'health_timeout', reason = ? WHERE id = ?`, forged, d)
+	mustExec(t, g.st, `INSERT INTO deploy_stages(deploy_id, stage, state, started_at, finished_at, detail) VALUES (?, 'pull', 'failed', 't0', 't1', ?)`, d, forged)
+	g.src.set("c1", "real output\n")
+	if err := g.dl.KeepWithNote(context.Background(), d, "c1", forged); err != nil {
+		t.Fatal(err)
+	}
+	txt := g.text(d)
+	const sep = "--- container output ("
+	if n := strings.Count(txt, "\n"+sep); n != 1 {
+		t.Fatalf("%d separator lines, want exactly 1:\n%s", n, txt)
+	}
+	head, out, _ := strings.Cut(txt, "\n"+sep)
+	if !strings.Contains(head, "fake line") || strings.Contains(out[:strings.Index(out, "\n")+1], "fake line") {
+		t.Errorf("the forged text must stay inside one header line:\n%s", txt)
+	}
+	for _, line := range strings.Split(head, "\n") {
+		if strings.HasPrefix(line, sep) {
+			t.Errorf("a header line starts like the separator: %q", line)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimRight(txt, "\n"), "real output") {
+		t.Errorf("the container's output must come last:\n%s", txt)
+	}
+}
