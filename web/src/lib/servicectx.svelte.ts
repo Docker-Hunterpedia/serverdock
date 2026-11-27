@@ -79,15 +79,20 @@ export class ServiceCtx {
 		if (this.busy) this.say('Another action on this service is still running. Wait for it to finish, then try again.');
 		return !this.busy;
 	}
-	/** Starts an action; `label` ("Restarting…") goes to the status region while the request runs. */
-	begin(label: string): boolean {
-		if (!this.idle()) return false;
+	/** Bumped when another service is opened: a request that started for the old one must not free the new one's lock. */
+	generation = 0;
+	/**
+	 * Starts an action; `label` ("Restarting…") goes to the status region while the
+	 * request runs. Returns the function that ends it (null when another action runs).
+	 */
+	begin(label: string): (() => void) | null {
+		if (!this.idle()) return null;
 		this.busy = true;
+		const gen = this.generation;
 		this.say(label);
-		return true;
-	}
-	end() {
-		this.busy = false;
+		return () => {
+			if (this.generation === gen) this.busy = false;
+		};
 	}
 
 	say(message: string) {

@@ -36,6 +36,7 @@
 	let error = $state('');
 	let status = $state('');
 	let busy = $state(false);
+	let forced = false; // close() was called by the page: the dialog really goes, even mid-request
 	const uid = Math.random().toString(36).slice(2, 8);
 	let opener: HTMLElement | null = null;
 	onMount(trackOpener);
@@ -46,6 +47,7 @@
 
 	/** Closes the dialog as if Cancel was chosen (the page navigated away), even while a request runs. */
 	export function close() {
+		forced = true;
 		finish(false);
 	}
 
@@ -56,6 +58,7 @@
 		error = '';
 		status = '';
 		busy = false;
+		forced = false;
 		run = onConfirm;
 		await tick();
 		const answer = new Promise<{ ok: boolean; value: string }>((r) => (resolve = r));
@@ -107,7 +110,7 @@
 	}
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="form-title-{uid}" aria-describedby="form-body-{uid}" oncancel={(e) => { e.preventDefault(); if (!busy) finish(false); }} onclose={() => finish(false)}>
+<dialog bind:this={dialog} aria-labelledby="form-title-{uid}" aria-describedby="form-body-{uid}" oncancel={(e) => { e.preventDefault(); if (!busy) finish(false); }} onclose={() => (busy && !forced ? dialog?.showModal() : finish(false))}>
 	<form onsubmit={submit} novalidate aria-busy={busy}>
 		<h2 id="form-title-{uid}">{spec.title}</h2>
 		<div id="form-body-{uid}">

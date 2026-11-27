@@ -34,7 +34,9 @@
 			],
 			confirm: `Roll back to #${d.number}`
 		});
-		if (!ok || ctx.ref !== ref || !ctx.begin('Rollback request sent, waiting for the answer…')) return;
+		if (!ok || ctx.ref !== ref) return;
+		const end = ctx.begin('Rollback request sent, waiting for the answer…');
+		if (!end) return;
 		try {
 			const q = await runAction<QueuedDeploy>('services.rollback', { service: ref, to: d.number });
 			if (ctx.ref !== ref) return;
@@ -43,7 +45,7 @@
 		} catch (e) {
 			if (ctx.ref === ref) await ctx.fail(e);
 		} finally {
-			ctx.end();
+			end();
 		}
 	}
 </script>

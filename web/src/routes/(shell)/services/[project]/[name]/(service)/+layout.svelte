@@ -46,6 +46,7 @@
 			ctx.service = undefined;
 			ctx.deploys = undefined;
 			ctx.busy = false;
+			ctx.generation++;
 			ctx.clearMessages();
 			void ctx.load(false);
 		});
@@ -78,7 +79,8 @@
 
 	/** Runs one action: the label is spoken while it runs; the result is said only if this service is still the page. */
 	async function act<T>(ref: string, label: string, fn: () => Promise<T>, done: (out: T) => string) {
-		if (!ctx.begin(label)) return;
+		const end = ctx.begin(label);
+		if (!end) return;
 		try {
 			const out = await fn();
 			if (ctx.ref !== ref) return;
@@ -87,7 +89,7 @@
 		} catch (e) {
 			if (ctx.ref === ref) await ctx.fail(e);
 		} finally {
-			ctx.end();
+			end();
 		}
 	}
 
@@ -113,7 +115,8 @@
 				working: 'Deploy request sent, waiting for the answer'
 			},
 			async (image) => {
-				if (!ctx.begin('Deploy request sent, waiting for the answer…')) return 'Another action on this service is still running. Wait for it to finish, then try again.';
+				const end = ctx.begin('Deploy request sent, waiting for the answer…');
+				if (!end) return 'Another action on this service is still running. Wait for it to finish, then try again.';
 				try {
 					const out = await runAction<QueuedDeploy>('services.deploy', { service: ref, ...(image !== cur.image_ref ? { image_ref: image } : {}) });
 					if (ctx.ref === ref) {
@@ -127,11 +130,12 @@
 						return undefined;
 					}
 					const msg = mutationMessage(e);
+					if (!closed) ctx.status = ''; // the dialog shows the refusal; the page must not keep saying "waiting"
 					// With the dialog gone, the page's alert says it; with it open, it shows in the dialog and keeps the typed text.
 					if (closed && ctx.ref === ref) await ctx.alert(`The deploy was not queued: ${msg}`);
 					return msg;
 				} finally {
-					ctx.end();
+					end();
 				}
 			}
 		);
@@ -212,7 +216,7 @@
 		{:else if svc.needs_attention === 'previous_version_down'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A stop-first deploy failed and the previous version did not come back. Deploy again or roll back to a version that was live.</p></div>
 		{:else if svc.needs_attention === 'delete_confirm_again'}
-			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service needed a fresh confirmation and did not run. Nothing was deleted. Deploys that were queued when the delete was queued were cancelled. Open Settings and use Delete again, or Deploy to run the service again.</p></div>
+			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service needed a fresh confirmation and did not run. Nothing was deleted and the service was left as it was. Deploys and restarts that were queued, and a deploy that was running, were cancelled. Open Settings and use Delete again.</p></div>
 		{:else if svc.needs_attention === 'delete_interrupted'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service did not finish. Open Settings and delete it again to finish it.</p></div>
 		{/if}

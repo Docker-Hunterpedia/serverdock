@@ -229,7 +229,7 @@
 				if ((now.public_port ?? null) === want) {
 					pNotice = `The connection dropped while the proxy reloaded. ServerDock reads the public port as ${read}, as you asked, but cannot confirm that the proxy applied it. Use Try again, then check that the app answers.`;
 				} else {
-					pNotice = `The connection dropped before the answer arrived. ServerDock still reads the public port as ${read}, so the change was not saved. Use Refresh in a moment before trying again.`;
+					pNotice = `The connection dropped before the answer arrived. ServerDock still reads the public port as ${read}, so the change has not been saved (yet). Use Refresh in a moment before trying again.`;
 				}
 				pSummary = pNotice;
 				pStatus = '';
@@ -286,7 +286,8 @@
 			pStatus = 'Cancelled. The public port was not changed.';
 			return;
 		}
-		if (!ctx.begin('')) return;
+		const end = ctx.begin('');
+		if (!end) return;
 		pStatus = 'Sending the change to the proxy…';
 		try {
 			const out = await runAction<ServiceChange>('services.set_public_port', { service: ref, public_port: port });
@@ -294,7 +295,7 @@
 		} catch (err) {
 			await portFailure(err, port);
 		} finally {
-			ctx.end();
+			end();
 		}
 	}
 
@@ -314,7 +315,8 @@
 			pStatus = 'Cancelled. The public port was not changed.';
 			return;
 		}
-		if (!ctx.begin('')) return;
+		const end = ctx.begin('');
+		if (!end) return;
 		pStatus = 'Sending the change to the proxy…';
 		try {
 			const out = await runAction<ServiceChange>('services.set_public_port', { service: ref, clear: true });
@@ -322,12 +324,13 @@
 		} catch (err) {
 			await portFailure(err, null);
 		} finally {
-			ctx.end();
+			end();
 		}
 	}
 
 	async function tryAgain() {
-		if (!ctx.begin('')) return;
+		const end = ctx.begin('');
+		if (!end) return;
 		pStatus = 'Asking the proxy to apply the saved routes again…';
 		pSummary = null;
 		pError = '';
@@ -338,7 +341,7 @@
 		} catch (err) {
 			await portFailure(err);
 		} finally {
-			ctx.end();
+			end();
 		}
 	}
 
@@ -373,7 +376,8 @@
 			dStatus = 'Cancelled. Nothing was deleted.';
 			return;
 		}
-		if (!ctx.begin('')) return;
+		const end = ctx.begin('');
+		if (!end) return;
 		dStatus = 'Delete request sent, waiting for the answer…';
 		stepUpFor = `to delete ${ref}`;
 		try {
@@ -400,7 +404,8 @@
 			await tick();
 			dAlerts?.focus();
 		} finally {
-			ctx.end();
+			stepUpFor = '';
+			end();
 		}
 	}
 </script>
@@ -496,7 +501,7 @@
 
 	<section aria-labelledby="h-danger" class="block danger">
 		<h2 id="h-danger">Danger zone</h2>
-		{#if svc.needs_attention === 'delete_confirm_again'}<p><span aria-hidden="true">▲</span> A delete of this service was queued and did not run: it needed a fresh confirmation. Nothing was deleted. Deploys that were queued then were cancelled.</p>{/if}
+		{#if svc.needs_attention === 'delete_confirm_again'}<p><span aria-hidden="true">▲</span> A delete of this service was queued and did not run: it needed a fresh confirmation. Nothing was deleted. Deploys and restarts that were queued, and a deploy that was running, were cancelled. The service was left as it was.</p>{/if}
 		<p>Delete {ctx.ref}: stops and removes its containers and deletes its deploy history and logs. This cannot be undone.</p>
 		<Alerts error={dSummary} status={dStatus} bind:this={dAlerts} />
 		<div class="actions"><button type="button" class="danger-button" onclick={deleteService} aria-disabled={ctx.busy ? 'true' : undefined}>{deleteAgain ? 'Delete again' : 'Delete service'}</button></div>
