@@ -24,7 +24,7 @@
 	<p class="note">This deploy was just queued and runs in the background.</p>
 	{#if just.applied === false}
 		<div class="banner" data-testid="not-applied">
-			<p><span aria-hidden="true">▲</span> Saved, but not applied yet: {just.notice || 'the public port is not being served yet.'}</p>
+			<p><span aria-hidden="true">▲</span> {just.notice || 'Saved, but not applied yet: the public port is not being served yet.'}</p>
 		</div>
 	{/if}
 {/if}

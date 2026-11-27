@@ -626,8 +626,8 @@ test.describe('review fixes', () => {
 		expect(body.data.applied).toBe(false);
 		await expect(page).toHaveURL(/\/services\/default\/web\/deploys\/1$/);
 		const note = page.getByTestId('not-applied');
-		await expect(note).toContainText('Saved, but not applied yet:');
-		await expect(note).toContainText(body.data.notice);
+		await expect(note).toHaveText(`▲ ${body.data.notice}`.replace(/\s+/g, ' '));
+		await expect(note).not.toContainText('Saved, but not applied yet: Saved');
 		await expect(page.getByText('This deploy was just queued')).toBeVisible();
 		await expectNoAxeViolations(page, 'Deploy placeholder, not applied');
 	});

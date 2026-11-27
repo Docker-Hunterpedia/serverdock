@@ -173,6 +173,7 @@
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
 		if (busy) return;
+		status = ''; // a stale "Port set to 80." must not sit above a new alert
 		const { input, errs } = validate();
 		if (!input) {
 			await fail(Object.keys(errs).length === 1 ? 'One field needs fixing before the service can be created.' : `${Object.keys(errs).length} fields need fixing before the service can be created.`, errs);

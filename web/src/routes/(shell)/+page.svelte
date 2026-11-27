@@ -51,7 +51,8 @@
 		const c = (ctrl = new AbortController());
 		loading = true;
 		error = null;
-		status = announce ? 'Refreshing the overview…' : 'Loading the overview…';
+		clearTimeout(clearTimer);
+		status = announce ? 'Refreshing the overview…' : '';
 		try {
 			// The exposure check is a courtesy: when Docker cannot answer, the rest still shows.
 			const [list, exp] = await Promise.all([

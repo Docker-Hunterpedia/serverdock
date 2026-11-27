@@ -20,7 +20,8 @@
 		const c = (ctrl = new AbortController());
 		loading = true;
 		error = null;
-		status = announce ? 'Refreshing the list…' : 'Loading the services…';
+		clearTimeout(clearTimer);
+		status = announce ? 'Refreshing the list…' : '';
 		try {
 			const list = await listServices(c.signal);
 			if (c !== ctrl) return;
