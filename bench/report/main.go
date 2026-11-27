@@ -90,8 +90,9 @@ var scenarioNames = map[int]string{
 	3: "remote agent without proxy (report only until the slim agent, ADR 0008)",
 	4: "remote node: agent + its own Caddy",
 	// Step 15 (plan 0004): the S2 live-watcher server with real apps behind public ports.
-	5: "S2 with one exposed service (single node, one app container of the test image behind a public port)",
-	6: "S2 with 10 exposed idle services (report only: single node, ten app containers behind public ports)",
+	5: "S2 with one exposed service (single node, one app container of the test image behind a public port; compare with scenario 9, not with S2: the setup path differs)",
+	6: "S2 with 10 exposed idle services (report only: single node, ten app containers behind public ports; compare with scenario 9, not with S2)",
+	9: "S2 setup baseline with 0 services (report only: the same first-run setup, sign-in and API session as scenarios 5 and 6, no service)",
 }
 
 // Deploy scenarios (report only): RSS of the S2 server sampled every second around a deploy.
@@ -328,6 +329,10 @@ func writeGates(b *strings.Builder, gs []Gate) {
 // deploy for the report to say "back to baseline" (1 MB, decimal). Report only.
 const deployBackWithinBytes = 1 * mb
 
+// baselineStableBytes is how far the first and the last 5 s of the baseline may differ for the
+// baseline to count as stable (the server was still settling if not).
+const baselineStableBytes = 0.5 * mb
+
 // DeployRun is one run of a deploy scenario: the S2 server sampled every second before,
 // during and for 60 s after the deploy.
 type DeployRun struct {
@@ -341,6 +346,10 @@ type DeployRun struct {
 	NewHighWater       bool    `json:"new_high_water_mark"`
 	PeakRSS            float64 `json:"peak_vmrss_bytes"` // the higher of the sampled peak and a new VmHWM
 	RSSAfter60         float64 `json:"vmrss_at_plus_60s_bytes"`
+	BaselineAnon       float64 `json:"baseline_rssanon_median_bytes"`
+	AnonAfter60        float64 `json:"rssanon_at_plus_60s_bytes"`
+	BaselineDriftBytes float64 `json:"baseline_drift_bytes"` // median of the last 5 s before the deploy minus the first 5 s
+	BaselineStable     bool    `json:"baseline_stable"`      // the drift is within 0.5 MB
 	PeakOverBaseline   float64 `json:"peak_over_baseline_bytes"`
 	After60OverBase    float64 `json:"plus_60s_over_baseline_bytes"`
 	BackAtBaseline     bool    `json:"back_to_baseline"`
@@ -404,24 +413,57 @@ func deployRun(s []Sample, startOff, endOff, postS float64, hwmReset bool) (Depl
 		d.PeakRSS = d.HWMAfter // the kernel saw a higher peak than the 1 s samples
 	}
 	d.RSSAfter60 = median(rss(tail))
+	anon := func(v []Sample) float64 {
+		o := make([]float64, len(v))
+		for i, x := range v {
+			o[i] = x.RssAnon
+		}
+		return median(o)
+	}
+	d.BaselineAnon, d.AnonAfter60 = anon(before), anon(tail)
+	var first, last []Sample
+	for _, x := range before {
+		if x.T < t0+5 {
+			first = append(first, x)
+		}
+		if x.T >= tStart-5 {
+			last = append(last, x)
+		}
+	}
+	if len(first) > 0 && len(last) > 0 {
+		d.BaselineDriftBytes = median(rss(last)) - median(rss(first))
+	}
+	d.BaselineStable = d.BaselineDriftBytes <= baselineStableBytes && d.BaselineDriftBytes >= -baselineStableBytes
 	d.PeakOverBaseline = d.PeakRSS - d.BaselineRSS
 	d.After60OverBase = d.RSSAfter60 - d.BaselineRSS
 	d.BackAtBaseline = d.After60OverBase <= deployBackWithinBytes
 	return d, nil
 }
 
-// readEvents reads "<start offset> <end offset> <post seconds> [hwm reset 0|1]" from a run's ".events" file.
-func readEvents(path string) (start, end, post float64, reset bool, err error) {
+// events is a run's ".events" file: "<start offset> <end offset> <post seconds> [hwm reset 0|1
+// [start uptime end uptime]]". The offsets are seconds from the start of sampling; the uptimes are
+// the host's own at the start and end of the deploy, the samples' clock on the direct path.
+type events struct {
+	start, end, post float64
+	reset            bool
+	absStart, absEnd float64
+}
+
+func readEvents(path string) (e events, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, 0, false, err
+		return e, err
 	}
 	var r int
-	n, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%g %g %g %d", &start, &end, &post, &r)
+	n, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%g %g %g %d %g %g", &e.start, &e.end, &e.post, &r, &e.absStart, &e.absEnd)
 	if n < 3 {
-		return 0, 0, 0, false, fmt.Errorf("%s: %w", path, err)
+		return e, fmt.Errorf("%s: %w", path, err)
 	}
-	return start, end, post, r == 1, nil
+	e.reset = r == 1
+	if n < 6 {
+		e.absStart, e.absEnd = 0, 0
+	}
+	return e, nil
 }
 
 func loadDeploys(dir string) ([]DeployResult, error) {
@@ -449,11 +491,18 @@ func loadDeploys(dir string) ([]DeployResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", f, err)
 			}
-			a, b, post, reset, err := readEvents(f + ".events")
+			ev, err := readEvents(f + ".events")
 			if err != nil {
 				return nil, err
 			}
-			r, err := deployRun(samples, a, b, post, reset)
+			a, b := ev.start, ev.end
+			// On the direct path the deploy's host uptimes are the samples' own clock: align on
+			// them (the offsets assume sampling started the moment the clock was read). The helper
+			// path (another clock) keeps the offsets.
+			if m, err := os.ReadFile(f + ".mode"); err == nil && strings.TrimSpace(string(m)) == "direct" && ev.absStart > 0 && len(samples) > 0 {
+				a, b = ev.absStart-samples[0].T, ev.absEnd-samples[0].T
+			}
+			r, err := deployRun(samples, a, b, ev.post, ev.reset)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", f, err)
 			}
@@ -467,19 +516,35 @@ func loadDeploys(dir string) ([]DeployResult, error) {
 func writeDeploys(b *strings.Builder, ds []DeployResult) {
 	for _, d := range ds {
 		fmt.Fprintf(b, "## Scenario %d: %s\n\n", d.ID, d.Name)
-		fmt.Fprintf(b, "| run | deploy s | idle baseline MB | peak MB (during) | VmHWM before MB | VmHWM +60 s MB | new high-water mark | VmRSS at +60 s MB | +60 s over baseline MB | back to baseline (within 1 MB) |\n|---|---|---|---|---|---|---|---|---|---|\n")
+		fmt.Fprintf(b, "| run | deploy s | idle baseline MB | baseline stable (first vs last 5 s) | peak MB (during) | VmHWM before MB | VmHWM +60 s MB | new high-water mark | VmRSS at +60 s MB | +60 s over baseline MB | back to baseline (within 1 MB) | RssAnon baseline MB | RssAnon +60 s MB |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		var peaks, afters, bases []float64
+		noReset := false
+		unstable := false
 		for i, r := range d.Runs {
 			before := fmt.Sprintf("%.1f", r.HWMBefore/mb)
 			if r.HWMReset {
 				before = "reset"
+			} else {
+				noReset = true
 			}
-			fmt.Fprintf(b, "| %d | %.1f | %.1f | %.1f | %s | %.1f | %v | %.1f | %+.1f | %v |\n", i+1, r.DeployS, r.BaselineRSS/mb, r.PeakRSS/mb,
-				before, r.HWMAfter/mb, r.NewHighWater, r.RSSAfter60/mb, r.After60OverBase/mb, r.BackAtBaseline)
+			stable := fmt.Sprintf("yes (%+.1f MB)", r.BaselineDriftBytes/mb)
+			if !r.BaselineStable {
+				stable = fmt.Sprintf("NO (%+.1f MB)", r.BaselineDriftBytes/mb)
+				unstable = true
+			}
+			fmt.Fprintf(b, "| %d | %.1f | %.1f | %s | %.1f | %s | %.1f | %v | %.1f | %+.1f | %v | %.1f | %.1f |\n", i+1, r.DeployS, r.BaselineRSS/mb, stable, r.PeakRSS/mb,
+				before, r.HWMAfter/mb, r.NewHighWater, r.RSSAfter60/mb, r.After60OverBase/mb, r.BackAtBaseline, r.BaselineAnon/mb, r.AnonAfter60/mb)
 			peaks, afters, bases = append(peaks, r.PeakRSS), append(afters, r.RSSAfter60), append(bases, r.BaselineRSS)
 		}
 		fmt.Fprintf(b, "\nMedian of runs: baseline **%.1f MB**, peak **%.1f MB** (%+.1f MB), VmRSS 60 s after the deploy finished **%.1f MB** (%+.1f MB). Report only: sampled every 1 s from outside; the peak is the higher of the sampled maximum and a new VmHWM (\"reset\": the bench reset the high-water mark just before the deploy, so VmHWM is the peak since).\n\n",
 			median(bases)/mb, median(peaks)/mb, (median(peaks)-median(bases))/mb, median(afters)/mb, (median(afters)-median(bases))/mb)
+		fmt.Fprintf(b, "The deploy is a redeploy of an image already on the host: its layers are cached, so no pull or unpack is in it (a deploy of a new tag costs more). The deploy's end is known to the 2 s poll of the API.\n\n")
+		if noReset {
+			fmt.Fprintf(b, "**VmHWM was not reset for at least one run** (clear_refs was not writable: not the direct path, or not root): its VmHWM includes the earlier set-up deploys, so only the sampled (1 s) peak is reliable and a peak shorter than a second can be missed.\n\n")
+		}
+		if unstable {
+			fmt.Fprintf(b, "**The baseline moved by more than 0.5 MB in at least one run**: the server was still settling; read the peak against the last baseline seconds, or lengthen the warm-up.\n\n")
+		}
 	}
 }
 

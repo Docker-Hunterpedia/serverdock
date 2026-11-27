@@ -90,7 +90,7 @@ jobs:
   e2e-ui:
     needs: web
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25 # a shard takes 12-15 min in CI (plan 0004 Revision 20): about 1.7x
     strategy:
       fail-fast: false
       matrix:
@@ -143,7 +143,7 @@ jobs:
   e2e-docker:
     needs: web
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15 # takes about 8 min in CI: about 1.9x
     env:
       # registry:2, pinned by digest (the same multi-arch index as the integration job).
       REGISTRY_IMAGE: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373

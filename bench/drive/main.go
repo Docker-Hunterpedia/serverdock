@@ -232,8 +232,10 @@ func (c *client) setup(tokenFile, stateFile string) error {
 	return nil
 }
 
+// freePort returns a TCP port that is free on the loopback interface. (The apps' public ports are
+// bound by the product on every interface, so a port taken on another one is not seen here.)
 func freePort() (int, error) {
-	ln, err := net.Listen("tcp", ":0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -332,7 +334,7 @@ func (c *client) waitDeploy(service string, number int, deadline time.Time) erro
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s deploy %d: still %s/%s at the deadline", service, number, out.Deploy.Status, out.Deploy.Stage)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(2 * time.Second) // the deploy's finish is known to within this
 	}
 }
 

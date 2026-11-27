@@ -346,3 +346,72 @@ func TestLoadDeploysAndMarkdown(t *testing.T) {
 		t.Error("a deploy run without its events file must be an error")
 	}
 }
+
+func TestDeployRunBaselineStabilityAndAnon(t *testing.T) {
+	// The baseline climbs 1 MB across its 20 s: not stable. RssAnon is carried through.
+	var s []Sample
+	for i := 0; i < 105; i++ {
+		rss := 50 * mb
+		if i < 20 {
+			rss += float64(i) / 19 * mb
+		} else {
+			rss = 52 * mb
+		}
+		s = append(s, Sample{T: 1000 + float64(i), VmRSS: rss, VmHWM: 60 * mb, RssAnon: 20 * mb})
+	}
+	d, err := deployRun(s, 20.5, 40, 60, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.BaselineStable || d.BaselineDriftBytes < 0.8*mb {
+		t.Errorf("drift %v stable %v", d.BaselineDriftBytes, d.BaselineStable)
+	}
+	if d.BaselineAnon != 20*mb || d.AnonAfter60 != 20*mb {
+		t.Errorf("%+v", d)
+	}
+	r := Report{Deploys: []DeployResult{{ID: 7, Name: "x", Runs: []DeployRun{d}}}}
+	md := markdown(r)
+	for _, want := range []string{"VmHWM was not reset", "baseline moved by more than 0.5 MB", "layers are cached", "RssAnon"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("the report lacks %q", want)
+		}
+	}
+}
+
+// On the direct path the deploy's absolute host uptimes align the window, not the offsets.
+func TestLoadDeploysAlignsOnAbsoluteUptimesWhenDirect(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString("t_s\tvmrss\tvmhwm\trssanon\trssfile\tmem_current\tanon\tfile\tinactive_file\tusage_usec\n")
+	for i := 0; i < 105; i++ {
+		rss := 50e6
+		if i >= 25 && i <= 45 { // the deploy really ran 25..45 s into the samples
+			rss = 58e6
+		}
+		fmt.Fprintf(&b, "%d\t%.0f\t%.0f\t1\t2\t3\t1\t1\t1\t%d\n", 1000+i, rss, 58e6, i*1000)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("s7-r1.tsv", b.String())
+	// The offsets are 3 s late (sampling started early); the absolute uptimes are right.
+	write("s7-r1.tsv.events", "28 48 60 1 1025 1045\n")
+	write("s7-r1.tsv.mode", "direct\n")
+	ds, err := loadDeploys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ds[0].Runs[0].BaselineDriftBytes; got != 0 {
+		t.Errorf("drift %v: the window was not aligned on the absolute uptimes", got)
+	}
+	write("s7-r1.tsv.mode", "helper\n")
+	ds, err = loadDeploys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ds[0].Runs[0].BaselineDriftBytes; got < 7e6 {
+		t.Errorf("drift %v: on the helper path the offsets apply, so the late window's baseline holds deploy samples", got)
+	}
+}

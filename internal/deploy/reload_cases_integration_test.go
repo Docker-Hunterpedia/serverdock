@@ -12,6 +12,8 @@ import (
 	"net/http/httptrace"
 	"net/netip"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,49 +29,97 @@ import (
 // (step 15). MEASUREMENT, not a CI test: it is slow, so it runs only with
 //
 //	SD_TEST_RELOAD_CASES=1 SD_TEST_APP_IMAGE=127.0.0.1:5000/sd-testapp:1 \
-//	  go test -tags integration -run TestIntegrationReloadCasesWith100Routes -v -count=1 ./internal/deploy
+//	  go test -tags integration -run TestIntegrationReloadCasesWith100Routes -v -count=1 ./internal/deploy | grep -E '^(RESULT|NOTE)'
 //
-// (SD_TEST_RELOAD_N sets the repeats per case, default 3, 1 to 5.) Each case
-// prints one parseable line on stdout, "RESULT case=... key=value ...". What it
-// asserts is correctness only: no non-2xx response and no request that fails
-// even after one client retry. The numbers are reported, never gated.
+// SD_TEST_RELOAD_N sets the repeats per case (1 to 5, default 3);
+// SD_TEST_RELOAD_CONTROL_MS the length of one "no operation" window (default 250).
+// Each case prints one parseable line on stdout, "RESULT case=... key=value ...". The test
+// asserts correctness only: no non-2xx response and no request that fails even after one
+// retry on a new connection after 50 ms. The numbers are reported, never gated.
 //
-// Honest equivalent of 100 upstream routes: ONE real app container (the test
-// image, started through Docker) is the upstream of all 100 routes. The 100
-// services, their deploys and their state-map entries are rows and fixtures
-// that all point at that container's address; the Caddy side (100 listeners, a
-// 100-entry table, a reverse_proxy per request) and the Routes side (build,
-// hash, lock, apply with bind isolation) are the real ones, over the real agent
-// ops and the real embedded Caddy. Only the first-Sync case replaces Docker's
-// container list with a fixture of the same 100 containers (the real list would
-// hold one). VmHWM is the high-water mark of the TEST PROCESS (Caddy, the
-// Routes code, the store and the load generator together), reset at the start
-// of each case through /proc/self/clear_refs, so it is an upper bound of the
-// server's own, not its exact value.
+// What the numbers are:
+//   - loads_ok / loads_failed: Caddy config loads during the operation, counted without any
+//     product hook (see loadCounter). drops_per_op divides by operations, drops_per_load by
+//     all load attempts. A case that reloads nothing (a table swap) must show 0 loads.
+//   - drops: requests that got no response (never read, so never processed, safe to retry),
+//     per target (panel, app) and class (keep-alive, new-connection), with Go's own
+//     transparent retries of reused connections next to them.
+//   - failed_after_one_retry_on_new_conn_50ms: the client retries once, on a new connection
+//     (idle ones closed first) after 50 ms. An IMMEDIATE retry on the same pool failed about
+//     2 runs in 6 in the first version of this test (always a second EOF on a POST, never in a
+//     68,000-request run with no reload), so this column is the honest "a client that waits
+//     a moment is not failed" figure, not "a reload never fails a request".
+//   - reload_ms is the time of the apply (Routes call). cpu_gross is the process CPU (user plus
+//     system, getrusage) during it, cpu_net subtracts what the load generator alone burns in
+//     the same time (measured by the no-operation case): both are of the TEST PROCESS.
+//   - rss and hwm are of the test process too (Caddy, Routes, the store and the load
+//     generator together). Every operation resets the high-water mark first (clear_refs), so
+//     hwm_delta = VmHWM after minus VmRSS before is the growth across that reload; the
+//     absolute values only bound the server's from above.
+//
+// 100 upstream routes, honestly: ONE real app container (the test image, started through
+// Docker) is the upstream of all 100 routes. The 100 services, deploys and state-map entries
+// are rows and fixtures that all point at its address; the Caddy side (100 listeners and a
+// 100-entry table) and the Routes side (build, hash, lock, bind isolation) are the real ones,
+// over the real agent ops and the real embedded Caddy. The boot cases go through
+// Routes.Load, the real boot path (Reconciler.fullResync calls it with first = true), after a
+// real container_list and 100 real container_inspect calls on that one container with the
+// labels rewritten, timed apart from the apply.
 
-type rcClass struct {
-	name                              string
-	total, drops, goRetries, failures atomic.Int64
+type rcCounters struct{ total, drops, goRetries, failures atomic.Int64 }
+
+const (
+	tgtPanel = 0
+	tgtApp   = 1
+)
+
+// rcCounts is a snapshot: [target][class], class 0 keep-alive, 1 new-connection.
+type rcCounts struct{ total, drops, goRetries, failures [2][2]int64 }
+
+func (a rcCounts) sub(b rcCounts) (d rcCounts) {
+	for t := 0; t < 2; t++ {
+		for c := 0; c < 2; c++ {
+			d.total[t][c], d.drops[t][c] = a.total[t][c]-b.total[t][c], a.drops[t][c]-b.drops[t][c]
+			d.goRetries[t][c], d.failures[t][c] = a.goRetries[t][c]-b.goRetries[t][c], a.failures[t][c]-b.failures[t][c]
+		}
+	}
+	return d
 }
 
-type rcSnap struct{ total, drops, goRetries, failures [2]int64 }
+func (a *rcCounts) add(b rcCounts) {
+	for t := 0; t < 2; t++ {
+		for c := 0; c < 2; c++ {
+			a.total[t][c] += b.total[t][c]
+			a.drops[t][c] += b.drops[t][c]
+			a.goRetries[t][c] += b.goRetries[t][c]
+			a.failures[t][c] += b.failures[t][c]
+		}
+	}
+}
+
+var rcClassNames = [2]string{"keepalive", "newconn"}
+var rcTargetNames = [2]string{"panel", "app"}
+
+type rcURL struct {
+	url    string
+	target int
+}
 
 // rcLoad is the load generator of TestIntegrationTwentyReloadsUnderLoadCauseNoNon2xx
 // (keep-alive and new-connection classes, per target), with POST requests
 // alternating with GET.
 type rcLoad struct {
-	cls       [2]*rcClass // keep-alive, new-connection
+	cnt       [2][2]rcCounters
 	badStatus atomic.Int64
 	firstBad  atomic.Value
 	stop      chan struct{}
 	wg        sync.WaitGroup
 }
 
-func newRCLoad() *rcLoad {
-	return &rcLoad{cls: [2]*rcClass{{name: "keep-alive"}, {name: "new-connection"}}, stop: make(chan struct{})}
-}
+func newRCLoad() *rcLoad { return &rcLoad{stop: make(chan struct{})} }
 
-func (l *rcLoad) hit(c *http.Client, method, url string, k *rcClass) {
+func (l *rcLoad) hit(c *http.Client, method string, u rcURL, class int) {
+	k := &l.cnt[u.target][class]
 	k.total.Add(1)
 	var resp *http.Response
 	var err error
@@ -79,7 +129,7 @@ func (l *rcLoad) hit(c *http.Client, method, url string, k *rcClass) {
 		if method == "POST" {
 			body = strings.NewReader("payload=1")
 		}
-		req, _ := http.NewRequest(method, url, body)
+		req, _ := http.NewRequest(method, u.url, body)
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { conns.Add(1) }}))
 		resp, err = c.Do(req)
 		if n := conns.Load(); n > 1 {
@@ -93,7 +143,7 @@ func (l *rcLoad) hit(c *http.Client, method, url string, k *rcClass) {
 			// A reload closes every idle keep-alive connection at once, and Go never
 			// retries a POST by itself: without this the retry could pick a second
 			// pooled connection that the same reload closed, which says nothing about
-			// the proxy. The client retries on a new connection.
+			// the proxy. The client retries on a new connection ...
 			c.CloseIdleConnections()
 			// ... after a short pause: an immediate retry can land in the same few
 			// milliseconds of the same reload (measured: 2 of 6 runs without it, always a
@@ -103,21 +153,21 @@ func (l *rcLoad) hit(c *http.Client, method, url string, k *rcClass) {
 	}
 	if err != nil {
 		k.failures.Add(1)
-		l.firstBad.CompareAndSwap(nil, fmt.Sprintf("%s %s (%s): %v", method, url, k.name, err))
+		l.firstBad.CompareAndSwap(nil, fmt.Sprintf("%s %s (%s): %v", method, u.url, rcClassNames[class], err))
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		l.badStatus.Add(1)
-		l.firstBad.CompareAndSwap(nil, fmt.Sprintf("%s %s: %s", method, url, resp.Status))
+		l.firstBad.CompareAndSwap(nil, fmt.Sprintf("%s %s: %s", method, u.url, resp.Status))
 	}
 }
 
-func (l *rcLoad) start(urls []string) {
+func (l *rcLoad) start(urls []rcURL) {
 	for _, u := range urls {
-		for i, k := range l.cls {
-			tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: i == 1, MaxIdleConnsPerHost: 4}
+		for class := 0; class < 2; class++ {
+			tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: class == 1, MaxIdleConnsPerHost: 4}
 			c := &http.Client{Transport: tr, Timeout: 10 * time.Second}
 			l.wg.Go(func() {
 				defer tr.CloseIdleConnections()
@@ -130,7 +180,7 @@ func (l *rcLoad) start(urls []string) {
 						if n%2 == 1 {
 							m = "POST"
 						}
-						l.hit(c, m, u, k)
+						l.hit(c, m, u, class)
 						time.Sleep(2 * time.Millisecond)
 					}
 				}
@@ -144,9 +194,12 @@ func (l *rcLoad) finish() {
 	l.wg.Wait()
 }
 
-func (l *rcLoad) snap() (s rcSnap) {
-	for i, k := range l.cls {
-		s.total[i], s.drops[i], s.goRetries[i], s.failures[i] = k.total.Load(), k.drops.Load(), k.goRetries.Load(), k.failures.Load()
+func (l *rcLoad) snap() (s rcCounts) {
+	for t := 0; t < 2; t++ {
+		for c := 0; c < 2; c++ {
+			k := &l.cnt[t][c]
+			s.total[t][c], s.drops[t][c], s.goRetries[t][c], s.failures[t][c] = k.total.Load(), k.drops.Load(), k.goRetries.Load(), k.failures.Load()
+		}
 	}
 	return s
 }
@@ -176,13 +229,50 @@ func rcProc(t *testing.T) (rss, hwm float64) {
 type rcCase struct {
 	name                  string
 	ops                   int
-	ms                    []float64
-	total, drops, retries [2]int64 // keep-alive, new-connection
-	failures              [2]int64
+	ms, listMS            []float64
+	cpuGross, cpuNet      time.Duration
+	loadsOK, loadsFailed  int64
+	cnt                   rcCounts
 	routes                int
-	rssStart, hwmStart    float64
-	rssEnd, hwmEnd        float64
+	rssStart, rssEnd      float64 // sums over the operations, divided by ops when printed
+	hwmDeltaSum, hwmDelta float64 // the sum and the largest growth of the high-water mark
 	hwmReset              bool
+	extra                 string // more key=value pairs for the RESULT line
+}
+
+func (c *rcCase) print() {
+	n := float64(c.ops)
+	var sum, mx float64
+	for _, v := range c.ms {
+		sum += v
+		mx = max(mx, v)
+	}
+	loads := c.loadsOK + c.loadsFailed
+	var b strings.Builder
+	fmt.Fprintf(&b, "RESULT case=%s routes=%d ops=%d loads_ok=%d loads_failed=%d loads_ok_per_op=%.2f loads_failed_per_op=%.2f "+
+		"reload_ms_mean=%.1f reload_ms_max=%.1f cpu_gross_ms_mean=%.2f cpu_net_ms_mean=%.2f "+
+		"rss_start_mb=%.1f rss_end_mb=%.1f rss_delta_mb=%.1f hwm_delta_mb_mean=%.1f hwm_delta_mb_max=%.1f hwm_reset=%v",
+		c.name, c.routes, c.ops, c.loadsOK, c.loadsFailed, float64(c.loadsOK)/n, float64(c.loadsFailed)/n,
+		sum/n, mx, float64(c.cpuGross.Microseconds())/1000/n, float64(c.cpuNet.Microseconds())/1000/n,
+		c.rssStart/n/1e6, c.rssEnd/n/1e6, (c.rssEnd-c.rssStart)/n/1e6, c.hwmDeltaSum/n/1e6, c.hwmDelta/1e6, c.hwmReset)
+	for t := 0; t < 2; t++ {
+		for k := 0; k < 2; k++ {
+			p := rcTargetNames[t] + "_" + rcClassNames[k]
+			fmt.Fprintf(&b, " %s_requests=%d %s_drops=%d %s_drops_per_op=%.2f %s_drops_per_load=%.2f %s_go_retries=%d %s_failed_after_one_retry_on_new_conn_50ms=%d",
+				p, c.cnt.total[t][k], p, c.cnt.drops[t][k], p, float64(c.cnt.drops[t][k])/n, p, ratio(c.cnt.drops[t][k], loads), p, c.cnt.goRetries[t][k], p, c.cnt.failures[t][k])
+		}
+	}
+	if len(c.listMS) > 0 {
+		var s float64
+		for _, v := range c.listMS {
+			s += v
+		}
+		fmt.Fprintf(&b, " list_inspect_ms_mean=%.1f", s/float64(len(c.listMS)))
+	}
+	if c.extra != "" {
+		b.WriteString(" " + c.extra)
+	}
+	fmt.Println(b.String())
 }
 
 func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
@@ -206,6 +296,15 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	subnet[3] = 2
 	ip := netip.AddrFrom4(subnet).String()
 	g.startApp(t, ref, "R", ip)
+	realID := itDocker(t, "inspect", "-f", "{{.Id}}", "sd-it-"+g.inst[:8]+"-r")
+
+	counter, err := startLoadCounter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var counterOnce sync.Once
+	closeCounter := func() { counterOnce.Do(counter.Close) }
+	t.Cleanup(closeCounter) // idempotent: the test closes it itself before reporting
 
 	// 100 exposed services in the end: stable + n victims (deleted in the
 	// delete case) + T (the toggled one, unexposed to begin with). B is a spare
@@ -255,6 +354,19 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		}
 		return cs
 	}
+
+	// Idle RSS with the routes (plan 0004 Revision 9): the process before and after the
+	// first apply of ~100 routes, settled, with no load running.
+	settle := func(t *testing.T) float64 {
+		t.Helper()
+		time.Sleep(500 * time.Millisecond)
+		runtime.GC()
+		debug.FreeOSMemory()
+		time.Sleep(300 * time.Millisecond)
+		rss, _ := rcProc(t)
+		return rss
+	}
+	rssNoRoutes := settle(t)
 	r := NewRoutes(st, g.cl, nil)
 	if err := r.ApplyRoutes(ctx, func() error { r.state.replace(fixture()); return nil }); err != nil {
 		t.Fatal(err)
@@ -262,11 +374,15 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	if got := len(g.applier.Applied()); got != nStable+n {
 		t.Fatalf("applied %d routes, want %d", got, nStable+n)
 	}
+	rssRoutes := settle(t)
+	fmt.Printf("RESULT case=idle_rss_with_routes routes=%d rss_no_routes_mb=%.1f rss_with_routes_mb=%.1f delta_mb=%.1f note=test_process_idle_after_gc\n",
+		len(g.applier.Applied()), rssNoRoutes/1e6, rssRoutes/1e6, (rssRoutes-rssNoRoutes)/1e6)
+	fmt.Println("NOTE loads are counted without a product hook; drops are requests with no response, retried once on a new connection after 50 ms; rss/hwm/cpu are of the whole test process")
 
 	panel := "https://127.0.0.1:" + strconv.Itoa(g.panelPort) + "/"
-	appURL := func(s svc) string { return "http://127.0.0.1:" + strconv.Itoa(s.port) + "/cgi-bin/id" }
+	appURL := func(s svc) rcURL { return rcURL{"http://127.0.0.1:" + strconv.Itoa(s.port) + "/cgi-bin/id", tgtApp} }
 	load := newRCLoad()
-	load.start([]string{panel, appURL(stable[0]), appURL(stable[1])})
+	load.start([]rcURL{{panel, tgtPanel}, appURL(stable[0]), appURL(stable[1])})
 	loads := []*rcLoad{load}
 	t.Cleanup(func() {
 		for _, l := range loads {
@@ -280,29 +396,40 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	var results []*rcCase
+	hwmReset := os.WriteFile("/proc/self/clear_refs", []byte("5"), 0) == nil
 	begin := func(name string) *rcCase {
-		c := &rcCase{name: name}
-		c.hwmReset = os.WriteFile("/proc/self/clear_refs", []byte("5"), 0) == nil
-		c.rssStart, c.hwmStart = rcProc(t)
+		c := &rcCase{name: name, hwmReset: hwmReset}
 		results = append(results, c)
 		return c
 	}
-	// op runs one reload, then lets trailing drops land before reading the counters.
+	var cpuRate float64 // CPU seconds the load generator burns per wall second, from the no-operation case
+	// op runs one operation, then lets trailing drops land before reading the counters.
 	op := func(c *rcCase, l *rcLoad, f func() error) {
+		_ = os.WriteFile("/proc/self/clear_refs", []byte("5"), 0)
+		rss0, _ := rcProc(t)
 		before := l.snap()
+		ok0, fail0 := counter.snap()
+		cpu0, _ := cpuTime()
 		t0 := time.Now()
 		if err := f(); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		c.ms = append(c.ms, float64(time.Since(t0).Microseconds())/1000)
+		dur := time.Since(t0)
+		cpu1, _ := cpuTime()
 		time.Sleep(250 * time.Millisecond)
-		after := l.snap()
-		for i := 0; i < 2; i++ {
-			c.total[i] += after.total[i] - before.total[i]
-			c.drops[i] += after.drops[i] - before.drops[i]
-			c.retries[i] += after.goRetries[i] - before.goRetries[i]
-			c.failures[i] += after.failures[i] - before.failures[i]
-		}
+		ok1, fail1 := counter.snap()
+		rss1, hwm1 := rcProc(t)
+		c.cnt.add(l.snap().sub(before))
+		c.ms = append(c.ms, float64(dur.Microseconds())/1000)
+		c.cpuGross += cpu1 - cpu0
+		c.cpuNet += netCPU(cpu1-cpu0, dur, cpuRate)
+		c.loadsOK += ok1 - ok0
+		c.loadsFailed += fail1 - fail0
+		c.rssStart += rss0
+		c.rssEnd += rss1
+		d := max(hwm1-rss0, 0)
+		c.hwmDeltaSum += d
+		c.hwmDelta = max(c.hwmDelta, d)
 		c.ops++
 		c.routes = len(g.applier.Applied())
 	}
@@ -321,20 +448,29 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		}
 	}
 
-	{ // control: no reload at all, for the baseline of drops and failures of the load itself
-		ctl := begin("control_no_reload")
+	// 0: no operation: the load generator alone (its drops, failures and CPU rate).
+	{
+		ctl := begin("no_operation_load_generator_baseline")
 		for i := 0; i < n; i++ {
 			op(ctl, load, func() error { time.Sleep(time.Duration(ctlMS) * time.Millisecond); return nil })
 		}
-		ctl.finishHWM(t)
+		cpuRate = ctl.cpuGross.Seconds() / (sumF(ctl.ms) / 1000)
+		ctl.cpuNet = 0 // not defined for the baseline itself
 	}
+
+	// 0b: a real table swap (a switch that keeps the port set): no load at all.
+	{
+		sw := begin("table_swap_switch_no_reload")
+		for i := 0; i < n; i++ {
+			op(sw, load, func() error { return r.SetOverride(ctx, stable[5].id, Override{Kind: OverrideMaintenance}) })
+			op(sw, load, func() error { return r.ClearOverride(ctx, stable[5].id) })
+		}
+	}
+
 	// 1-3: a port that another program holds (bind isolation), "Try again" while it
-	// is still held, and "Try again" once it is free.
-	bind, again, freed := begin("bind_isolation"), &rcCase{name: "try_again_port_still_taken"}, &rcCase{name: "try_again_port_freed"}
-	results = append(results, again, freed)
-	for _, c := range []*rcCase{again, freed} {
-		c.hwmReset, c.rssStart, c.hwmStart = bind.hwmReset, bind.rssStart, bind.hwmStart
-	}
+	// is still held, and "Try again" once it is free. ONE new port, taken: the fast path
+	// (the agent names the port in the bind error and retries without it).
+	bind, again, freed := begin("one_new_port_taken_fast_path"), begin("try_again_port_still_taken"), begin("try_again_port_freed")
 	base := len(g.applier.Applied())
 	for i := 0; i < n; i++ {
 		x := port()
@@ -363,34 +499,18 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 		wantApplied(base, "back to base")
 	}
-	for _, c := range []*rcCase{bind, again, freed} {
-		c.finishHWM(t)
-	}
 
 	// 4-6: add, change, clear a public port.
-	add, chg, clr := begin("add_public_port"), (*rcCase)(nil), (*rcCase)(nil)
+	add, chg, clr := begin("add_public_port"), begin("change_public_port"), begin("clear_public_port")
 	p1, p2 := port(), port()
 	for i := 0; i < n; i++ {
 		op(add, load, setPort(tog.id, p1))
 		wantApplied(100, "add")
-		if i == 0 {
-			chg = &rcCase{name: "change_public_port"}
-			results = append(results, chg)
-			clr = &rcCase{name: "clear_public_port"}
-			results = append(results, clr)
-			for _, c := range []*rcCase{chg, clr} {
-				c.hwmReset = add.hwmReset
-				c.rssStart, c.hwmStart = add.rssStart, add.hwmStart
-			}
-		}
 		op(chg, load, setPort(tog.id, p2))
 		wantApplied(100, "change")
 		op(clr, load, setPort(tog.id, nil))
 		wantApplied(99, "clear")
 		p1, p2 = p2, p1
-	}
-	for _, c := range []*rcCase{add, chg, clr} {
-		c.finishHWM(t)
 	}
 
 	// 7: delete an exposed service.
@@ -404,127 +524,170 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		})
 		wantApplied(nStable+n-1-i, "delete")
 	}
-	del.finishHWM(t)
 
-	// 8: the first Sync at boot: a fresh Caddy with the panel alone, a fresh
-	// Routes (state map not filled), the panel under load, then Sync of the 100
-	// routes. The restart itself is an outage by design and is
-	// not measured here (plan 0004 step 10 measures it).
+	// 8-10: the first load at boot: a fresh Caddy with the panel alone, a fresh Routes (state
+	// map not filled), the panel under load, then what the reconciler's first resync does:
+	// container_list, a container_inspect per container, ContainerFromInspect, and
+	// Routes.Load(first = true). The restart itself is an outage by design and is not
+	// measured here (plan 0004 step 10 measures it). The list and the inspects are timed
+	// apart from the apply. 0, 1 and 2 of the 100 new ports are held by another listener.
 	load.finish()
-	// Back to 100 exposed services for the boot case: T and n new ones.
+	// Back to 100 exposed services: T and n new ones.
 	mustExec(t, st, `UPDATE services SET public_port = ? WHERE id = ?`, port(), tog.id)
 	for i := 0; i < n; i++ {
 		mk("w"+strconv.Itoa(i), true)
 	}
-	boot := begin("first_sync_at_boot")
-	for i := 0; i < n && i < 3; i++ {
-		if err := g.applier.Stop(); err != nil {
-			t.Fatal(err)
-		}
-		if err := g.applier.Start(); err != nil {
-			t.Fatal(err)
-		}
-		r2 := NewRoutes(st, g.cl, nil)
-		bl := newRCLoad()
-		loads = append(loads, bl)
-		bl.start([]string{panel})
-		time.Sleep(500 * time.Millisecond)
-		want := 100
-		op(boot, bl, func() error { return r2.Sync(ctx, &rcBoot{st: st, ip: ip}) })
-		wantApplied(want, "first sync")
-		bl.finish()
-		load.badStatus.Add(bl.badStatus.Load())
-		if v := bl.firstBad.Load(); v != nil {
-			load.firstBad.CompareAndSwap(nil, v)
-		}
+	// The routes' ports, in the order of the rows: the ones held by another program.
+	rs, err := st.R.Query(`SELECT public_port FROM services WHERE public_port IS NOT NULL ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	boot.finishHWM(t)
+	var ports []int
+	for rs.Next() {
+		var p int
+		if err := rs.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		ports = append(ports, p)
+	}
+	rs.Close()
+	if len(ports) != 100 {
+		t.Fatalf("%d exposed services, want 100", len(ports))
+	}
+	bootSrc := &rcBoot{st: st, cl: g.cl, realID: realID, ip: ip}
+	boot := func(name string, taken, reps int) {
+		c := begin(name)
+		for i := 0; i < reps; i++ {
+			if err := g.applier.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.applier.Start(); err != nil {
+				t.Fatal(err)
+			}
+			var held []net.Listener
+			for k := 0; k < taken; k++ {
+				ln, err := net.Listen("tcp", ":"+strconv.Itoa(ports[10+k*7]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				held = append(held, ln)
+			}
+			r2 := NewRoutes(st, g.cl, nil)
+			bl := newRCLoad()
+			loads = append(loads, bl)
+			bl.start([]rcURL{{panel, tgtPanel}})
+			time.Sleep(500 * time.Millisecond)
+			t0 := time.Now()
+			all, err := bootSrc.listInspect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.listMS = append(c.listMS, float64(time.Since(t0).Microseconds())/1000)
+			if len(all) != 100 {
+				t.Fatalf("the boot list holds %d containers, want 100", len(all))
+			}
+			// As the reconciler runs it: a context with a cancel and no deadline.
+			// (the rig's own context has a 4-minute deadline, so this one does not derive from it).
+			bctx, cancel := context.WithCancel(context.Background())
+			if _, hasDeadline := bctx.Deadline(); hasDeadline {
+				t.Fatal("the boot context must have no deadline")
+			}
+			op(c, bl, func() error { return r2.Load(bctx, all, true, nil) })
+			cancel()
+			for k := 0; k < taken; k++ {
+				if r2.BindStatus(ports[10+k*7]) == "" {
+					t.Fatalf("%s: port %d is not reported as taken", name, ports[10+k*7])
+				}
+			}
+			wantApplied(100-taken, name)
+			for _, ln := range held {
+				ln.Close()
+			}
+			bl.finish()
+			load.badStatus.Add(bl.badStatus.Load())
+			if v := bl.firstBad.Load(); v != nil {
+				load.firstBad.CompareAndSwap(nil, v)
+			}
+		}
+		want := 1 // no port is taken: one load
+		if taken > 0 {
+			want = 2*taken + 3 // plan 0004 Revision 9's estimate
+		}
+		c.extra = fmt.Sprintf("containers=100 taken_ports=%d boot_ctx_has_deadline=false expected_loads_about=%d", taken, want)
+	}
+	boot("first_sync_at_boot", 0, min(n, 3))
+	boot("first_sync_at_boot_with_taken_ports_1", 1, min(n, 2))
+	boot("first_sync_at_boot_with_taken_ports_2", 2, min(n, 2))
+	closeCounter()
 
 	// Report.
-	var bad int64 = load.badStatus.Load()
+	bad := load.badStatus.Load()
 	for _, c := range results {
-		var sum, mx float64
-		for _, v := range c.ms {
-			sum += v
-			if v > mx {
-				mx = v
+		c.print()
+		for k := 0; k < 2; k++ {
+			var tot, fail int64
+			for tg := 0; tg < 2; tg++ {
+				tot += c.cnt.total[tg][k]
+				fail += c.cnt.failures[tg][k]
 			}
-		}
-		mean := sum / float64(len(c.ms))
-		per := func(v int64) float64 { return float64(v) / float64(c.ops) }
-		fmt.Printf("RESULT case=%s routes=%d ops=%d reload_ms_mean=%.1f reload_ms_max=%.1f "+
-			"keepalive_requests=%d keepalive_drops=%d keepalive_drops_per_reload=%.2f keepalive_go_retries=%d keepalive_failed_after_retry=%d "+
-			"newconn_requests=%d newconn_drops=%d newconn_drops_per_reload=%.2f newconn_go_retries=%d newconn_failed_after_retry=%d "+
-			"vmrss_start_mb=%.1f vmrss_end_mb=%.1f vmhwm_start_mb=%.1f vmhwm_end_mb=%.1f vmhwm_delta_mb=%.1f hwm_reset=%v\n",
-			c.name, c.routes, c.ops, mean, mx,
-			c.total[0], c.drops[0], per(c.drops[0]), c.retries[0], c.failures[0],
-			c.total[1], c.drops[1], per(c.drops[1]), c.retries[1], c.failures[1],
-			c.rssStart/1e6, c.rssEnd/1e6, c.hwmStart/1e6, c.hwmEnd/1e6, (c.hwmEnd-c.hwmStart)/1e6, c.hwmReset)
-		for i := 0; i < 2; i++ {
-			if c.failures[i] != 0 {
-				t.Errorf("%s: %d requests failed even after one client retry", c.name, c.failures[i])
+			if fail != 0 {
+				t.Errorf("%s: %d %s requests failed even after one retry on a new connection (first: %v)", c.name, fail, rcClassNames[k], load.firstBad.Load())
 			}
-			if c.total[i] < 20 {
-				t.Errorf("%s: only %d requests in the %s class; the load did not run", c.name, c.total[i], load.cls[i].name)
+			if tot < 20 {
+				t.Errorf("%s: only %d requests in the %s class; the load did not run", c.name, tot, rcClassNames[k])
 			}
 		}
 	}
+	fmt.Printf("NOTE load_generator_cpu_seconds_per_wall_second=%.3f\n", cpuRate)
 	if bad != 0 {
 		t.Errorf("%d non-2xx responses (first: %v)", bad, load.firstBad.Load())
 	}
-	if v := load.firstBad.Load(); v != nil && bad == 0 {
-		t.Logf("first failed request: %v", v)
+}
+
+func sumF(v []float64) (s float64) {
+	for _, x := range v {
+		s += x
 	}
+	return s
 }
 
-// finishHWM records the end values of a case's memory reading.
-func (c *rcCase) finishHWM(t *testing.T) {
-	t.Helper()
-	c.rssEnd, c.hwmEnd = rcProc(t)
-}
-
-// rcBoot is the BootSource of the first-Sync case: Docker's list replaced by
-// the fixture of the services that have a public port and an active deploy,
-// each as a running container at the one real app's address.
+// rcBoot is the list and inspect of the first resync: container_list through the real
+// agent op, and a real container_inspect on the one real container for each of the 100
+// fixture containers, its labels and address rewritten to the service's (one real
+// container cannot carry 100 identities).
 type rcBoot struct {
-	st *store.Store
-	ip string
+	st     *store.Store
+	cl     *agentops.Client
+	realID string
+	ip     string
 }
 
-func (b *rcBoot) rows() (ids, svcs, deps []string) {
-	rs, err := b.st.R.Query(`SELECT id, active_deploy_id FROM services WHERE active_deploy_id IS NOT NULL AND public_port IS NOT NULL ORDER BY id`)
+func (b *rcBoot) listInspect(ctx context.Context) ([]Container, error) {
+	if _, err := b.cl.ContainerList(ctx); err != nil { // the real list (one container of ours)
+		return nil, err
+	}
+	rs, err := b.st.R.QueryContext(ctx, `SELECT id, active_deploy_id FROM services WHERE active_deploy_id IS NOT NULL AND public_port IS NOT NULL ORDER BY id`)
 	if err != nil {
-		return nil, nil, nil
+		return nil, err
 	}
 	defer rs.Close()
+	var all []Container
 	for rs.Next() {
-		var s, d int64
-		if rs.Scan(&s, &d) == nil {
-			ids = append(ids, fmt.Sprintf("c%d", s))
-			svcs = append(svcs, strconv.FormatInt(s, 10))
-			deps = append(deps, strconv.FormatInt(d, 10))
+		var svc, dep int64
+		if err := rs.Scan(&svc, &dep); err != nil {
+			return nil, err
+		}
+		st, err := b.cl.ContainerInspect(ctx, b.realID)
+		if err != nil {
+			return nil, err
+		}
+		st.ID = fmt.Sprintf("c%d", svc)
+		st.Owned, st.State, st.Running, st.Restarting = true, "running", true, false
+		st.IP, st.ConfiguredIP = b.ip, b.ip
+		st.Labels = map[string]string{agentops.LabelService: strconv.FormatInt(svc, 10), agentops.LabelDeploy: strconv.FormatInt(dep, 10)}
+		if c, ok := ContainerFromInspect(st); ok {
+			all = append(all, c)
 		}
 	}
-	return ids, svcs, deps
-}
-
-func (b *rcBoot) ContainerList(context.Context) (agentops.ListResult, error) {
-	ids, svcs, deps := b.rows()
-	var out agentops.ListResult
-	for i := range ids {
-		out.Containers = append(out.Containers, agentops.ListedContainer{ID: ids[i], State: "running", IP: b.ip, ConfiguredIP: b.ip,
-			Labels: agentops.ListedLabels{Project: "1", Service: svcs[i], Deploy: deps[i], Attempt: "1"}})
-	}
-	return out, nil
-}
-
-func (b *rcBoot) ContainerInspect(_ context.Context, id string) (agentops.ContainerState, error) {
-	ids, svcs, deps := b.rows()
-	for i := range ids {
-		if ids[i] == id {
-			return agentops.ContainerState{ID: id, State: "running", Running: true, IP: b.ip, ConfiguredIP: b.ip, Owned: true,
-				Labels: map[string]string{agentops.LabelService: svcs[i], agentops.LabelDeploy: deps[i]}}, nil
-		}
-	}
-	return agentops.ContainerState{}, fmt.Errorf("no container %s", id)
+	return all, rs.Err()
 }

@@ -686,16 +686,16 @@ func (r *Routes) RemoveContainer(ctx context.Context, id string) error {
 	return r.apply(ctx, func() error { r.state.remove(id); return nil }, false, false)
 }
 
-// Sync is the boot hook: list the containers and inspect each of ours (outside
-// the route lock: these are Docker calls), then, under the route lock, load the
-// result into the state map, which opens the boot gate, and apply the routes. An
-// apply failure after the load leaves the gate open (the state is known; the
-// next apply retries). Step 10's watcher calls it after its events stream is
-// open (so no event is missed) and serialises event handling behind it, then
-// re-inspects the ids that had events during the list, one by one, with
-// SetContainer. A container that disappears between the list and its inspect is
-// skipped; any other error leaves the gate closed and the panel alone, and the
-// caller retries.
+// Sync lists the containers and inspects each of ours (outside the route lock:
+// these are Docker calls), then, under the route lock, loads the result into the
+// state map, which opens the boot gate, and applies the routes (retrying failed
+// ports, like the first resync). It has NO production caller: the server's boot
+// is Reconciler.fullResync (resync.go), which collects the same list and inspects
+// under its own rules and calls Routes.Load. Sync is the small equivalent the
+// Routes tests drive with a BootSource, and the semantics they pin are the ones
+// Load has: an apply failure after the load leaves the gate open; a container
+// that disappears between the list and its inspect is skipped; any other error
+// leaves the gate closed and the panel alone.
 func (r *Routes) Sync(ctx context.Context, src BootSource) error {
 	list, err := src.ContainerList(ctx)
 	if err != nil {
