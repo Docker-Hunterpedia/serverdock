@@ -444,7 +444,7 @@ Recorded at the end of M3a (2026-11-27). Evidence is the tests named in the rows
 - Accepted risks B10, QM3a-9, N13, `system.exposure`, deploy logs holding app credentials and the registry-host deferral (see Accepted risks). N13 has no engine-version warning.
 - Carried to later plans: the sentinel test over deploy output and `doctor --bundle` exclusion (plans 0005, 0009); registry-host rule-10 checks, `no-new-privileges` per service and automatic stop-first for writable volumes (plan 0005); a `doctor` check of the app subnet (plan 0009); a negative `OOMScoreAdjust` for ServerDock in the unit (plan 0009); revisit QM3a-9 and pause the scheduler for the trial boot (plan 0010).
 - Optional follow-ups from the reviews, with what they leave open:
-  - `expect_live` on `services.redeploy`: until it exists, a redeploy confirmed from a stale page can run the version that was live when the page was loaded, not the one live now (a refresh-to-confirm gap; it needs a signed-in session or `write` scope).
+  - `expect_live` on `services.redeploy`: until it exists, a redeploy confirmed from a stale page runs the version that is live when the action arrives, which may not be the one the page showed (a refresh-to-confirm gap; it needs a signed-in session or `write` scope).
   - A minimum interval between reconciler `Kick()` calls: until it exists, repeated service actions while Docker is down can reconnect the events stream faster than the back-off.
   - Sending agent errors out of band: until then a container can stop its own log from being kept by starting its output with the error prefix.
   - The e2e test teardown sweeps `sdpw-*` directories in the shared `/tmp` on developer and CI machines (a test-tooling side effect, not a server one).
