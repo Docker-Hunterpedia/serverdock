@@ -1302,3 +1302,72 @@ Recorded after step 11 and its reviews; later steps follow these.
 - **Plan 0009:** `doctor --bundle` excludes `deploy-logs/`.
 - **Optional:** send agent errors out of band, so a container cannot stop its own log from being kept by starting its output with the error prefix (`security`).
 - **Watch:** S4's full-run VmHWM is 49.7–49.8 MB against the 50 MB tripwire; the medians are 47.5–47.9 MB.
+
+## Revision 18 (step 12 implementation notes)
+
+Recorded after step 12 and its reviews; later steps follow these.
+
+- **Commits.**
+  - Implementation: `243df03` the API (`last_deploy`, `stopped` → `exited`); `2c4598f` Services list, New service, Overview and the Deploy route placeholder; `02c09af` e2e fixtures (local registry in CI, Docker server options, seeded rows, API mocks); `8233135` real-deploy helpers.
+  - Tests: `706e85f` (`tester`).
+  - Review fixes: `3f99b9f`, `d1aa5b9`.
+- **API.** `services.list` and `get` already carried the derived `state` (Revision 16's follow-up was mostly met).
+  - `stopped` is renamed **`exited`**, a client-visible enum change that matches `ServiceExited` and the plan. The words are `not_deployed`, `running`, `restarting`, `exited`, `missing`, `unknown`.
+  - A new **`last_deploy`** object (number, kind, status, reason code, app_safe, image ref, times) comes from one index seek per service.
+  - OpenAPI and the web types are regenerated. The SPA's types derive from `api-types.ts`.
+- **Pages.**
+  - The sidebar is Overview, Services, Settings.
+  - `/services`: an h2 per project ("Project <name>"); a table with a caption from 768 px and cards below (only one copy is exposed); Refresh; the empty state; "◌ Status unknown" and no stale rows after a failed load.
+  - `/services/new`:
+    - The fields, radio fieldsets and an Advanced `<details>` that opens on an error inside it.
+    - The public-port hint is always linked; the SEC6 paragraph, with the address the panel was opened on and the docs link, is linked once a port is typed.
+    - An error summary with links, field errors cleared on input, and typed input kept.
+    - A "Use port N" suggestion for well-known images that moves focus to the field and announces it.
+    - A visible busy state on "Create and deploy".
+    - An honest network-failure message ("may have been created; check Services").
+  - Overview: state counts, needs attention (failed, ◆ missing, route error, ◌ unknown, delete interrupted, `versions_kept`, `previous_version_down`, and also ▲ exited and ▲ restarting), the exposure banner (host ports, deduplicated), recent deploys and the empty state.
+  - The Deploy route is a placeholder until step 14. It states neutrally that it doesn't show a deploy's status yet. It shows the server's "not applied" notice and the SEC6 warning once, after create.
+- **Departures (accepted):**
+  - "Recent deploys" shows the latest deploy of each of the 5 most recently deployed services, not the 5 newest deploys overall; there is no `deploys.recent` action, and the caption says so.
+  - The suggested port comes from a client-side table of well-known images; there is no image inspection before the pull, and it is never filled in silently.
+  - Needs attention also lists exited and restarting.
+  - The pre-create SEC6 text duplicates the server's wording; an e2e test keeps them equal.
+  - Service links reach step 13's page.
+  - **"No requests while idle"** applies to each page's own data. The M2 shell footer's `system.info` poll (every 15 s while visible, approved in plan 0003) stays. Over 30 s idle, the Services list and Overview sent 0 requests of their own in every project.
+  - A Refresh status clears after 8 s through one timeout started by the click; there is no idle timer.
+- **e2e and CI.**
+  - The e2e job starts `registry:2` (the pinned digest), and builds and pushes the test app; inputs go through `env:`.
+  - Servers start under `setpriv --pdeathsig SIGKILL`. An exit hook and a global-teardown sweep remove leftover servers, containers and networks by instance label. Each worker gets its own /24.
+  - An earlier local run had leaked 4 orphaned servers, a container and networks; that is fixed and checked after every full run.
+- **Tests.** `web/e2e/services.spec.ts` (28+ tests), in all 8 projects (desktop, phone-390, phone-320, zoom-200, dark, reduced-motion, forced-colors, webkit), covers:
+  - axe on every screen state;
+  - create and deploy of the real test app, plus a failing image;
+  - the 30 s idle request count and Refresh;
+  - hints linked;
+  - typed input kept (browser error, server 409, network abort);
+  - keyboard-only path;
+  - 44 px targets;
+  - the CSP header;
+  - focus after "Use port N";
+  - honest create outcome and placeholder wording;
+  - host ports.
+
+  Full suite after the fixes: **929 passed, 47 skipped (existing shell specs), 0 failed**, with no leftovers. Services and shell specs after the last touch-up: 478 passed, 42 skipped, 0 failed. `go test -race ./...` passed with the Go change.
+- **Footprint:**
+  - quick S2 live watcher 58.1 MB, S4 48.9 MB (VmHWM 49.6), idle CPU 0.00/0.01 %;
+  - binary 19.90 MB gzip;
+  - first-load JS **41.2 KB** gzip (M2 40.6), total JS 87.6 KB (budget 250);
+  - nothing reaches the agent path;
+  - no new background work.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after one blocking round: the exposure banner showed the container port; create dropped the "not applied" notice; the placeholder claimed "queued". Then a copy fix: the notice is shown once.
+  - `accessibility` APPROVE (required), after one blocking round: focus lost after "Use N"; no visible busy state.
+  - `security` APPROVE.
+  - `footprint` APPROVE.
+
+### Revision 18, follow-ups for later steps
+
+- **Step 13:** the server notices say "Use Try again": the Public port form offers it through `services.retry_port`.
+- **Step 14:** replaces the placeholder. `takeCreated` reads the page once; the real page must react to parameter changes.
+- **Optional (`security`):** scope the e2e teardown sweep to the run that created each temp directory, and skip entries not owned by the current user.
+- **Optional (`reviewer`):** check for a duplicate service name before waiting for the routes, so a 409 is fast on a server without Docker.
