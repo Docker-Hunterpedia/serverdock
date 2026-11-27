@@ -133,6 +133,7 @@ record_host_docker() {
   PRE_NETS=$(host_nets | tr '\n' ' '); HOST_RECORDED=1
 }
 learn_instance() { # call once the server is up; waits up to 30 s for its app network
+  # (sd_inst, not id: the scenario loop below uses $id)
   [ "$HOST_DOCKER_USED" = 1 ] || return 0
   i=0
   while [ "$i" -lt 60 ]; do
@@ -141,19 +142,19 @@ learn_instance() { # call once the server is up; waits up to 30 s for its app ne
     # shellcheck disable=SC2086
     set -- $new
     if [ "$#" -eq 1 ]; then
-      id=$(docker network inspect -f '{{index .Labels "serverdock.instance"}}' "$1" 2>/dev/null || true)
-      if printf '%s' "$id" | grep -Eq '^[0-9a-f]{32}$'; then INSTANCE_IDS="$INSTANCE_IDS $id"; return 0; fi
+      sd_inst=$(docker network inspect -f '{{index .Labels "serverdock.instance"}}' "$1" 2>/dev/null || true)
+      if printf '%s' "$sd_inst" | grep -Eq '^[0-9a-f]{32}$'; then INSTANCE_IDS="$INSTANCE_IDS $sd_inst"; return 0; fi
     fi
     i=$((i + 1)); sleep 0.5
   done
   log "warning: the bench server's install id could not be learned (no single new app network): its containers and network are NOT removed"
 }
 clean_host_docker() { # call after the bench's own containers are gone (a network with endpoints cannot be removed)
-  for id in $INSTANCE_IDS; do
-    for c in $(docker ps -aq --filter "label=serverdock.instance=$id" 2>/dev/null || true); do
+  for sd_inst in $INSTANCE_IDS; do
+    for c in $(docker ps -aq --filter "label=serverdock.instance=$sd_inst" 2>/dev/null || true); do
       docker rm -f -v "$c" >/dev/null 2>&1 || true
     done
-    for n in $(docker network ls -q --filter "label=serverdock.instance=$id" 2>/dev/null || true); do
+    for n in $(docker network ls -q --filter "label=serverdock.instance=$sd_inst" 2>/dev/null || true); do
       docker network rm "$n" >/dev/null 2>&1 || true
     done
   done
