@@ -518,6 +518,7 @@ test.describe('review fixes', () => {
 	});
 
 	test('a create the proxy could not apply says so on the landing page, and the SEC6 text matches the server', async ({ page, server, admin }) => {
+		test.setTimeout(60_000); // the create waits about 20 s for the proxy's route on a server without Docker
 		// A server with no Docker: the route cannot be applied yet, and the first deploy fails later.
 		await signIn(page, server, admin);
 		await page.goto(`${server.baseURL}/services/new`);
