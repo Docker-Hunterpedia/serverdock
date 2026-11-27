@@ -313,8 +313,10 @@ func TestDeleteAfterTheFreshWindowExpiresAsksToConfirmAgain(t *testing.T) {
 	}
 	var attention *string
 	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attention)
-	if attention != nil {
-		t.Errorf("needs_attention %q after a refusal that changed nothing", *attention)
+	// The page cannot read the job's error, so the refusal leaves a flag it can read
+	// (not delete_interrupted: the reconciler skips those services).
+	if attention == nil || *attention != AttentionDeleteConfirmAgain {
+		t.Errorf("needs_attention %v after the refusal, want %q", attention, AttentionDeleteConfirmAgain)
 	}
 	if g.auditRows(`action = 'jobs.run_service_delete' AND phase = 'denied' AND executor = 'system'`) < 1 {
 		t.Error("the refusal was not audited")
@@ -326,6 +328,11 @@ func TestDeleteAfterTheFreshWindowExpiresAsksToConfirmAgain(t *testing.T) {
 	out2, err := g.deleteAs(again, "p/web", "p/web")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The new delete clears the flag when it is queued.
+	var after *string
+	if err := g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&after); err == nil && after != nil && *after == AttentionDeleteConfirmAgain {
+		t.Error("the confirm-again flag survived a new delete")
 	}
 	if s := g.wait(out2.Job); s != jobs.StateSucceeded {
 		t.Fatalf("second delete %s: %s", s, g.jobError(out2.Job))

@@ -198,6 +198,7 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 		return fmt.Errorf("deploy: jobs of kind %q are not supported", j.Kind)
 	}
 	in, _ := json.Marshal(RunDeployIn{Job: j.ID})
+	var deleteService int64
 	if j.Kind == jobs.KindServiceDelete {
 		// The target (the Confirm value) is in the job's payload.
 		var p struct {
@@ -207,6 +208,7 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 		if err := agent.DecodeArgs(j.Payload, &p); err != nil {
 			return errors.New("the delete job has no target")
 		}
+		deleteService = p.Service
 		in, _ = json.Marshal(RunDeleteIn{Job: j.ID, Service: p.Target})
 	}
 	reqID := jobs.RequestID(j.ID, j.Attempt)
@@ -241,7 +243,9 @@ func (r *Runner) Run(ctx context.Context, j jobs.Job) error {
 	var de *actions.DeniedError
 	if j.Kind == jobs.KindServiceDelete && errors.As(err, &de) && de.Code == "mfa_required" {
 		// The 5-minute fresh-2FA window passed while the service was stopping: nothing
-		// was deleted, and the user is told to confirm again.
+		// was deleted, and the user is told to confirm again (the service page reads it
+		// from needs_attention: the job's error is not visible to the SPA).
+		r.flagConfirmAgain(deleteService)
 		return confirmAgainError{}
 	}
 	return err

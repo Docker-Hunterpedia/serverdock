@@ -827,6 +827,8 @@ export interface components {
                 started_at?: string;
                 /** @description queued, running, succeeded, failed, cancelled or superseded */
                 status: string;
+                /** @description blue_green or stop_first: the strategy this deploy's settings recorded (a rollback to it keeps it) */
+                strategy?: string;
                 /** @description for a superseded deploy: the number of the deploy that replaced it in the queue */
                 superseded_by?: number;
                 /** @description who queued it: user, token, mcp, webhook or system */
@@ -880,6 +882,8 @@ export interface components {
                 started_at?: string;
                 /** @description queued, running, succeeded, failed, cancelled or superseded */
                 status: string;
+                /** @description blue_green or stop_first: the strategy this deploy's settings recorded (a rollback to it keeps it) */
+                strategy?: string;
                 /** @description for a superseded deploy: the number of the deploy that replaced it in the queue */
                 superseded_by?: number;
                 /** @description who queued it: user, token, mcp, webhook or system */

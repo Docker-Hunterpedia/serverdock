@@ -409,6 +409,10 @@
                 "description": "queued, running, succeeded, failed, cancelled or superseded",
                 "type": "string"
               },
+              "strategy": {
+                "description": "blue_green or stop_first: the strategy this deploy's settings recorded (a rollback to it keeps it)",
+                "type": "string"
+              },
               "superseded_by": {
                 "description": "for a superseded deploy: the number of the deploy that replaced it in the queue",
                 "type": "integer"
@@ -577,6 +581,10 @@
                 },
                 "status": {
                   "description": "queued, running, succeeded, failed, cancelled or superseded",
+                  "type": "string"
+                },
+                "strategy": {
+                  "description": "blue_green or stop_first: the strategy this deploy's settings recorded (a rollback to it keeps it)",
                   "type": "string"
                 },
                 "superseded_by": {

@@ -741,6 +741,15 @@ func TestDeploysListAndGet(t *testing.T) {
 		t.Errorf("%+v / %+v", a, b)
 	}
 	// The kind of caller (never an id) and the deploy that superseded one.
+	if l.Deploys[1].Strategy != "" || l.Deploys[0].Strategy != "" {
+		t.Errorf("strategy of snapshots without one: %q %q", l.Deploys[0].Strategy, l.Deploys[1].Strategy)
+	}
+	mustExec(t, g.st, `UPDATE deploys SET snapshot_json = ? WHERE id = ?`, `{"v":1,"image_ref":"nginx:1","strategy":"stop_first"}`, live)
+	if out, err := g.invoke(rigRead, "deploys.get", m{"service": "p/web", "number": 1}); err != nil {
+		t.Fatal(err)
+	} else if got := out.(DeploysGetOut).Deploy.Strategy; got != "stop_first" {
+		t.Errorf("the snapshot's strategy = %q", got)
+	}
 	if l.Deploys[0].TriggeredBy != "user" || l.Deploys[0].SupersededBy != 0 {
 		t.Errorf("triggered_by / superseded_by: %+v", l.Deploys[0])
 	}

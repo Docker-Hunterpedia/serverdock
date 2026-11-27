@@ -43,6 +43,15 @@ const ConfirmAgainMessage = "Confirming again is needed: the 5-minute window pas
 // did not finish.
 const AttentionDeleteInterrupted = "delete_interrupted"
 
+// AttentionDeleteConfirmAgain is services.needs_attention of a service whose delete
+// job was refused at run time for want of fresh two-factor confirmation: nothing was
+// deleted, the queued deploys of the service were cancelled when the delete was
+// queued, and the user must delete again. It is not delete_interrupted (the
+// reconciler skips those services; this one is whole). It is set only on a service
+// with no other reason, and cleared (1) when a new delete is queued and (2) when a
+// deploy of the service commits (the service is serving a version again).
+const AttentionDeleteConfirmAgain = "delete_confirm_again"
+
 // DeleteOut is the output of services.delete: the delete was queued, not done.
 type DeleteOut struct {
 	Service string `json:"service" doc:"<project>/<service>"`
@@ -97,6 +106,13 @@ func (d *svcDeps) delete(ctx context.Context, c actions.Call, in ServiceRefIn) (
 		return DeleteOut{}, actions.InvalidInput("%v", strings.TrimPrefix(err.Error(), "jobs: invalid request: "))
 	case err != nil:
 		return DeleteOut{}, err
+	}
+	// A new delete answers the old "confirm again" (best effort: it is only a hint).
+	if err := d.DB.WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention = ?`, r.id, AttentionDeleteConfirmAgain)
+		return err
+	}); err != nil {
+		d.Log.Warn("the confirm-again flag could not be cleared", "service", r.id, "err", err.Error())
 	}
 	return DeleteOut{Service: target, Job: out.JobID, Status: jobs.StateQueued, Cancelled: len(out.Cancelled), Flagged: len(out.CancelRunning)}, nil
 }
@@ -311,6 +327,19 @@ func (r *Runner) setAttention(service int64, code string) {
 	defer cancel()
 	if err := r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = ?`, code, service)
+		return err
+	}); err != nil {
+		r.cfg.Log.Error("a service's attention flag could not be written", "service", service, "err", err.Error())
+	}
+}
+
+// flagConfirmAgain records AttentionDeleteConfirmAgain on a service that has no other
+// reason (best effort).
+func (r *Runner) flagConfirmAgain(service int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), recordBound)
+	defer cancel()
+	if err := r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = ? AND needs_attention IS NULL`, AttentionDeleteConfirmAgain, service)
 		return err
 	}); err != nil {
 		r.cfg.Log.Error("a service's attention flag could not be written", "service", service, "err", err.Error())

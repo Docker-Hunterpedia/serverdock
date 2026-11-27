@@ -59,6 +59,7 @@ type DeployItem struct {
 	// TriggeredBy is the kind of caller that queued the deploy: user, token, mcp,
 	// webhook or system. It never names a user or a token.
 	TriggeredBy  string `json:"triggered_by,omitempty" doc:"who queued it: user, token, mcp, webhook or system"`
+	Strategy     string `json:"strategy,omitempty" doc:"blue_green or stop_first: the strategy this deploy's settings recorded (a rollback to it keeps it)"`
 	SupersededBy int    `json:"superseded_by,omitempty" doc:"for a superseded deploy: the number of the deploy that replaced it in the queue"`
 	CreatedAt    string `json:"created_at"`
 	StartedAt    string `json:"started_at,omitempty"`
@@ -160,7 +161,7 @@ func RegisterDeployReadActions(r *actions.Registry, deps DeployReadDeps) {
 
 const deployItemCols = `d.id, d.service_id, d.number, d.kind, d.status, d.stage, d.reason_code, d.reason, d.app_safe, json_extract(d.snapshot_json, '$.image_ref'),
 	d.image_id, d.repo_digest, COALESCE(d.id = s.active_deploy_id, 0), d.committed_at IS NOT NULL, d.created_at, d.started_at, d.finished_at,
-	d.actor_kind, COALESCE((SELECT x.number FROM deploys x WHERE x.id = d.superseded_by), 0)`
+	d.actor_kind, COALESCE((SELECT x.number FROM deploys x WHERE x.id = d.superseded_by), 0), COALESCE(json_extract(d.snapshot_json, '$.strategy'), '')`
 
 type itemRow struct {
 	id, service int64
@@ -172,7 +173,7 @@ func scanItem(s rowScanner, extra ...any) (itemRow, error) {
 	var stage, code, reason, safe, image, imageID, digest, started, finished sql.NullString
 	var active, was bool
 	dst := append([]any{&r.id, &r.service, &r.item.Number, &r.item.Kind, &r.item.Status, &stage, &code, &reason, &safe, &image, &imageID, &digest,
-		&active, &was, &r.item.CreatedAt, &started, &finished, &r.item.TriggeredBy, &r.item.SupersededBy}, extra...)
+		&active, &was, &r.item.CreatedAt, &started, &finished, &r.item.TriggeredBy, &r.item.SupersededBy, &r.item.Strategy}, extra...)
 	if err := s.Scan(dst...); err != nil {
 		return r, err
 	}

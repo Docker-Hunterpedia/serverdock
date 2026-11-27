@@ -322,7 +322,7 @@ func (rn *run) setAttention(code string) {
 			_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention IN (?, ?)`, rn.svc.id, AttentionPreviousDown, AttentionVersionsKept)
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = ? AND needs_attention IS NULL`, code, rn.svc.id)
+		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = ? AND (needs_attention IS NULL OR needs_attention = ?)`, code, rn.svc.id, AttentionDeleteConfirmAgain)
 		return err
 	})
 }
