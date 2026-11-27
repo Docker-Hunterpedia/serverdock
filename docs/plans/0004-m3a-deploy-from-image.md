@@ -1371,3 +1371,96 @@ Recorded after step 12 and its reviews; later steps follow these.
 - **Step 14:** replaces the placeholder. `takeCreated` reads the page once; the real page must react to parameter changes.
 - **Optional (`security`):** scope the e2e teardown sweep to the run that created each temp directory, and skip entries not owned by the current user.
 - **Optional (`reviewer`):** check for a duplicate service name before waiting for the routes, so a 409 is fast on a server without Docker.
+
+## Revision 19 (step 13 implementation notes)
+
+Recorded after step 13 and its reviews; later steps follow these.
+
+- **Commits.**
+  - Implementation:
+    - `4443e80` `deploys.list` and `get` carry `triggered_by` (the caller kind only) and `superseded_by` (a deploy number);
+    - `c1b0dd3` the service detail page, the Deploys and Settings sub-pages, and their dialogs;
+    - `e83607a` the e2e helpers.
+  - Tests: `d846122` (`tester`; it also fixed dialog overflow at 320 px).
+  - Review fixes:
+    - `c1aaf99`, `4f49b26`, `05df8e7` (round 1);
+    - `b1d880d`, `a7f76e4`, `b8ada77` (round 2).
+- **Pages.**
+  - `/services/<p>/<n>` (Deploys) and `/services/<p>/<n>/settings`, under one layout:
+    - an h1 with the name and state;
+    - Deploy, Redeploy and Restart (aria-disabled with a visible reason when there is no live deploy);
+    - the Running now, Traffic and Strategy cards;
+    - `<nav aria-label="Service sections">` with `aria-current`.
+  - Each sub-page has its own title ("Settings · name · project · ServerDock"). Sub-nav navigation focuses the section heading, does not reload the service, and `#port` focuses the Public port heading.
+  - The history (desktop table, phone cards) shows the result as word plus symbol, image, triggered by, a stages summary (from the last stage and status) and the absolute time. Details goes to the deploy page. **Roll back to #N** appears only on once-live deploys; its dialog names the target, the image and the **target snapshot's strategy**, which a rollback keeps. Redeploy names the service's strategy.
+  - Settings:
+    - The fields form compares with the service as saved now.
+    - The Image repository form.
+    - The Public port form:
+      - It reads `applied`, `notice`, `route_error` and `routes_ready`, and offers **Try again** through `services.retry_port`.
+      - The confirmation dialogs say "Applied now: exposes…" or "…no longer reachable at…". Cancel and Escape change nothing.
+      - A lost answer during the proxy reload is read back and reported honestly ("ServerDock reads the public port as X…").
+    - The Danger zone delete: type `<project>/<name>`, then the M2 step-up (naming the target). `SD-Confirm` carries the typed target.
+  - Dialogs (`FormDialog`, `ConfirmDialog`):
+    - target and consequence named, default focus on Cancel, Escape closes, focus returns;
+    - Escape and Cancel are ignored while the request runs, and a refusal is never lost;
+    - the service is captured when the dialog opens, and dialogs close on navigation, so a stale dialog cannot act on another service.
+  - A per-service busy guard (with a generation counter) announces "Restarting…" and similar. A failed Refresh keeps the last good service and the forms under "Status unknown". The versions_kept refusal says "try again once the service has settled" once.
+- **Delete "confirm again" (a new attention code; `systems`, `security` approved).**
+  - When a delete job is refused at run time (the fresh-2FA window passed), the runner sets `needs_attention = delete_confirm_again`, **only over NULL**.
+  - **Every enqueue for the service (deploy, redeploy, rollback, restart, delete) clears it in the same transaction** (`jobs.insertJob`). So the hint exists only while nothing is queued or running and never competes with a safety flag.
+  - The boot pass writes `versions_kept` over it (defence in depth). It is not `delete_interrupted`, so reconciler rule 3 still starts the service.
+  - The service page shows a banner: nothing was deleted, the service was left as it was, queued deploys and restarts and a running deploy were cancelled; plus "Delete again". Overview lists it.
+  - A delete refused synchronously (step-up needed again) says "Confirming again is needed. Nothing was deleted."
+  - When another attention code is already set, the hint is not written. The Services-list note ("queued… if it is still listed, open it and use Delete again") then covers it.
+- **Departures (accepted):**
+  - The three API fields (`triggered_by`, `superseded_by`, `strategy`; OpenAPI and types regenerated).
+  - The stages summary from the last stage.
+  - No polling and no log on this page: the log rendering, "log no longer kept", the 503 "try again in a moment" and `deploys.get` polling are step 14's.
+  - A container port is needed before a public port, and the container port cannot be cleared (an API limit).
+- **e2e and CI.**
+  - Real-Docker tests are in `*.docker.spec.ts`, run in the `docker-desktop` and `docker-phone` projects. The 8 UI projects ignore them.
+  - CI runs the UI projects, then the docker projects with one worker (`E2E_SET=ui|docker`). Chromium aborts in-flight requests when host interfaces change, and Docker bridges do that, which caused an "Unable to preload CSS" flake; the `requestfailed` logging in the fixture named the cause.
+  - Reports per set are summed by `flaky-report.mjs`.
+- **Tests.** `service-detail.spec.ts` (UI) and `service-detail.docker.spec.ts` (real Docker) cover:
+  - axe on every screen state;
+  - every dialog's wording, focus, Escape and 320 px fit;
+  - roll back end to end;
+  - the public port only after Confirm;
+  - the restart downtime;
+  - delete needing the exact target and step-up;
+  - the delete_confirm_again banner;
+  - the stale-save sequence;
+  - Back with a dialog open;
+  - busy dialogs;
+  - focus after Stop exposing and Try again.
+
+  Go tests cover the new fields and every set and clear rule of the hint (`confirmagain_test.go`).
+
+  The final CI-style run (UI 22.9 min, then docker 3.8 min with one worker): **1310 passed, 0 failed, 1 flaky** (a slow test-server start on zoom-200, passed on retry), 47 skipped (existing shell specs). `go test -race ./...` passed.
+- **Footprint:**
+  - quick S2 live watcher 56.6 MB, S4 49.6 MB (VmHWM 49.6), idle CPU 0.00/0.01 %;
+  - binary 19.94 MB gzip;
+  - JS first load 41.5 KB, total 105.8 KB (budget 250);
+  - no new background work; nothing on the agent path.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after two rounds: stale "Saved"; the rollback dialog's strategy; the confirm-again failure invisible; dialogs closable while busy; then copy and flake design.
+  - `accessibility` APPROVE (required), after one blocking round: focus dropped after a button removed itself; busy dialogs; port copy; sub-page titles and focus.
+  - `security` APPROVE, after two rounds: a stale dialog acting on another service after Back; then the hint blocking the boot pass's `versions_kept`.
+  - `systems` APPROVE, after one blocking round: the same boot-pass gap, simplified by clearing on enqueue; the banner copy.
+  - `footprint` APPROVE.
+
+### Revision 19, follow-ups for later steps
+
+- **Step 14 (first commit):**
+  - `workers: 1` on both docker projects, so local all-in-one runs keep them serial (`reviewer`).
+  - The banner wording for a running deploy that had already switched: "stopped or, if it had already switched, finished early" (`reviewer`).
+- **Step 14:**
+  - the log as text with its header visually separate;
+  - "Log no longer kept…" and the 503 "try again in a moment";
+  - polling `deploys.get` (2 s, 5 s after 2 minutes of pulling, visible only).
+- **Optional:**
+  - a test that `jobs.LockKey` and the hint's lock-key match agree (`security`);
+  - if another cross-package side effect appears, pass a hook into the job store instead of more SQL in `jobs` (`systems`);
+  - `<wbr>` in image refs.
+- **Watch CI:** the zoom-200 test-server start flake (counts toward the flaky limit of 3).
