@@ -1464,3 +1464,101 @@ Recorded after step 13 and its reviews; later steps follow these.
   - if another cross-package side effect appears, pass a hook into the job store instead of more SQL in `jobs` (`systems`);
   - `<wbr>` in image refs.
 - **Watch CI:** the zoom-200 test-server start flake (counts toward the flaky limit of 3).
+
+## Revision 20 (step 14 implementation notes)
+
+Recorded after step 14 and its reviews; later steps follow these.
+
+- **Commits.**
+  - Implementation:
+    - `4da5b25` docker projects serial, banner wording, e2e timeout;
+    - `ef5bbb7` the Deploy detail page and `deploywatch.svelte.ts`;
+    - `9f8ecb8` e2e helpers;
+    - `5387615` the screen-reader checklist;
+    - `65e6443`.
+  - Tests: `e62abe9` (`tester`; it also fixed "Reason: cancelled").
+  - Review fixes: `4f41b86`, `461fc60`, `9aa8c0a`, `aa479d6`, `e73e3c1`, `a341d75`, `3b2a536`.
+- **Page** (`/services/<p>/<n>/deploys/<n>`).
+  - An h1 "Deploy #N" plus status.
+  - "What happened":
+    - the result;
+    - "Your app is safe / not safe / status is unknown", following the server's `app_safe` for every deploy that did not succeed. "Nothing was changed" appears only when there is no verdict and the deploy never started;
+    - the new container (derived from the stages);
+    - the reason, capitalised and punctuated;
+    - superseded wording chosen by whether the deploy had started: "Stopped and replaced by #N." / "Replaced in the queue by #N before it started.".
+  - Stages are an `<ol>`, word plus symbol, with `aria-current="step"`. Distinct labels are used for "Stop the old version first" and "Retire the old version".
+  - Pull progress is a labelled `<progress>` with text, not a live region. There is no indeterminate bar when the size is unknown; text only.
+  - Cancel deploy while cancellable; at switch, commit, drain and stop_old it is aria-disabled with a visible reason.
+  - Redeploy appears on the live deploy. It refreshes first and names "the live version: #N (image)", and refuses if that changed. Roll back appears on once-live deploys.
+  - "Container log (last 40 lines)" and "Show full log":
+    - fetched once when the deploy has finished;
+    - split at ServerDock's own `--- container output (` line (a container cannot forge it: every header field is cleaned of newlines, tested in Go);
+    - the header and the output in separate `<pre role="group" tabindex="0">` with `aria-labelledby`;
+    - a skip link that overlays the log's corner;
+    - "Log no longer kept…" and the 503 "try again in a moment" (with Try again) shown honestly.
+  - The "not applied" notice and the SEC6 warnings show once per deploy, keyed on the parameters (Revision 18).
+- **Polling** (`deploywatch.svelte.ts`, browser only, no server timer).
+  - One timer: 2 s while running and visible, 5 s once the page has seen the pull stage for 2 minutes. That is counted from when the page first saw the pull (accepted: bounded, client-only, no clock skew).
+  - Back-off 2, 4, 8 … 30 s after consecutive errors. A 403 stops polling and shows the server's message. A non-API error counts as unknown and polling goes on. 8 s timeouts on every request.
+  - Stops when finished and when hidden. On return, stale data (over 10 s) becomes "unknown" before the refresh.
+- **Announcements.**
+  - One always-present `role=status` region: "Deploy #4: health check started." once per stage change, the retry reason and attempt, success, cancelled and superseded. Nothing for progress ticks.
+  - A failure, an interruption, or a cancel or supersede that left the app not safe goes once through `role=alert`. The alert says "the previous version", not #M.
+  - Identical text is re-announced by clearing first.
+- **Departures (accepted; recorded here):**
+  - **"Status unknown" keeps the last known content,** marked "may be out of date", with the actions aria-disabled and their reason, rather than replacing it (A12 said "replaces"). The status region announces entering ("Status unknown: could not reach the server.") and leaving ("Status is current again."), and Check again reports its result. This is a small extension of "stage transitions only".
+  - **Focus moves to the h1 only when the focused control was removed** by a data change (the Cancel toolbar at finish, Check again, log Try again). This is the one case where a poll moves focus.
+  - The error back-off and the 403 stop; no progress bar without a size; `role=group` on the log; Redeploy refreshes first.
+  - **CI e2e split:**
+    - `e2e-ui` runs as 3 shards (30 min each, no registry);
+    - `e2e-docker` runs alone (registry, test image, one worker);
+    - the final job, named `e2e`, merges the reports and runs the flaky report once (the global limit of 3);
+    - report directories are uploaded with `include-hidden-files`;
+    - inputs go through `env:`.
+- **Screen-reader checklist** (`docs/accessibility/m3a-screen-reader-checklist.md`), the step 14 exit item.
+  - Coverage: NVDA + Firefox, VoiceOver + Safari (macOS, iOS), TalkBack + Chrome, for steps 12–14.
+  - Contents: how to produce each state; the exact strings; NVDA browse versus focus mode and its settings; the rotor and swipe paths; a results table per item and per combination, with date, commit and tester.
+  - **Status: PENDING (maintainer).** No real screen reader has been run; it is not marked done.
+- **Tests.**
+  - `deploy-detail.spec.ts`, `deploy-detail-live.spec.ts`, `deploy-detail-log.spec.ts` and `deploy-detail-review.spec.ts` (UI, all 8 projects), and `deploy-detail.docker.spec.ts`. They cover:
+    - every screen state with axe;
+    - each stage transition announced once and no ticks (MutationObserver);
+    - a failure announced once through the alert;
+    - polling stopping when hidden and when finished, and backing off to 5 s after 2 minutes (`page.clock`);
+    - the error back-off, 403, non-JSON answers, stale on return;
+    - Cancel while pulling: real Docker, through a delaying registry proxy;
+    - the reason during switch;
+    - a hostile log (script, img onerror, `</pre>`, svg onload, ESC/OSC/CSI, OSC 8, bidi, NUL, `\r`, U+009B, U+2028/9, U+200B) rendered as text;
+    - focus at finish;
+    - Check again;
+    - changing deploy in place.
+  - Go: `TestDeployLogHeaderCannotForgeTheContainerOutputSeparator`.
+  - Final local runs:
+    - UI set: 2015 passed, 47 skipped (existing shell specs), 2 load flakes elsewhere that passed on re-run; one create test was given a 60 s limit;
+    - docker set: 18 passed;
+    - after the last touch-up, the deploy-detail specs: 728 passed in all 8 projects.
+- **Footprint:**
+  - quick S2 live watcher 56.8 MB, quick S4 50.5 MB (over the tripwire, so a full run followed);
+  - **full S4: median 46.9 MB** (46.8, 46.9, 48.2), idle CPU 0.01 %, **VmHWM 50.3 MB** in all three runs;
+  - binary 19.96 MB gzip;
+  - JS first load 41.5 KB, total 115.0 KB (budget 250).
+  - `footprint`: step 14 touches no Go or agent code. The tripwire applies to the median VmRSS (ADR 0011; the ceiling is 100 MB, and nothing gates VmHWM), so the release gate is not at risk. VmHWM has been 49.7–50.3 MB for three steps, read as noise. Step 15 benches a step 13 build and the final build in one session to settle it.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after one blocking round: "previous version kept serving" claimed when the server said unknown; superseded wording for a started deploy. CI sharding was recommended and adopted.
+  - `accessibility` APPROVE (required), after one blocking round: focus lost when Cancel vanished; "unknown" removing the page; a not-safe cancel announced politely; alert copy.
+  - `security` APPROVE (nits fixed: Redeploy honesty, polling back-off and 403, timeouts, extra hostile characters, the separator test, CI inputs through `env:`).
+  - `footprint` APPROVE.
+
+### Revision 20, follow-ups for later steps
+
+- **Maintainer:** the manual screen-reader pass of steps 12–14 (checklist above).
+- **Step 15:**
+  - Bench a step 13 build and the final build in the same session (the S4 VmHWM question).
+  - Set each e2e job's timeout from the sharded run's real timings.
+- **Optional:**
+  - `expect_live` on `services.redeploy` to close the remaining refresh-to-confirm gap (`security`);
+  - leave Cancel enabled while the status is unknown (`reviewer`, a trade-off);
+  - #M in the failure alert (`accessibility`).
+- **Watch CI:**
+  - the zoom-200 test-server start flake;
+  - the forced-colors Restart keyboard flake.
