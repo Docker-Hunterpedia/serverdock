@@ -584,3 +584,70 @@ func TestBindErrorPortIsTriedFirst(t *testing.T) {
 		}
 	}
 }
+
+// k taken ports among many new ones cost k+1 loads (k failed, one that works), or
+// k when what is left is the served config; never one load per port.
+func TestKTakenPortsCostAtMostKPlusOneLoads(t *testing.T) {
+	ctx := context.Background()
+	var all []int
+	for p := 9100; p < 9150; p++ {
+		all = append(all, p)
+	}
+	for _, taken := range [][]int{{9110, 9140}, {9101, 9120, 9149}, {9100, 9149}} {
+		f := &fakeLoad{failOn: map[int]bool{}}
+		for _, p := range taken {
+			f.failOn[p] = true
+		}
+		ap := fakeApplier(f)
+		_ = ap.Start()
+		n := len(f.loads)
+		failed, err := ap.Apply(ctx, routes(all...), false)
+		if err != nil || !reflect.DeepEqual(failed, taken) {
+			t.Fatalf("taken %v: failed %v, err %v", taken, failed, err)
+		}
+		if got := len(f.loads) - n; got > len(taken)+1 {
+			t.Fatalf("taken %v: %d loads, want at most %d", taken, got, len(taken)+1)
+		}
+		if len(ap.Applied()) != len(all)-len(taken) || len(*table.Load()) != len(all)-len(taken) {
+			t.Fatalf("taken %v: %d served", taken, len(ap.Applied()))
+		}
+		for _, p := range taken {
+			if _, ok := (*table.Load())[p]; ok {
+				t.Fatalf("taken port %d in the table", p)
+			}
+		}
+		// "Try again", still taken: one failed load per taken port, no extra load of the
+		// served config, the same ports reported; then freed: one load, all served.
+		n = len(f.loads)
+		failed, err = ap.Apply(ctx, routes(all...), true)
+		if err != nil || !reflect.DeepEqual(failed, taken) || len(f.loads)-n > len(taken) {
+			t.Fatalf("taken %v retry: %v %v, %d loads", taken, failed, err, len(f.loads)-n)
+		}
+		f.failOn = nil
+		n = len(f.loads)
+		failed, err = ap.Apply(ctx, routes(all...), true)
+		if err != nil || len(failed) != 0 || len(f.loads)-n != 1 || len(ap.Applied()) != len(all) {
+			t.Fatalf("taken %v freed: %v %v, %d loads", taken, failed, err, len(f.loads)-n)
+		}
+	}
+}
+
+// A bind error that names a port that is not new (already served) cannot be fixed by
+// dropping new ports: one load, the error is returned, previous routes keep running.
+func TestBindErrorOnAServedPortIsReturnedAfterOneLoad(t *testing.T) {
+	f := &fakeLoad{}
+	ap := fakeApplier(f)
+	_ = ap.Start()
+	if _, err := ap.Apply(context.Background(), routes(9000, 9001), false); err != nil {
+		t.Fatal(err)
+	}
+	f.failOn = map[int]bool{9000: true}
+	n := len(f.loads)
+	failed, err := ap.Apply(context.Background(), routes(9000, 9001, 9002, 9003), false)
+	if err == nil || failed != nil || len(f.loads)-n != 1 {
+		t.Fatalf("%v %v, %d loads", failed, err, len(f.loads)-n)
+	}
+	if !reflect.DeepEqual(ap.Applied(), []int{9000, 9001}) || len(*table.Load()) != 2 {
+		t.Fatalf("state moved: %v", ap.Applied())
+	}
+}

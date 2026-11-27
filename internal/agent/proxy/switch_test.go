@@ -215,8 +215,9 @@ func TestTableAndConfigNeverDivergeAfterAFailedLoad(t *testing.T) {
 	}
 	f.failAll = nil
 
-	// A bind-isolation sequence that loads part-way and then hits ctx.Err(): the
-	// table matches the last successful load.
+	// A bind-isolation sequence cancelled after its first failed load: nothing is
+	// committed before a load works, so the table matches the last successful load
+	// (here the panel alone).
 	f = &fakeLoad{failOn: map[int]bool{9001: true, 9002: true}}
 	ap = fakeApplier(f)
 	_ = ap.Start()
@@ -224,7 +225,7 @@ func TestTableAndConfigNeverDivergeAfterAFailedLoad(t *testing.T) {
 	base := ap.load
 	ap.load = func(c Config) error {
 		err := base(c)
-		if err == nil && len(c.Apps) == 1 { // the first successful load of the sequence: 9000 alone
+		if err != nil { // the first failed load of the sequence
 			cancel()
 		}
 		return err
@@ -233,8 +234,8 @@ func TestTableAndConfigNeverDivergeAfterAFailedLoad(t *testing.T) {
 	if _, err := ap.Apply(cctx, desired, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want ctx.Err(), got %v", err)
 	}
-	if !reflect.DeepEqual(ap.Applied(), []int{9000}) || tableOf(9000) != "up 10.0.0.2:80" || len(*table.Load()) != 1 {
-		t.Fatalf("after the partial sequence: applied %v table %v", ap.Applied(), *table.Load())
+	if len(ap.Applied()) != 0 || table.Load() != nil {
+		t.Fatalf("after the cancelled sequence: applied %v table %v", ap.Applied(), table.Load())
 	}
 	// The control plane cleared its hash and resends: it lands (the ports are free now).
 	f.failOn = nil

@@ -1,56 +1,47 @@
 package deploy
 
 import (
-	"bufio"
-	"fmt"
-	"io"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
 )
 
 // Helpers of the reload-cases measurement (reload_cases_integration_test.go). They live in
 // an untagged file so their own unit tests run in the normal test run.
 
-// loadCounter counts Caddy config loads in this process without touching the product:
-//   - every load logs "admin endpoint disabled" once, whether it succeeds or fails (the
-//     admin app is provisioned before the servers start and bind), so the number of those
-//     lines on stderr is the number of load ATTEMPTS;
+// loadCounter counts Caddy config loads in this process without a log writer:
+//   - attempts are the calls of proxy.Load (proxy.LoadAttempts, a plain atomic counter),
+//     whether the load succeeds or fails. An earlier version counted Caddy's "admin
+//     endpoint disabled" stderr lines, but Caddy pools its log writer per process, so a
+//     counter installed after any earlier test's load saw none of them;
 //   - a successful load installs a new root context (caddy.ActiveContext), so a poller that
-//     sees it change counts the successful ones (a load takes several milliseconds; the poller ticks every millisecond).
+//     sees it change counts the successful ones (a load takes several milliseconds; the
+//     poller ticks every millisecond).
 //
-// Failed = attempts - successful. It must be started BEFORE the first load: Caddy keeps the log
-// writer it opened at its first load, so a later counter sees successes but no attempts. The counter replaces os.Stderr for its lifetime, passes
-// every other line through, and puts the original back on Close.
+// Failed = attempts - successful. Both are relative to the moment the counter started, so
+// it can start at any time.
 type loadCounter struct {
-	attempts atomic.Int64
-	ok       atomic.Int64
-	orig     *os.File
-	w        *os.File
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	base ctrBase
+	ok   atomic.Int64
+	// attempts is read through snap; kept as a method value for the unit test's fake.
+	attemptsFn func() int64
+	stop       chan struct{}
+	wg         sync.WaitGroup
 }
 
-const adminLogLine = "admin endpoint disabled"
+type ctrBase struct{ attempts int64 }
+
+func (c *loadCounter) attempts() int64 { return c.attemptsFn() - c.base.attempts }
 
 func startLoadCounter() (*loadCounter, error) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	c := &loadCounter{orig: os.Stderr, w: w, stop: make(chan struct{})}
-	os.Stderr = w
-	c.wg.Add(2)
-	go func() {
-		defer c.wg.Done()
-		defer r.Close()
-		c.countLines(r, c.orig)
-	}()
+	c := &loadCounter{attemptsFn: proxy.LoadAttempts, stop: make(chan struct{})}
+	c.base.attempts = proxy.LoadAttempts()
+	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		last := caddy.ActiveContext().Context
@@ -71,37 +62,18 @@ func startLoadCounter() (*loadCounter, error) {
 	return c, nil
 }
 
-// countLines reads r to its end, counting the load lines and forwarding every other line to
-// out (the HTTP/2 and HTTP/3 "skipped" warnings of every load are dropped as noise).
-func (c *loadCounter) countLines(r io.Reader, out io.Writer) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.Contains(line, adminLogLine):
-			c.attempts.Add(1)
-		case strings.Contains(line, "skipped because it requires TLS"):
-		default:
-			fmt.Fprintln(out, line)
-		}
-	}
-}
-
 // snap returns the loads so far: successful and failed.
 func (c *loadCounter) snap() (ok, failed int64) {
-	ok, a := c.ok.Load(), c.attempts.Load()
+	ok, a := c.ok.Load(), c.attempts()
 	return ok, max(a-ok, 0)
 }
 
 // consistent reports that no more loads succeeded than were attempted (before snap clamps).
-func (c *loadCounter) consistent() bool { return c.attempts.Load() >= c.ok.Load() }
+func (c *loadCounter) consistent() bool { return c.attempts() >= c.ok.Load() }
 
-// Close restores os.Stderr and stops both goroutines.
+// Close stops the poller.
 func (c *loadCounter) Close() {
-	os.Stderr = c.orig
 	close(c.stop)
-	_ = c.w.Close()
 	c.wg.Wait()
 }
 

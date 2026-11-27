@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -332,9 +333,18 @@ func BuildConfig(c Config) ([]byte, error) {
 	return json.Marshal(cfg)
 }
 
+// loadAttempts counts calls of Load. It exists only so tests can count load
+// attempts independently of Caddy's log writer (which is pooled per process and
+// so unreliable to count from); one atomic add per load, nothing else.
+var loadAttempts atomic.Int64
+
+// LoadAttempts is the number of times Load was called in this process (test use).
+func LoadAttempts() int64 { return loadAttempts.Load() }
+
 // Load builds and applies the config in-process. It can be called again with
 // a changed Config to reload live.
 func Load(c Config) error {
+	loadAttempts.Add(1)
 	b, err := BuildConfig(c)
 	if err != nil {
 		return err

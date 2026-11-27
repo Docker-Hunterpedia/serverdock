@@ -1,12 +1,10 @@
 package deploy
 
 import (
-	"bytes"
 	"context"
 	"net"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,29 +12,25 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
 )
 
-func TestLoadCounterCountsAdminLinesAndForwardsTheRest(t *testing.T) {
-	var c loadCounter
-	var out bytes.Buffer
-	in := strings.Join([]string{
-		`{"level":"warn","logger":"admin","msg":"admin endpoint disabled"}`,
-		`{"level":"warn","logger":"http","msg":"HTTP/2 skipped because it requires TLS"}`,
-		`{"level":"error","msg":"something real"}`,
-		`{"level":"warn","logger":"admin","msg":"admin endpoint disabled"}`,
-	}, "\n")
-	c.countLines(strings.NewReader(in), &out)
-	if c.attempts.Load() != 2 {
-		t.Errorf("attempts %d", c.attempts.Load())
-	}
-	if got := out.String(); !strings.Contains(got, "something real") || strings.Contains(got, "skipped") || strings.Contains(got, "admin endpoint") {
-		t.Errorf("forwarded %q", got)
-	}
+func TestLoadCounterSnapAndConsistency(t *testing.T) {
+	var n int64
+	c := &loadCounter{attemptsFn: func() int64 { return n }}
+	n = 2
 	c.ok.Store(1)
-	if ok, failed := c.snap(); ok != 1 || failed != 1 {
+	if ok, failed := c.snap(); ok != 1 || failed != 1 || !c.consistent() {
 		t.Errorf("snap %d %d", ok, failed)
 	}
-	c.ok.Store(5) // more successes than attempts (a late log line): never negative
-	if _, failed := c.snap(); failed != 0 {
+	c.ok.Store(5) // more successes than attempts: never negative, and flagged
+	if _, failed := c.snap(); failed != 0 || c.consistent() {
 		t.Errorf("failed %d", failed)
+	}
+	// Relative to the start: loads before the counter existed are not counted.
+	n = 10
+	c2 := &loadCounter{attemptsFn: func() int64 { return n }}
+	c2.base.attempts = n
+	n = 12
+	if c2.attempts() != 2 {
+		t.Errorf("attempts %d", c2.attempts())
 	}
 }
 
@@ -91,7 +85,7 @@ func TestLoadCounterWithTheRealApplier(t *testing.T) {
 	if ok, failed := c.snap(); ok != 1 || failed != 0 {
 		t.Fatalf("start: %d ok, %d failed", ok, failed)
 	}
-	p1, p2 := free(), free()
+	p1, p2, p3 := free(), free(), free()
 	page := func(p int) proxy.AppRoute { return proxy.AppRoute{Port: p, Static: proxy.NotRunning()} }
 	if _, err := a.Apply(context.Background(), []proxy.AppRoute{page(p1)}, false); err != nil {
 		t.Fatal(err)
@@ -114,12 +108,19 @@ func TestLoadCounterWithTheRealApplier(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	failedPorts, err := a.Apply(context.Background(), []proxy.AppRoute{maint, page(p2)}, false)
-	if err != nil || len(failedPorts) != 1 || failedPorts[0] != p2 {
+	ln3, err := net.Listen("tcp", ":"+strconv.Itoa(p3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln3.Close()
+	// Two taken ports: each failed load drops the port it names, and what is left is
+	// the served config, so it is skipped: 2 failed loads, no ok one.
+	failedPorts, err := a.Apply(context.Background(), []proxy.AppRoute{maint, page(p2), page(p3)}, false)
+	if err != nil || len(failedPorts) != 2 {
 		t.Fatalf("%v %v", failedPorts, err)
 	}
 	settle()
-	if ok, failed := c.snap(); ok != 2 || failed != 1 {
-		t.Fatalf("a taken port: %d ok, %d failed (want 2 and 1: the retry without the port is the served config, so it is skipped)", ok, failed)
+	if ok, failed := c.snap(); ok != 2 || failed != 2 {
+		t.Fatalf("two taken ports: %d ok, %d failed (want 2 and 2: k taken ports cost k failed loads, the last remainder is the served config)", ok, failed)
 	}
 }

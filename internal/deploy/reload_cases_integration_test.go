@@ -290,11 +290,7 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("SD_TEST_RELOAD_CONTROL_MS")); err == nil && v > 0 {
 		ctlMS = v
 	}
-	// The load counter must be installed BEFORE the rig starts Caddy: Caddy opens its log writer
-	// (the then-current os.Stderr) at the first load and keeps it for every later one, so a counter
-	// installed afterwards sees the successful loads (the context poller) but none of the attempts
-	// (measured: attempts=0, ok=1 with a late counter). Its cleanup is registered first, so it runs
-	// last, after the rig has stopped Caddy.
+	// The counter counts proxy.Load calls (not Caddy log lines), so it can start at any time.
 	counter, err := startLoadCounter()
 	if err != nil {
 		t.Fatal(err)
@@ -557,6 +553,7 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		t.Fatalf("%d exposed services, want 100", len(ports))
 	}
 	bootSrc := &rcBoot{st: st, cl: g.cl, realID: realID, ip: ip}
+	bootTaken := map[string]int{}
 	boot := func(name string, taken, reps int) {
 		c := begin(name)
 		for i := 0; i < reps; i++ {
@@ -611,15 +608,10 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 				load.firstBad.CompareAndSwap(nil, v)
 			}
 		}
-		// N is the number of NEW ports (all 100 at boot), not the taken ones. One taken port:
-		// the failed load, then the load without it (2). Two: plan 0004 Revision 9's 2N+3.
-		want := 1
-		switch {
-		case taken == 1:
-			want = 2
-		case taken >= 2:
-			want = 2*len(ports) + 3
-		}
+		// k taken ports among the new ones cost k failed loads (each drops the port it names)
+		// and one that works: k+1 (0 taken: 1).
+		want := taken + 1
+		bootTaken[name] = taken
 		c.extra = fmt.Sprintf("containers=100 new_ports=%d taken_ports=%d expected_loads_about=%d", len(ports), taken, want)
 	}
 	boot("first_sync_at_boot", 0, min(n, 3))
@@ -649,6 +641,12 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 		t.Errorf("the load counter saw more successful loads than attempts")
 	}
 	for _, c := range results {
+		if taken, ok := bootTaken[c.name]; ok && c.ops > 0 {
+			// Per operation: loads attempted <= taken + 1 (bind isolation drops each taken port as named).
+			if got, max := c.loadsOK+c.loadsFailed, int64(taken+1)*int64(c.ops); got > max {
+				t.Errorf("%s: %d loads in %d operations, want at most %d (taken ports + 1 each)", c.name, got, c.ops, max)
+			}
+		}
 		switch c.name {
 		case "table_swap_switch_no_reload":
 			if c.loadsOK != 0 || c.loadsFailed != 0 {

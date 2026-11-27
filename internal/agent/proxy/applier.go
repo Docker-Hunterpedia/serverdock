@@ -201,49 +201,71 @@ func (a *Applier) Apply(ctx context.Context, routes []AppRoute, retryFailed bool
 		return nil, loadErr // nothing new to bind: not a bind failure
 	}
 	// Caddy's bind error names the port ("listen tcp :9001: bind: address already
-	// in use"): when it is one of the new ports, try without it first. That is
-	// one extra reload in the usual case instead of up to N. When what is left
-	// is exactly what is served, there is nothing to load: the port just stays
-	// failed (an explicit retry of a still-taken port costs one failed load).
-	if p, ok := bindErrorPort(loadErr); ok && slices.Contains(added, p) {
+	// in use"). While it names a NEW port, drop that port and load again: k taken
+	// ports cost k failed loads and one that works. When what is left is exactly
+	// what is served, there is nothing to load: the ports just stay failed (an
+	// explicit retry of a still-taken port costs one failed load). Nothing is
+	// committed until a load works, so a failure part-way keeps the previous state.
+	cur := routes
+	var dropped []int
+	for {
+		p, ok := bindErrorPort(loadErr)
+		if !ok {
+			break
+		}
+		if !slices.Contains(added, p) || slices.Contains(dropped, p) {
+			// A bind conflict that dropping new ports cannot fix (a served port, or
+			// a port already dropped): not isolated by probing, the error is returned
+			// with the previous routes still running.
+			return nil, loadErr
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		rest := without(routes, p)
-		if a.tryOrSkip(rest) == nil {
-			a.commit(rest, []int{p})
-			return []int{p}, nil
+		dropped = append(dropped, p)
+		cur = without(cur, p)
+		if loadErr = a.tryOrSkip(cur); loadErr == nil {
+			sort.Ints(dropped)
+			a.commit(cur, dropped)
+			return dropped, nil
 		}
 	}
-	// One port at a time: usually exactly one is the culprit.
+	// The error names no port (not a bind conflict, so never reached for one):
+	// find the culprit by probing the remaining new ports one at a time.
+	var left []int
 	for _, p := range added {
+		if !slices.Contains(dropped, p) {
+			left = append(left, p)
+		}
+	}
+	if len(left) == 0 {
+		return nil, loadErr
+	}
+	for _, p := range left {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		rest := without(routes, p)
-		// An identical config is never force-reloaded: when Caddy named this very
-		// port, "rest" equal to what is served needs no load. For any other error
-		// the probe is a real load, because only it shows whether p was the cause.
-		try := a.try
-		if bp, ok := bindErrorPort(loadErr); ok && bp == p {
-			try = a.tryOrSkip
-		}
-		if try(rest) == nil {
-			a.commit(rest, []int{p})
-			return []int{p}, nil
+		rest := without(cur, p)
+		if a.try(rest) == nil {
+			sort.Ints(dropped)
+			fl := append(append([]int(nil), dropped...), p)
+			sort.Ints(fl)
+			a.commit(rest, fl)
+			return fl, nil
 		}
 	}
-	if len(added) == 1 {
+	if len(left) == 1 && len(dropped) == 0 {
 		return nil, loadErr // the new port was not the problem
 	}
 	// Several failed (or the problem is elsewhere): the new ports one by one on
 	// top of everything else.
-	keep := without(routes, added...)
+	keep := without(cur, left...)
 	if err := a.tryOrSkip(keep); err != nil {
 		return nil, err
 	}
-	a.commit(keep, nil)
-	for _, p := range added {
+	failed = append(failed, dropped...)
+	a.commit(keep, failed)
+	for _, p := range left {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -262,6 +284,7 @@ func (a *Applier) Apply(ctx context.Context, routes []AppRoute, retryFailed bool
 			a.commit(a.applied, failed)
 		}
 	}
+	sort.Ints(failed)
 	return failed, nil
 }
 
