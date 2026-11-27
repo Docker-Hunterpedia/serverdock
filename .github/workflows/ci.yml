@@ -128,8 +128,14 @@ jobs:
       - name: install the browsers
         run: npx playwright install --with-deps chromium webkit
         working-directory: web
-      - name: playwright
-        run: npx playwright test
+      - name: playwright (UI projects)
+        run: E2E_SET=ui npx playwright test
+        working-directory: web
+      - name: playwright (real Docker flows, one worker)
+        # Apart from the UI run: a Docker network or container appearing changes the
+        # host's network interfaces, and Chromium aborts every other test's in-flight
+        # requests when that happens (net::ERR_NETWORK_CHANGED).
+        run: E2E_SET=docker npx playwright test --workers=1
         working-directory: web
       - name: flaky tests (fails above 3)
         if: always()
@@ -139,7 +145,9 @@ jobs:
         if: failure()
         with:
           name: playwright-results
-          path: web/e2e/.results
+          path: |
+            web/e2e/.results
+            web/e2e/.reports
           if-no-files-found: ignore
           retention-days: 7
       - name: registry log on failure

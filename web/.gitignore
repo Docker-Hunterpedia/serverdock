@@ -4,5 +4,6 @@ build/
 .dev/
 e2e/.auth.json*
 e2e/.results/
+e2e/.reports/
 playwright-report/
 test-results/
