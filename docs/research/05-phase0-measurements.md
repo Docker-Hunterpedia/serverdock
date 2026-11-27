@@ -92,6 +92,62 @@ The outage is about 60–100 ms (the server's own start and its first route appl
 
 **Docker daemon restart** (`TestDaemonRestartKeepsRoutesCorrect`, two services, CI only): in CI (`sudo systemctl restart docker`, GitHub-hosted Ubuntu runner) both public ports answered 2xx from their own service again **12.1 s** after the restart began, never from the other one. A local run in the cloud container (no systemd; a script that restarts `dockerd`) took 20.6 s and 23.4 s. The bound is 30 s.
 
+## M3a release measurements (step 15)
+
+Status: **PENDING.** Plan 0004 step 15 asks for the numbers below. None of them is recorded yet: every cell that says PENDING is to be filled from the bench run for the M3a pull request (the maintainer fills them from the run in progress), with the commit, the date and the run link. **Nothing in this section is a measurement until its cell holds a number.** Scenarios 5 to 8 and the reload cases are described in `bench/run.sh` and `internal/deploy/reload_cases_integration_test.go`; results go to `bench/results/` (see [the placeholder](../../bench/results/2026-11-27-m3a-release-PENDING.md)).
+
+Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire 50 MB. VmRSS is the median of the per-run medians.
+
+**Run:** commit PENDING · date PENDING · CI run PENDING · runner PENDING.
+
+### Footprint
+
+| Measurement | Scenario | VmRSS (MB) | VmHWM (MB) | Idle CPU | Gate | Result |
+|---|---|---|---|---|---|---|
+| Full S4 (remote node: agent + Caddy) | 4 | PENDING | PENDING | PENDING | tripwire 50 MB | PENDING |
+| **S2 live watcher (CI, the release gate)** | 2 | **PENDING (release gate: the CI bench job does not run on a draft PR, so this number comes only after the PR is marked ready)** | PENDING | PENDING | tripwire 80 MB; planning figure ≤ 56 MB | PENDING |
+| S2 no Docker (report only) | 2 with `S2_DOCKER=0` | PENDING | PENDING | PENDING | none | PENDING |
+| S2 with one exposed service (gated against the tripwire) | 5 | PENDING | PENDING | PENDING | tripwire 80 MB | PENDING |
+| S2 with 10 exposed idle services (report only) | 6 | PENDING | PENDING | PENDING (the one app ticker) | none (reported against 80 MB) | PENDING |
+| RSS 60 s after a deploy finishes | 7 | idle baseline PENDING · peak PENDING · 60 s after PENDING | PENDING | | back to the baseline | PENDING |
+| Peak RSS during two concurrent deploys | 8 | peak PENDING | PENDING | | none | PENDING |
+| Step 13 build versus the final build, same session (settles whether S4's VmHWM of 49.7 to 50.3 MB is noise; plan 0004 Revision 20) | 4 | step 13: PENDING · final: PENDING | PENDING / PENDING | | none (nothing gates VmHWM) | PENDING |
+
+### Size
+
+| Measurement | Value | Gate | Result |
+|---|---|---|---|
+| Binary, gzip -9 (amd64) | PENDING | 40 MB | PENDING |
+| SPA first-load JS (gzip) | PENDING | 250 KB | PENDING |
+
+### Restart outage (QM3a-9)
+
+Already measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms except the gap stages at about 2.4 s with a 2 s grace; a Docker daemon restart 12.1 s in CI, on commit `e76aa77`). To be re-run on the release commit if the maintainer wants the final figure: PENDING.
+
+### Remaining reload cases with 100 routes (plan 0004 Revision 11, step 15)
+
+A switch, revert, restart, rollback and the maintenance page never reload (zero-drop tests). These cases still reload the proxy. Run: `SD_TEST_RELOAD_CASES=1 SD_TEST_APP_IMAGE=127.0.0.1:5000/sd-testapp:1 go test -tags integration -run TestIntegrationReloadCasesWith100Routes -v -count=1 ./internal/deploy` (repeats per case: `SD_TEST_RELOAD_N`, default 3). One real app container is the upstream of all 100 routes, so VmHWM is the test process's, an upper bound of the server's. The drops are counted per reload, in the two connection classes; "never processed, safe to retry" is the Revision 9 reading, to be confirmed by the numbers.
+
+| Case | Reloads | Reload time mean / max (ms) | Drops per reload, keep-alive | Drops per reload, new connection | Failed after one client retry | VmHWM before → after the case (MB) |
+|---|---|---|---|---|---|---|
+| `control_no_reload` (a switch, for comparison) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `add_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `change_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `clear_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `delete_exposed_service` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `first_sync_at_boot` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `try_again_port_still_taken` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `try_again_port_freed` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| `bind_isolation` (worst case 2N + 3 reloads) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+
+### Earlier figures (not release numbers)
+
+For orientation only, from plan 0004 and measured on a cloud container, not on the CI runner or a 1 GB VPS: full S2 live watcher 54.9 MB (step 10, commit `6b79e71`); full S4 46.9 to 47.6 MB, VmHWM 50.3 MB (steps 10 to 14); binary 19.96 MB gzip and first-load JS 41.5 KB (step 14). They do not replace the PENDING cells above.
+
+### Manual 1 GB VPS check (plan 0004 test plan; informational, Q6 still open)
+
+PENDING: no 1 GB VPS is available. If one is, deploy `nginx` with a public port, run a blue-green redeploy and a failing deploy under a `curl` loop, change the public port under the same loop, roll back, restart Docker, restart ServerDock (record the outage), and record idle VmRSS with zero and with one service.
+
 ## What the Phase 0 spikes verified (tests, not measurements)
 
 - Caddy reload while an agent is connected through `/agent/connect`: the drop is **delayed, not avoided**. With `stream_close_delay` 5m the agent keeps its session and open streams through the reload, but Caddy still closes the old upgraded connection 5 minutes later, and the agent then reconnects with backoff. Without the setting the agent is dropped immediately. Phase 1 consequence: every Caddy reload (every deploy) drops every remote agent after 5 minutes; serve `/agent/connect` from a listener Caddy does not rebuild (see docs/security.md, Phase 0 review items).
