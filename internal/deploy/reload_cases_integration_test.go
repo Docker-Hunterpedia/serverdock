@@ -290,6 +290,16 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("SD_TEST_RELOAD_CONTROL_MS")); err == nil && v > 0 {
 		ctlMS = v
 	}
+	// The load counter must be installed BEFORE the rig starts Caddy: Caddy opens its log writer
+	// (the then-current os.Stderr) at the first load and keeps it for every later one, so a counter
+	// installed afterwards sees the successful loads (the context poller) but none of the attempts
+	// (measured: attempts=0, ok=1 with a late counter). Its cleanup is registered first, so it runs
+	// last, after the rig has stopped Caddy.
+	counter, err := startLoadCounter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(counter.Close)
 	g, ref := newSwitchRig(t)
 	ctx := g.ctx
 	subnet := netip.MustParsePrefix(g.subnet).Addr().As4()
@@ -297,14 +307,6 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	ip := netip.AddrFrom4(subnet).String()
 	g.startApp(t, ref, "R", ip)
 	realID := itDocker(t, "inspect", "-f", "{{.Id}}", "sd-it-"+g.inst[:8]+"-r")
-
-	counter, err := startLoadCounter()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var counterOnce sync.Once
-	closeCounter := func() { counterOnce.Do(counter.Close) }
-	t.Cleanup(closeCounter) // idempotent: the test closes it itself before reporting
 
 	// 100 exposed services in the end: stable + n victims (deleted in the
 	// delete case) + T (the toggled one, unexposed to begin with). B is a spare
@@ -623,7 +625,6 @@ func TestIntegrationReloadCasesWith100Routes(t *testing.T) {
 	boot("first_sync_at_boot", 0, min(n, 3))
 	boot("first_sync_at_boot_with_taken_ports_1", 1, min(n, 2))
 	boot("first_sync_at_boot_with_taken_ports_2", 2, min(n, 2))
-	closeCounter()
 
 	// Report.
 	bad := load.badStatus.Load()

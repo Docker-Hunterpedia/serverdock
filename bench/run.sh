@@ -371,8 +371,8 @@ for id in $SCENARIOS; do
           wait_ready "$base/healthz"
         fi
         wait_agent ;;
-      5|6|7|8)
-        case "$id" in 5) napps=1 ;; 6) napps=10 ;; *) napps=2 ;; esac
+      5|6|7|8|9)
+        case "$id" in 5) napps=1 ;; 6) napps=10 ;; 9) napps=0 ;; *) napps=2 ;; esac
         log "scenario $id: S2 live watcher with $napps exposed service(s)"
         start_apps_server "$TARGET" "$napps" ;;
       *) echo "unknown scenario $id" >&2; exit 2 ;;

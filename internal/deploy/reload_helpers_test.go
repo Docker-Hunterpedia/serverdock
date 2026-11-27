@@ -24,7 +24,8 @@ import (
 //   - a successful load installs a new root context (caddy.ActiveContext), so a poller that
 //     sees it change counts the successful ones (a load takes several milliseconds; the poller ticks every millisecond).
 //
-// Failed = attempts - successful. The counter replaces os.Stderr for its lifetime, passes
+// Failed = attempts - successful. It must be started BEFORE the first load: Caddy keeps the log
+// writer it opened at its first load, so a later counter sees successes but no attempts. The counter replaces os.Stderr for its lifetime, passes
 // every other line through, and puts the original back on Close.
 type loadCounter struct {
 	attempts atomic.Int64
