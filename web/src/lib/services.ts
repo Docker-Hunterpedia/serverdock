@@ -3,58 +3,24 @@
 // never colour alone), and the helpers the Services list, New service and Overview share.
 import { goto } from '$app/navigation';
 import { ApiError, NETWORK_MESSAGE, runAction, signedOutReason } from './api';
+import type { components } from './api-types';
 
 export const DOCS_URL = 'https://github.com/Docker-Hunterpedia/serverdock/tree/main/docs';
 export const SEC6_DOCS_URL = 'https://github.com/Docker-Hunterpedia/serverdock/blob/main/docs/security.md';
 
 export type ServiceState = 'not_deployed' | 'running' | 'restarting' | 'exited' | 'missing' | 'unknown';
 
-export type LastDeploy = {
-	number: number;
-	kind: string;
-	status: string;
-	reason_code?: string;
-	app_safe?: string;
-	image_ref?: string;
-	created_at: string;
-	finished_at?: string;
-};
-
-export type Warning = { code: string; message: string };
-
-export type Service = {
-	service: string;
-	project: string;
-	name: string;
-	image_ref: string;
-	container_port: number | null;
-	public_port: number | null;
-	state: ServiceState;
-	active_deploy: number | null;
-	last_deploy?: LastDeploy | null;
-	needs_attention?: string;
-	routes_stale: boolean;
-	routes_ready: boolean;
-	route_error?: string;
-	warnings: Warning[];
-};
-
-export type ExposedContainer = { name: string; ports: { host_port: number; container_port: number; proto: string }[]; ports_truncated?: boolean };
-export type Exposure = { containers: ExposedContainer[]; truncated?: boolean; checked_at: string };
-
-export type CreateInput = {
-	project: string;
-	name: string;
-	image_ref: string;
-	container_port?: number;
-	public_port?: number;
-	health?: { kind: string; path?: string; timeout_s?: number; passes?: number };
-	strategy: string;
-	drain_s?: number;
-	stop_grace_s?: number;
-	deploy: boolean;
-};
-export type CreateOutput = { service: Service; applied: boolean; notice?: string; deploy?: { service: string; deploy: number; job: number; status: string } | null };
+// The shapes come from the generated API types (docs/api/openapi.json); only the
+// state word is narrowed to the words the API documents.
+type Schemas = components['schemas'];
+type ServiceSchema = Schemas['ServicesListOutput']['services'][number];
+export type Service = Omit<ServiceSchema, 'state'> & { state: ServiceState };
+export type LastDeploy = NonNullable<ServiceSchema['last_deploy']>;
+export type Warning = ServiceSchema['warnings'][number];
+export type Exposure = Schemas['SystemExposureOutput'];
+export type ExposedContainer = Exposure['containers'][number];
+export type CreateInput = Schemas['ServicesCreateInput'];
+export type CreateOutput = Omit<Schemas['ServicesCreateOutput'], 'service'> & { service: Service };
 
 export const listServices = (signal?: AbortSignal) => runAction<{ services: Service[] }>('services.list', {}, signal).then((r) => r.services);
 export const listProjects = (signal?: AbortSignal) => runAction<{ projects: { name: string }[] }>('projects.list', {}, signal).then((r) => r.projects.map((p) => p.name));
@@ -86,8 +52,8 @@ export function deployStatusInfo(status: string): { symbol: string; word: string
 }
 
 /** The Deploy detail route (step 14). */
-export const deployPath = (project: string, name: string, number: number) => `/services/${project}/${name}/deploys/${number}`;
-export const servicePath = (s: { project: string; name: string }) => `/services/${s.project}/${s.name}`;
+export const deployPath = (project: string, name: string, number: number) => `/services/${encodeURIComponent(project)}/${encodeURIComponent(name)}/deploys/${number}`;
+export const servicePath = (s: { project: string; name: string }) => `/services/${encodeURIComponent(s.project)}/${encodeURIComponent(s.name)}`;
 
 /** The host the panel was opened on (an IPv6 address keeps its brackets). */
 export const panelHost = () => location.hostname;
@@ -121,8 +87,7 @@ const KNOWN_PORTS: Record<string, number> = {
 	wordpress: 80,
 	grafana: 3000,
 	ghost: 2368,
-	'uptime-kuma': 3001,
-	'sd-testapp': 8080
+	'uptime-kuma': 3001
 };
 /** The suggested container port for an image reference, if it is a well-known image. */
 export function suggestedPort(imageRef: string): { image: string; port: number } | undefined {
@@ -145,7 +110,7 @@ export function attentionOf(s: Service): Attention[] {
 	if (s.state === 'missing') out.push({ symbol: '◆', text: 'The live version’s container is missing.' });
 	if (s.state === 'exited') out.push({ symbol: '▲', text: 'The live version has exited.' });
 	if (s.state === 'restarting') out.push({ symbol: '▲', text: 'The live version keeps restarting.' });
-	if (s.state === 'unknown') out.push({ symbol: '◌', text: 'Status unknown: ServerDock is not connected to Docker right now.' });
+	if (s.state === 'unknown') out.push({ symbol: '◌', text: "ServerDock cannot confirm this service's state with Docker right now." });
 	if (s.route_error) out.push({ symbol: '▲', text: `Route problem: ${s.route_error}` });
 	switch (s.needs_attention) {
 		case 'delete_interrupted':

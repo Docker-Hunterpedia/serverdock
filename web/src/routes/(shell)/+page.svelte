@@ -51,7 +51,7 @@
 		const c = (ctrl = new AbortController());
 		loading = true;
 		error = null;
-		if (announce) status = 'Refreshing the overview…';
+		status = announce ? 'Refreshing the overview…' : 'Loading the overview…';
 		try {
 			// The exposure check is a courtesy: when Docker cannot answer, the rest still shows.
 			const [list, exp] = await Promise.all([
@@ -69,7 +69,13 @@
 			exposure = exp.x;
 			exposureFailed = !exp.ok;
 			loadedAt = new Date().toISOString();
-			status = announce ? 'Updated.' : '';
+			if (announce) {
+				const needing = list.filter((s) => attentionOf(s).length > 0).length;
+				status =
+					`Updated. ${list.length} ${list.length === 1 ? 'service' : 'services'}, ${needing} ${needing === 1 ? 'needs' : 'need'} attention.` +
+					(exp.ok ? '' : ' Could not check which other containers publish ports.');
+				clearLater();
+			} else status = '';
 		} catch (e) {
 			if (c !== ctrl) return;
 			const msg = await loadErrorMessage(e);
@@ -84,8 +90,18 @@
 			if (c === ctrl) loading = false;
 		}
 	}
+	// "Updated." is cleared a few seconds after a Refresh (one timeout started by the
+	// click; nothing runs while the page is idle).
+	let clearTimer: ReturnType<typeof setTimeout> | undefined;
+	function clearLater() {
+		clearTimeout(clearTimer);
+		clearTimer = setTimeout(() => (status = ''), 8000);
+	}
 	onMount(() => void load(false));
-	onDestroy(() => ctrl?.abort());
+	onDestroy(() => {
+		ctrl?.abort();
+		clearTimeout(clearTimer);
+	});
 
 	const counts = $derived.by(() => {
 		const n: Record<string, number> = {};
@@ -101,8 +117,12 @@
 	);
 	const shownContainers = $derived((exposure?.containers ?? []).slice(0, 10));
 	const exposed = $derived(exposure?.containers.length ?? 0);
-	const portText = (c: { ports: { container_port: number; proto: string }[]; ports_truncated?: boolean }) =>
-		c.ports.map((p) => `${p.container_port}/${p.proto}`).join(', ') + (c.ports_truncated ? ', …' : '');
+	// The port a container publishes on this server is its host port. The same port on
+	// 0.0.0.0 and on :: is one entry.
+	const portText = (c: { ports: { host_port: number; proto: string }[]; ports_truncated?: boolean }) =>
+		[...new Set(c.ports.map((p) => `${p.host_port}/${p.proto}`))].join(', ') + (c.ports_truncated ? ', …' : '');
+	const whenText = (l: { status: string; created_at: string; finished_at?: string }) =>
+		l.finished_at ? `finished ${absolute(l.finished_at)}` : `${l.status === 'queued' ? 'queued' : 'started'} ${absolute(l.created_at)}`;
 	const recentColumns = [
 		{ key: 'deploy', label: 'Deploy' },
 		{ key: 'result', label: 'Result' },
@@ -136,7 +156,7 @@
 <div class="toolbar">
 	<a class="primary" href="/services/new">New service</a>
 	<button type="button" onclick={() => !loading && load(true)} aria-disabled={loading ? 'true' : undefined}>Refresh</button>
-	{#if loadedAt}<span class="note tight">Loaded {absolute(loadedAt)}</span>{/if}
+	{#if loadedAt}<span class="note tight">{error ? 'Last loaded' : 'Loaded'} {absolute(loadedAt)}</span>{/if}
 </div>
 
 <Alerts {error} {status} bind:this={alerts} />
@@ -144,7 +164,7 @@
 {#if error}
 	<p class="note"><span aria-hidden="true">◌</span> Status unknown: could not load the overview. Use Refresh to try again.</p>
 {:else if services === undefined}
-	<p class="note" role="status">Loading the overview…</p>
+	<p class="note">Loading the overview…</p>
 {:else}
 	{#if exposed > 0}
 		<section class="banner exposure" aria-labelledby="exposure-title" data-testid="exposure-banner">
@@ -154,7 +174,7 @@
 				{exposed === 1 ? 'container publishes a port' : 'containers publish ports'} on this server's address:
 				{#each shownContainers as c, i (c.name)}{i > 0 ? ', ' : ''}{c.name} ({portText(c)}){/each}{#if exposed > shownContainers.length || exposure?.truncated}, and more{/if}.
 				A service there that uses HTTPS could receive your panel sign-in cookie.
-				<a href={SEC6_DOCS_URL} rel="noopener">Read about this (opens GitHub)</a>
+				<a href={SEC6_DOCS_URL} target="_blank" rel="noopener noreferrer">Read about this (opens GitHub)</a>
 			</p>
 		</section>
 	{:else if exposureFailed}
@@ -166,7 +186,7 @@
 			<h2 id="empty-title">No services yet</h2>
 			<p>Deploy an image and ServerDock runs it, checks it is healthy and updates it without taking it offline.</p>
 			<p><a class="primary" href="/services/new">Deploy an image</a></p>
-			<p><a href={DOCS_URL} rel="noopener">Read the documentation (opens GitHub)</a></p>
+			<p><a href={DOCS_URL} target="_blank" rel="noopener noreferrer">Read the documentation (opens GitHub)</a></p>
 		</section>
 	{:else}
 		<section aria-labelledby="counts-title" class="block">
@@ -217,7 +237,7 @@
 					{:else if key === 'image'}
 						<code>{l.image_ref ?? ''}</code>
 					{:else if key === 'when'}
-						{absolute(l.finished_at ?? l.created_at)}
+						{whenText(l)}
 					{/if}
 				{/snippet}
 			</ResponsiveTable>
@@ -260,6 +280,16 @@
 	}
 	.exposure p {
 		margin: 0;
+	}
+	.attention a,
+	.exposure a {
+		display: inline-flex;
+		align-items: center;
+		min-height: var(--target);
+	}
+	.exposure p a {
+		display: inline;
+		padding: 0.75rem 0;
 	}
 	.tight {
 		margin: 0;

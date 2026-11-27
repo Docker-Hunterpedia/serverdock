@@ -1,6 +1,6 @@
 import { type FullConfig } from '@playwright/test';
 import { HTTPS_PORT, STORAGE } from '../playwright.config';
-import { startServer } from './server';
+import { startServer, sweepLeftovers } from './server';
 
 // One shared, already-set-up server for the read-only shell tests; its admin's
 // session cookie is saved for them. Tests that change state start their own server
@@ -14,5 +14,8 @@ export default async function globalSetup(_config: FullConfig) {
 		await server.stop();
 		throw e;
 	}
-	return () => server.stop();
+	return async () => {
+		await server.stop();
+		sweepLeftovers(); // servers, containers and networks of tests that timed out or crashed
+	};
 }

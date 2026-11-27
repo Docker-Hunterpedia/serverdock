@@ -1,7 +1,7 @@
-import { request, type APIRequestContext } from '@playwright/test';
+import { request, test, type APIRequestContext } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -69,7 +69,7 @@ export type ServerOptions = {
 	dockerSocket?: string;
 	/** --allow-loopback-registry: image references may name the local registry (127.0.0.1:5000), as in the integration tests. */
 	allowLoopbackRegistry?: boolean;
-	/** --app-subnet. Default with a real Docker socket: a random /24 in 10.233.0.0/16, so servers started side by side never share a subnet. */
+	/** --app-subnet. Default with a real Docker socket: a /24 in 10.233.0.0/16 derived from the worker's parallelIndex, so servers started side by side never share a subnet. */
 	appSubnet?: string;
 };
 
@@ -95,8 +95,8 @@ export async function startServer(fixed?: ServerOptions): Promise<TestServer> {
 	const data = join(dir, 'data');
 	const baseURL = `https://127.0.0.1:${https}`;
 	const realDocker = fixed?.dockerSocket !== undefined && !fixed.dockerSocket.endsWith('no-docker.sock');
-	const subnet = fixed?.appSubnet ?? (realDocker ? `10.233.${1 + Math.floor(Math.random() * 250)}.0/24` : undefined);
-	const child: ChildProcess = spawn(
+	const subnet = fixed?.appSubnet ?? (realDocker ? nextSubnet() : undefined);
+	const child = spawnBound(
 		bin,
 		[
 			'server',
@@ -115,6 +115,9 @@ export async function startServer(fixed?: ServerOptions): Promise<TestServer> {
 		],
 		{ stdio: ['ignore', 'ignore', 'pipe'] }
 	);
+	spawned.add(child);
+	if (realDocker) dockerOrigins.add(baseURL);
+	child.once('exit', () => spawned.delete(child));
 	let log = '';
 	child.stderr?.on('data', (d) => (log += d));
 	const api = await request.newContext({ baseURL, ignoreHTTPSErrors: true, extraHTTPHeaders: { Origin: baseURL } });
@@ -122,6 +125,7 @@ export async function startServer(fixed?: ServerOptions): Promise<TestServer> {
 		await api.dispose();
 		child.kill('SIGTERM');
 		await new Promise((r) => (child.exitCode !== null ? r(null) : child.once('exit', r)));
+		dockerOrigins.delete(baseURL);
 		if (realDocker) removeDockerLeftovers(join(data, 'serverdock.db'), fixed!.dockerSocket!);
 		rmSync(dir, { recursive: true, force: true });
 	};
@@ -227,3 +231,54 @@ function removeDockerLeftovers(dbPath: string, socket: string) {
  * by side against one Docker, so tests that deploy for real must not share "default".
  */
 export const uniqueProject = () => `pw${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+
+let subnetSeq = 0;
+/** A /24 of its own per worker (parallelIndex) and per server started in that worker, 10.233.<n>.0/24. */
+function nextSubnet(): string {
+	let worker = 0;
+	try {
+		worker = test.info().parallelIndex;
+	} catch {
+		/* outside a test (global setup): worker 0 */
+	}
+	return `10.233.${1 + ((worker * 10 + (subnetSeq++ % 10)) % 250)}.0/24`;
+}
+
+// ---- no server outlives the run --------------------------------------------------
+// Every server this process starts is remembered and killed when the process exits
+// normally; on Linux the server is also started under `setpriv --pdeathsig SIGKILL`, so
+// it dies with its parent even when a worker is killed on a timeout or crashes. A
+// sweep in the global teardown (sweepLeftovers) removes whatever is left in the temp
+// directory (servers, containers and networks by instance label).
+const spawned = new Set<ChildProcess>();
+const dockerOrigins = new Set<string>();
+/** True for a URL on a test server that was started with a real Docker socket. */
+export const isDockerServer = (url: string) => dockerOrigins.has(new URL(url).origin);
+process.on('exit', () => {
+	for (const c of spawned) c.kill('SIGKILL');
+});
+
+const TMP_PREFIX = 'sdpw-';
+
+function spawnBound(bin: string, args: string[], opts: Parameters<typeof spawn>[2]): ChildProcess {
+	if (process.platform === 'linux' && spawnSync('setpriv', ['--version']).status === 0) {
+		return spawn('setpriv', ['--pdeathsig', 'SIGKILL', bin, ...args], opts);
+	}
+	return spawn(bin, args, opts);
+}
+
+/**
+ * The global teardown: kills any test server still running from this machine's temp
+ * directory, removes the Docker containers and networks of every install id left in
+ * a data directory, and deletes the directories. Safe to run when nothing is left.
+ */
+export function sweepLeftovers() {
+	const root = tmpdir();
+	for (const name of readdirSync(root).filter((n) => n.startsWith(TMP_PREFIX))) {
+		const dir = join(root, name);
+		spawnSync('pkill', ['-KILL', '-f', `serverdock server --data ${dir}/`]);
+		const db = join(dir, 'data', 'serverdock.db');
+		if (existsSync(db)) removeDockerLeftovers(db, DOCKER_SOCKET);
+		rmSync(dir, { recursive: true, force: true });
+	}
+}

@@ -147,9 +147,17 @@ export function serviceFixture(over: Record<string, unknown> & { project: string
 
 export const mockServices = (page: Page, services: ReturnType<typeof serviceFixture>[]) => mockAction(page, 'services.list', { services });
 
-/** The system.exposure answer: foreign containers that publish host ports on the panel's address. */
-export const mockExposure = (page: Page, containers: { name: string; ports: [number, string][] }[]) =>
+/**
+ * The system.exposure answer: foreign containers that publish host ports on the panel's
+ * address. A port is [hostPort, proto, containerPort?, hostIP?]: the host port is what the
+ * banner must show, so the container port defaults to 80 (never equal to a test's host port).
+ * The same host port on 0.0.0.0 and on :: is two entries, as Docker reports it.
+ */
+export const mockExposure = (page: Page, containers: { name: string; ports: [number, string, number?, string?][] }[]) =>
 	mockAction(page, 'system.exposure', {
 		checked_at: AT,
-		containers: containers.map((c) => ({ name: c.name, ports: c.ports.map(([p, proto]) => ({ host_ip: '0.0.0.0', host_port: p, container_port: p, proto })) }))
+		containers: containers.map((c) => ({
+			name: c.name,
+			ports: c.ports.map(([host, proto, container, ip]) => ({ host_ip: ip ?? '0.0.0.0', host_port: host, container_port: container ?? 80, proto }))
+		}))
 	});

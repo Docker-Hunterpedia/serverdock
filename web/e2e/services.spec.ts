@@ -42,7 +42,7 @@ test('Overview lists what needs attention and sends nothing while idle', async (
 	await expect(list).toContainText('previous version did not come back');
 	const reqs = countApiRequests(page);
 	await page.waitForTimeout(3000);
-	expect(reqs.seen.filter((p) => p.includes('/actions/services.') || p.includes('/actions/system.exposure'))).toEqual([]);
+	expect(reqs.seen.filter((p) => !p.endsWith('/actions/system.info'))).toEqual([]);
 });
 
 test('New service validates, keeps typed input and deploys the test app for real', async ({ page, allow5xx }) => {
@@ -231,8 +231,12 @@ test.describe('New service screen states', () => {
 		await openNew(page, server);
 		const field = page.locator('#f-public-port');
 		await expect(field).toHaveAttribute('aria-describedby', /\bf-public-port-hint\b/);
-		await expect(field).toHaveAttribute('aria-describedby', /\bpublic-sec6\b/);
+		// the long SEC6 paragraph is part of the description only once a public port is set
+		await expect(field).not.toHaveAttribute('aria-describedby', /\bpublic-sec6\b/);
+		await expect(field).not.toHaveAccessibleDescription(/Read about this/);
+		await expect(page.locator('#f-public-port-hint')).not.toContainText('<port>');
 		await field.fill('8080');
+		await expect(field).toHaveAttribute('aria-describedby', /\bpublic-sec6\b/);
 		await expect(page.locator('#f-public-port-hint')).toContainText("Exposes the app on the internet at http://");
 		await expect(page.locator('#f-public-port-hint')).toContainText(':8080');
 		await expect(page.locator('#f-public-port-hint')).toContainText("unless your host's firewall blocks the port");
@@ -255,8 +259,11 @@ test.describe('New service screen states', () => {
 		await expect(page.locator('#f-container-port')).toHaveAttribute('aria-describedby', /\bport-suggestion\b/);
 		await expect(page.locator('#f-container-port')).toHaveAccessibleDescription(/Suggested for nginx: port 80/);
 		await expectNoAxeViolations(page, 'New service, suggested port');
-		await sug.getByRole('button', { name: 'Use 80' }).click();
+		await sug.getByRole('button', { name: 'Use port 80' }).click();
 		await expect(page.locator('#f-container-port')).toHaveValue('80');
+		// the button removes itself: focus goes to the field and the change is announced
+		await expect(page.locator('#f-container-port')).toBeFocused();
+		await expect(page.getByRole('status')).toContainText('Port set to 80.');
 		await expect(sug.getByRole('button')).toHaveCount(0);
 		await page.getByLabel('Image').fill('unknown-thing:1');
 		await expect(sug).toHaveCount(0);
@@ -370,7 +377,7 @@ test.describe('Overview screen states', () => {
 		await expect(list).toContainText('The live version has exited');
 		await expect(list).toContainText('blog/web');
 		await expect(list).toContainText('container is missing');
-		await expect(list).toContainText('Status unknown');
+		await expect(list).toContainText('cannot confirm this service');
 		await expect(list).not.toContainText('shop/api');
 		await expectNoAxeViolations(page, 'Overview, needs attention');
 	});
@@ -383,7 +390,8 @@ test.describe('Overview screen states', () => {
 		const banner = page.getByTestId('exposure-banner');
 		await expect(banner).toBeVisible();
 		await expect(banner.getByRole('heading', { level: 2 })).toContainText('Other containers use this server');
-		await expect(banner).toContainText('grafana (3000/tcp)');
+		await expect(banner).toContainText('grafana (3000/tcp)'); // the HOST port, not the container's (mock: 80)
+		await expect(banner).not.toContainText('(80/tcp)');
 		await expect(banner).toContainText('redis (6379/tcp)');
 		await expect(banner.getByRole('link', { name: /Read about this/ })).toHaveAttribute('href', /^https:\/\/github\.com\//);
 		await expectNoAxeViolations(page, 'Overview, exposure banner');
@@ -400,7 +408,8 @@ test.describe('Overview screen states', () => {
 		await page.unroute('**/api/v1/actions/system.exposure');
 		await page.route('**/api/v1/actions/system.exposure', (r) => r.fulfill({ status: 503, contentType: 'application/json', body: '{"error":{"code":"unavailable","message":"no docker"}}' }));
 		await page.getByRole('button', { name: 'Refresh' }).click();
-		await expect(page.getByText('Could not check which other containers publish ports')).toBeVisible();
+		await expect(page.locator('p.note', { hasText: 'Could not check which other containers publish ports' })).toBeVisible();
+		await expect(page.getByRole('status')).toContainText('Could not check which other containers publish ports'); // the Refresh result says it too
 		await expect(page.getByTestId('exposure-banner')).toHaveCount(0);
 	});
 
@@ -483,7 +492,7 @@ test.describe('keyboard and targets', () => {
 		await tab(page);
 		await expect(page.locator('#f-container-port')).toBeFocused();
 		await tab(page);
-		await expect(page.getByRole('button', { name: 'Use 80' })).toBeFocused();
+		await expect(page.getByRole('button', { name: 'Use port 80' })).toBeFocused();
 		await page.keyboard.press('Enter');
 		await expect(page.locator('#f-container-port')).toHaveValue('80');
 		// radios, Advanced (opens with Space), then submit
@@ -532,11 +541,11 @@ test.describe('keyboard and targets', () => {
 		await page.goto(`${server.baseURL}/services/new`);
 		await page.getByLabel('Image').fill('nginx:1.27');
 		for (const id of ['f-project', 'f-name', 'f-image', 'f-container-port', 'f-public-port']) await big(page.locator(`#${id}`), id);
-		await big(page.getByRole('button', { name: 'Use 80' }), 'Use 80');
+		await big(page.getByRole('button', { name: 'Use port 80' }), 'Use port 80');
 		await big(page.getByRole('button', { name: 'Create and deploy' }), 'Create and deploy');
 		await big(page.getByRole('link', { name: 'Cancel' }), 'Cancel');
 		await big(page.getByText('Advanced', { exact: true }), 'Advanced summary');
-		for (const re of [/TCP:/, /HTTP:/, /Stays running/, /Blue-green/, /Stop-first/]) await big(page.locator('label.choice').filter({ hasText: re }), `radio ${re}`);
+		for (const re of [/TCP:/, /HTTP:/, /Stays running/, /Blue-green/, /Stop-first/]) await big(page.locator('.choice').filter({ hasText: re }), `radio ${re}`);
 		await page.getByText('Advanced', { exact: true }).click();
 		for (const id of ['f-timeout', 'f-passes', 'f-drain', 'f-grace']) await big(page.locator(`#${id}`), id);
 	});
@@ -584,4 +593,87 @@ test('a deploy that fails shows on the list and the Overview, not as success', a
 	} finally {
 		await server.stop();
 	}
+});
+
+
+// ---- step 12 review fixes ----------------------------------------------------------
+
+test.describe('review fixes', () => {
+	test('the exposure banner shows host ports once, even when 0.0.0.0 and :: both publish', async ({ page, server, admin }) => {
+		await mockExposure(page, [{ name: 'grafana', ports: [[3000, 'tcp', 80, '0.0.0.0'], [3000, 'tcp', 80, '::']] }]);
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/`);
+		const banner = page.getByTestId('exposure-banner');
+		await expect(banner).toContainText('grafana (3000/tcp)');
+		await expect(banner).not.toContainText('3000/tcp, 3000/tcp');
+		await expect(banner).not.toContainText('80/tcp');
+	});
+
+	test('a create the proxy could not apply says so on the landing page, and the SEC6 text matches the server', async ({ page, server, admin }) => {
+		// A server with no Docker: the route cannot be applied yet, and the first deploy fails later.
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/services/new`);
+		await page.getByLabel('Name').fill('web');
+		await page.getByLabel('Image').fill('nginx:1.27');
+		await page.getByLabel('Port your app listens on (optional)').fill('80');
+		await page.getByLabel('Public port (optional)').fill('18090');
+		const draft = (await page.locator('#public-sec6').innerText()).replace(/\s+/g, ' ');
+		const created = page.waitForResponse((r) => r.url().endsWith('/actions/services.create'));
+		await page.getByRole('button', { name: 'Create and deploy' }).click();
+		const body = await (await created).json();
+		const serverText = (body.data.service.warnings[0].message as string).replace(/\s+/g, ' ');
+		expect(draft, 'the SPA draft starts with the server wording for the same port').toContain(serverText);
+		expect(body.data.applied).toBe(false);
+		await expect(page).toHaveURL(/\/services\/default\/web\/deploys\/1$/);
+		const note = page.getByTestId('not-applied');
+		await expect(note).toContainText('Saved, but not applied yet:');
+		await expect(note).toContainText(body.data.notice);
+		await expect(page.getByText('This deploy was just queued')).toBeVisible();
+		await expectNoAxeViolations(page, 'Deploy placeholder, not applied');
+	});
+
+	test('a deploy page opened directly does not claim the deploy was just queued', async ({ page, server, admin }) => {
+		seedService(server, { project: 'shop', name: 'api', deploys: [{ number: 1, status: 'succeeded', live: true }] });
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/services/shop/api/deploys/1`);
+		await expect(page.getByRole('heading', { name: 'Deploy #1' })).toBeVisible();
+		await expect(page.getByText('just queued')).toHaveCount(0);
+		await expect(page.getByText("does not show a deploy's status yet")).toBeVisible();
+		await expect(page.getByTestId('not-applied')).toHaveCount(0);
+	});
+
+	test('a network failure on create does not claim nothing changed; typing clears a field error', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/services/new`);
+		await page.route('**/actions/services.create', (r) => r.abort('failed'));
+		await page.getByLabel('Name').fill('web');
+		await page.getByLabel('Image').fill('nginx:1.27');
+		await page.getByRole('button', { name: 'Create and deploy' }).click();
+		await expect(page.getByRole('alert')).toContainText('may have been created');
+		await expect(page.getByRole('alert')).not.toContainText('Nothing was changed');
+		await page.getByLabel('Name').fill('Bad Name');
+		await page.getByRole('button', { name: 'Create and deploy' }).click();
+		await expect(page.locator('#f-name')).toHaveAttribute('aria-invalid', 'true');
+		await page.locator('#f-name').pressSequentially('x');
+		await expect(page.locator('#f-name')).not.toHaveAttribute('aria-invalid', 'true');
+		await expect(page.locator('#f-name-error')).toHaveCount(0);
+		await expect(page.locator('#f-name')).toHaveAttribute('autocomplete', 'off');
+	});
+
+	test('the health radio says it was chosen for you until you pick one', async ({ page, server, admin }) => {
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/services/new`);
+		await expect(page.locator('#health-hint')).toContainText('Chosen for you');
+		await page.getByRole('radio', { name: /^HTTP/ }).check();
+		await expect(page.locator('#health-hint')).not.toContainText('Chosen for you');
+		await expect(page.getByRole('radio', { name: /Blue-green/ })).toHaveAccessibleDescription(/beside the old one/);
+	});
+
+	test('project headings are named "Project <name>" and the sections are not landmarks', async ({ page, server, admin }) => {
+		seedThreeServices(server);
+		await signIn(page, server, admin);
+		await page.goto(`${server.baseURL}/services`);
+		await expect(page.getByRole('heading', { name: 'Project shop', level: 2 })).toBeVisible();
+		await expect(page.getByRole('region')).toHaveCount(0);
+	});
 });

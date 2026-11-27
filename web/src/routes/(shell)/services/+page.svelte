@@ -20,12 +20,13 @@
 		const c = (ctrl = new AbortController());
 		loading = true;
 		error = null;
-		if (announce) status = 'Refreshing the list…';
+		status = announce ? 'Refreshing the list…' : 'Loading the services…';
 		try {
 			const list = await listServices(c.signal);
 			if (c !== ctrl) return;
 			services = list;
 			status = announce ? `Updated. ${list.length} ${list.length === 1 ? 'service' : 'services'}.` : '';
+			if (announce) clearLater();
 		} catch (e) {
 			if (c !== ctrl) return;
 			const msg = await loadErrorMessage(e);
@@ -40,8 +41,17 @@
 			if (c === ctrl) loading = false;
 		}
 	}
+	// One timeout, started by the Refresh click, clears "Updated."; nothing runs while idle.
+	let clearTimer: ReturnType<typeof setTimeout> | undefined;
+	function clearLater() {
+		clearTimeout(clearTimer);
+		clearTimer = setTimeout(() => (status = ''), 8000);
+	}
 	onMount(() => void load(false));
-	onDestroy(() => ctrl?.abort());
+	onDestroy(() => {
+		ctrl?.abort();
+		clearTimeout(clearTimer);
+	});
 
 	const groups = $derived.by(() => {
 		const by = new Map<string, Service[]>();
@@ -75,18 +85,18 @@
 {#if error}
 	<p class="note"><span aria-hidden="true">◌</span> Status unknown: could not load the services. Use Refresh to try again.</p>
 {:else if services === undefined}
-	<p class="note" role="status">Loading the services…</p>
+	<p class="note">Loading the services…</p>
 {:else if services.length === 0}
 	<section class="empty" aria-labelledby="empty-title">
 		<h2 id="empty-title">No services yet</h2>
 		<p>A service is one app that ServerDock runs from a Docker image, keeps healthy and updates without taking it offline.</p>
 		<p><a class="primary" href="/services/new">Deploy an image</a></p>
-		<p><a href={DOCS_URL} rel="noopener">Read the documentation (opens GitHub)</a></p>
+		<p><a href={DOCS_URL} target="_blank" rel="noopener noreferrer">Read the documentation (opens GitHub)</a></p>
 	</section>
 {:else}
 	{#each groups as [project, rows] (project)}
-		<section class="group" aria-labelledby="project-{project}">
-			<h2 id="project-{project}">{project}</h2>
+		<section class="group">
+			<h2><span class="sr">Project</span> {project}</h2>
 			<ResponsiveTable
 				caption="Services in {project}"
 				{columns}
@@ -110,7 +120,7 @@
 						{#if r.last_deploy}
 							{@const st = deployStatusInfo(r.last_deploy.status)}
 							#{r.last_deploy.number} <span class="nowrap"><span aria-hidden="true">{st.symbol}</span> {st.word}</span>,
-							{absolute(r.last_deploy.finished_at ?? r.last_deploy.created_at)}
+							{r.last_deploy.finished_at ? `finished ${absolute(r.last_deploy.finished_at)}` : `${r.last_deploy.status === 'queued' ? 'queued' : 'started'} ${absolute(r.last_deploy.created_at)}`}
 						{:else}
 							Never deployed
 						{/if}

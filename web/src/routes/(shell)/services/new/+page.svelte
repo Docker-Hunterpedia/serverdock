@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { ApiError, NETWORK_MESSAGE, runAction, signedOutReason } from '../../../../lib/api';
+	import { ApiError, runAction, signedOutReason } from '../../../../lib/api';
 	import Alerts from '../../../../lib/Alerts.svelte';
 	import Field from '../../../../lib/Field.svelte';
 	import { created } from '../../../../lib/flow.svelte';
@@ -151,6 +151,25 @@
 		alerts?.focus();
 	}
 
+	/** Typing in a field clears that field's error and aria-invalid (the summary stays until the next submit). */
+	function clearError(e: Event) {
+		const id = (e.target as HTMLElement | null)?.id;
+		const key = Object.keys(FIELD_IDS).find((k) => FIELD_IDS[k] === id);
+		if (key && key in errors) {
+			const { [key]: _gone, ...rest } = errors;
+			errors = rest;
+		}
+	}
+
+	/** "Use 80": the field gets the value, keeps the keyboard focus (the button is gone) and the change is announced. */
+	async function usePort(port: number) {
+		containerPort = String(port);
+		delete errors.containerPort;
+		status = `Port set to ${port}.`;
+		await tick();
+		document.getElementById('f-container-port')?.focus();
+	}
+
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
 		if (busy) return;
@@ -166,11 +185,14 @@
 		status = 'Creating the service and queueing the first deploy…';
 		try {
 			const out = await runAction<CreateOutput>('services.create', input, undefined);
+			const d = out.deploy;
 			created.service = out.service.service;
+			created.number = d?.deploy;
 			created.warnings = out.service.warnings;
 			created.port = out.service.public_port;
+			created.applied = out.applied;
+			created.notice = out.notice;
 			status = '';
-			const d = out.deploy;
 			await goto(d ? deployPath(out.service.project, out.service.name, d.deploy) : servicePath(out.service));
 		} catch (err) {
 			status = '';
@@ -179,9 +201,16 @@
 				await goto(`/signed-out?reason=${signedOutReason(err.code)}`);
 				return;
 			}
-			const msg = err.code === 'network' ? NETWORK_MESSAGE : actionMessage(err.message);
+			if (err.code === 'network') {
+				await fail('Could not reach the server. The service may have been created; check Services before trying again.', {});
+				return;
+			}
+			const msg = actionMessage(err.message);
 			const f = err.status === 400 || err.status === 409 ? fieldOf(err.message) : undefined;
-			await fail(msg, f ? { [f]: msg } : {});
+			if (f) {
+				// The field shows the server's words once; the summary only says where to look.
+				await fail('The service was not created. Fix the field below and try again.', { [f]: msg.replace(/^[a-z_.]+:\s*/i, '') });
+			} else await fail(msg, {});
 		} finally {
 			busy = false;
 		}
@@ -197,10 +226,10 @@
 
 <Alerts error={summary} {links} {status} bind:this={alerts} />
 
-<form novalidate onsubmit={submit} class="form">
+<form novalidate onsubmit={submit} oninput={clearError} class="form">
 	<Field id="f-project" label="Project" bind:value={project} list="project-list" error={errors.project} hint="Projects group services. A new name creates a project." />
 	<datalist id="project-list">{#each projects as p (p)}<option value={p}></option>{/each}</datalist>
-	<Field id="f-name" label="Name" bind:value={name} error={errors.name} hint="Lowercase letters, digits and -, for example web." />
+	<Field id="f-name" label="Name" bind:value={name} autocomplete="off" error={errors.name} hint="Lowercase letters, digits and -, for example web." />
 	<Field id="f-image" label="Image" bind:value={image} error={errors.image} hint="A tag or digest from a registry, for example nginx:1.27. Pin a version rather than latest." />
 	<Field
 		id="f-container-port"
@@ -215,7 +244,7 @@
 		<p id="port-suggestion" class="hint suggestion">
 			Suggested for {suggestion.image}: port {suggestion.port}.
 			{#if containerPort.trim() !== String(suggestion.port)}
-				<button type="button" onclick={() => (containerPort = String(suggestion.port))}>Use {suggestion.port}</button>
+				<button type="button" onclick={() => usePort(suggestion.port)}>Use port {suggestion.port}</button>
 			{/if}
 		</p>
 	{/if}
@@ -225,19 +254,21 @@
 		bind:value={publicPort}
 		inputmode="numeric"
 		error={errors.publicPort}
-		describedby="public-sec6"
-		hint="Exposes the app on the internet at http://{host}:{publicNumber ?? '<port>'}, unless your host's firewall blocks the port. Leave empty to keep it private."
+		describedby={publicPort.trim() ? 'public-sec6' : undefined}
+		hint={publicNumber
+			? `Exposes the app on the internet at http://${host}:${publicNumber}, unless your host's firewall blocks the port.`
+			: "Leave empty to keep the app private. A public port exposes the app on the internet at this server's address, unless your host's firewall blocks the port."}
 	/>
 	<p id="public-sec6" class="hint sec6">
 		<span aria-hidden="true">▲</span>
 		{sharesPanelDraft(publicNumber)}
-		<a href={SEC6_DOCS_URL} rel="noopener">Read about this (opens GitHub)</a>
+		<a href={SEC6_DOCS_URL} target="_blank" rel="noopener noreferrer">Read about this (opens GitHub)</a>
 	</p>
 	{#if publicNumber}<p class="hint">After the deploy the app will be at <code>{appAddress(publicNumber)}</code>.</p>{/if}
 
 	<fieldset aria-describedby="health-hint">
 		<legend>Health check</legend>
-		<p class="hint" id="health-hint">How ServerDock decides the new version is ready before it takes traffic.</p>
+		<p class="hint" id="health-hint">How ServerDock decides the new version is ready before it takes traffic.{healthKind === undefined ? " Chosen for you (TCP when you give a port, otherwise stays running) until you pick one." : ""}</p>
 		<div class="choices">
 			<label class="choice"><input type="radio" name="health" value="tcp" checked={effectiveKind === 'tcp'} onchange={() => (healthKind = 'tcp')} /> TCP: the port accepts connections</label>
 			<label class="choice"><input type="radio" name="health" value="http" checked={effectiveKind === 'http'} onchange={() => (healthKind = 'http')} /> HTTP: a path answers with success</label>
@@ -251,14 +282,14 @@
 	<fieldset>
 		<legend>Strategy</legend>
 		<div class="choices">
-			<label class="choice">
-				<input type="radio" name="strategy" value="blue_green" bind:group={strategy} /> Blue-green
-				<span class="hint">Starts the new version beside the old one and switches when it is healthy. The app stays up.</span>
-			</label>
-			<label class="choice">
-				<input type="radio" name="strategy" value="stop_first" bind:group={strategy} /> Stop-first
-				<span class="hint">Stops the old version, then starts the new one. The app is briefly down, and only one version ever runs. Use it for apps that cannot run twice.</span>
-			</label>
+			<div class="choice">
+				<label><input type="radio" name="strategy" value="blue_green" aria-describedby="strategy-bg" bind:group={strategy} /> Blue-green</label>
+				<p id="strategy-bg" class="hint">Starts the new version beside the old one and switches when it is healthy. The app stays up.</p>
+			</div>
+			<div class="choice">
+				<label><input type="radio" name="strategy" value="stop_first" aria-describedby="strategy-sf" bind:group={strategy} /> Stop-first</label>
+				<p id="strategy-sf" class="hint">Stops the old version, then starts the new one. The app is briefly down, and only one version ever runs. Use it for apps that cannot run twice.</p>
+			</div>
 		</div>
 	</fieldset>
 
@@ -271,7 +302,7 @@
 	</details>
 
 	<div class="actions">
-		<button type="submit" class="primary" aria-disabled={busy ? 'true' : undefined}>Create and deploy</button>
+		<button type="submit" class="primary" aria-disabled={busy ? 'true' : undefined}>{busy ? 'Creating the service…' : 'Create and deploy'}</button>
 		<a class="button" href="/services">Cancel</a>
 	</div>
 </form>
@@ -306,9 +337,13 @@
 		margin: 0 0.5rem 0 0;
 		vertical-align: middle;
 	}
+	.choice label {
+		display: inline-block;
+		min-height: var(--target);
+		line-height: var(--target);
+	}
 	.choice .hint {
-		display: block;
-		margin: 0.25rem 0 0 1.75rem;
+		margin: 0 0 0 1.75rem;
 	}
 	.sec6 {
 		border-left: 4px solid var(--border);

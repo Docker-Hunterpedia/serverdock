@@ -208,7 +208,9 @@ const (
 )
 
 // ServiceState is the state of a service whose active deploy is activeDeploy,
-// derived from the state map. It is unknown (◌) while the events stream is down,
+// derived from the state map. It is used by the reconciler's tests only: the API
+// derives the same words in svcDeps.state (services.go), which also checks the
+// deploy's address, so keep the two in step. It is unknown (◌) while the events stream is down,
 // until the first resync has finished, and while an operation for the service ended
 // in a docker or timeout error (until the next successful operation or event for
 // it; no timer).

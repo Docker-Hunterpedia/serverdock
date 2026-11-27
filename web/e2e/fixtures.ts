@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test as base, type Page } from '@playwright/test';
-import { signInWithRecoveryCode, startServer, type Admin, type TestServer } from './server';
+import { isDockerServer, signInWithRecoveryCode, startServer, type Admin, type TestServer } from './server';
 
 export const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
@@ -36,8 +36,8 @@ export const test = base.extend<Fixtures>({
 			const problems: string[] = [];
 			allowed.value = false;
 			page.on('response', (r) => {
-				// The Overview asks system.exposure on every load; a server with no Docker answers 503 by design and the page says it could not check.
-				if (r.status() >= 500 && r.url().includes('/api/v1/') && !r.url().endsWith('/actions/system.exposure')) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
+				// The Overview asks system.exposure on every load; a server started without Docker answers 503 by design and the page says it could not check.
+				if (r.status() >= 500 && r.url().includes('/api/v1/') && !(r.url().endsWith('/actions/system.exposure') && !isDockerServer(r.url()))) problems.push(`API ${r.status()} on ${new URL(r.url()).pathname} (call allow5xx() if the test provokes it)`);
 			});
 			await page.addInitScript(() => {
 				addEventListener('securitypolicyviolation', (e) => {
