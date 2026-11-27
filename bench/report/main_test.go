@@ -278,7 +278,7 @@ func TestDeployRun(t *testing.T) {
 		}
 		return 58 * mb
 	}
-	d, err := deployRun(deploySamples(rss, hwm, 105), 20, 40, 60)
+	d, err := deployRun(deploySamples(rss, hwm, 105), 20, 40, 60, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,15 +289,21 @@ func TestDeployRun(t *testing.T) {
 		t.Errorf("%+v", d)
 	}
 	// A flat HWM means the sampled peak is the peak.
-	d, err = deployRun(deploySamples(rss, func(float64) float64 { return 60 * mb }, 105), 20, 40, 60)
+	d, err = deployRun(deploySamples(rss, func(float64) float64 { return 60 * mb }, 105), 20, 40, 60, false)
 	if err != nil || d.NewHighWater || d.PeakRSS != 56*mb {
 		t.Errorf("%+v %v", d, err)
 	}
+	// With the high-water mark reset before the deploy, VmHWM is the peak since, even when
+	// lower than the earlier one (a 55 MB peak after a reset from 60 MB).
+	d, err = deployRun(deploySamples(rss, func(float64) float64 { return 55 * mb }, 105), 20, 40, 60, true)
+	if err != nil || !d.HWMReset || d.HWMBefore != 0 || !d.NewHighWater || d.PeakRSS != 56*mb {
+		t.Errorf("%+v %v", d, err)
+	}
 	// Too short to hold +60 s.
-	if _, err := deployRun(deploySamples(rss, hwm, 70), 20, 40, 60); err == nil {
+	if _, err := deployRun(deploySamples(rss, hwm, 70), 20, 40, 60, false); err == nil {
 		t.Error("expected an error for samples that stop before +60 s")
 	}
-	if _, err := deployRun(deploySamples(rss, hwm, 105), 20, 10, 60); err == nil {
+	if _, err := deployRun(deploySamples(rss, hwm, 105), 20, 10, 60, false); err == nil {
 		t.Error("expected an error for an end before the start")
 	}
 }
@@ -316,7 +322,7 @@ func TestLoadDeploysAndMarkdown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "s7-r1.tsv"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "s7-r1.tsv.events"), []byte("20.5 40.2 60\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "s7-r1.tsv.events"), []byte("20.5 40.2 60 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	scen, _, err := load(dir)

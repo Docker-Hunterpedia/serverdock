@@ -337,6 +337,7 @@ type DeployRun struct {
 	PeakRSSSampled     float64 `json:"peak_vmrss_sampled_during_bytes"`
 	HWMBefore          float64 `json:"vmhwm_before_bytes"`
 	HWMAfter           float64 `json:"vmhwm_after_bytes"`
+	HWMReset           bool    `json:"vmhwm_reset_before_deploy"` // the bench reset the high-water mark just before the deploy
 	NewHighWater       bool    `json:"new_high_water_mark"`
 	PeakRSS            float64 `json:"peak_vmrss_bytes"` // the higher of the sampled peak and a new VmHWM
 	RSSAfter60         float64 `json:"vmrss_at_plus_60s_bytes"`
@@ -357,7 +358,7 @@ type DeployResult struct {
 // start of sampling at which the deploy was queued and finished (host clock differences
 // between them, so they hold on Docker Desktop too), postS is the length of the window
 // after the finish that the run asked for.
-func deployRun(s []Sample, startOff, endOff, postS float64) (DeployRun, error) {
+func deployRun(s []Sample, startOff, endOff, postS float64, hwmReset bool) (DeployRun, error) {
 	if len(s) < 5 {
 		return DeployRun{}, fmt.Errorf("need at least 5 samples, got %d", len(s))
 	}
@@ -393,7 +394,11 @@ func deployRun(s []Sample, startOff, endOff, postS float64) (DeployRun, error) {
 	d.PeakRSSSampled = max(rss(during))
 	d.HWMBefore = before[len(before)-1].VmHWM
 	d.HWMAfter = tail[len(tail)-1].VmHWM
+	d.HWMReset = hwmReset
 	d.NewHighWater = d.HWMAfter > d.HWMBefore
+	if hwmReset { // VmHWM now holds the peak since the reset, whatever it was before
+		d.HWMBefore, d.NewHighWater = 0, true
+	}
 	d.PeakRSS = d.PeakRSSSampled
 	if d.NewHighWater && d.HWMAfter > d.PeakRSS {
 		d.PeakRSS = d.HWMAfter // the kernel saw a higher peak than the 1 s samples
@@ -405,16 +410,18 @@ func deployRun(s []Sample, startOff, endOff, postS float64) (DeployRun, error) {
 	return d, nil
 }
 
-// readEvents reads "<start offset> <end offset> <post seconds>" from a run's ".events" file.
-func readEvents(path string) (start, end, post float64, err error) {
+// readEvents reads "<start offset> <end offset> <post seconds> [hwm reset 0|1]" from a run's ".events" file.
+func readEvents(path string) (start, end, post float64, reset bool, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%g %g %g", &start, &end, &post); err != nil {
-		return 0, 0, 0, fmt.Errorf("%s: %w", path, err)
+	var r int
+	n, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%g %g %g %d", &start, &end, &post, &r)
+	if n < 3 {
+		return 0, 0, 0, false, fmt.Errorf("%s: %w", path, err)
 	}
-	return start, end, post, nil
+	return start, end, post, r == 1, nil
 }
 
 func loadDeploys(dir string) ([]DeployResult, error) {
@@ -442,11 +449,11 @@ func loadDeploys(dir string) ([]DeployResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", f, err)
 			}
-			a, b, post, err := readEvents(f + ".events")
+			a, b, post, reset, err := readEvents(f + ".events")
 			if err != nil {
 				return nil, err
 			}
-			r, err := deployRun(samples, a, b, post)
+			r, err := deployRun(samples, a, b, post, reset)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", f, err)
 			}
@@ -463,11 +470,15 @@ func writeDeploys(b *strings.Builder, ds []DeployResult) {
 		fmt.Fprintf(b, "| run | deploy s | idle baseline MB | peak MB (during) | VmHWM before MB | VmHWM +60 s MB | new high-water mark | VmRSS at +60 s MB | +60 s over baseline MB | back to baseline (within 1 MB) |\n|---|---|---|---|---|---|---|---|---|---|\n")
 		var peaks, afters, bases []float64
 		for i, r := range d.Runs {
-			fmt.Fprintf(b, "| %d | %.1f | %.1f | %.1f | %.1f | %.1f | %v | %.1f | %+.1f | %v |\n", i+1, r.DeployS, r.BaselineRSS/mb, r.PeakRSS/mb,
-				r.HWMBefore/mb, r.HWMAfter/mb, r.NewHighWater, r.RSSAfter60/mb, r.After60OverBase/mb, r.BackAtBaseline)
+			before := fmt.Sprintf("%.1f", r.HWMBefore/mb)
+			if r.HWMReset {
+				before = "reset"
+			}
+			fmt.Fprintf(b, "| %d | %.1f | %.1f | %.1f | %s | %.1f | %v | %.1f | %+.1f | %v |\n", i+1, r.DeployS, r.BaselineRSS/mb, r.PeakRSS/mb,
+				before, r.HWMAfter/mb, r.NewHighWater, r.RSSAfter60/mb, r.After60OverBase/mb, r.BackAtBaseline)
 			peaks, afters, bases = append(peaks, r.PeakRSS), append(afters, r.RSSAfter60), append(bases, r.BaselineRSS)
 		}
-		fmt.Fprintf(b, "\nMedian of runs: baseline **%.1f MB**, peak **%.1f MB** (%+.1f MB), VmRSS 60 s after the deploy finished **%.1f MB** (%+.1f MB). Report only: sampled every 1 s from outside; the peak is the higher of the sampled maximum and a new VmHWM.\n\n",
+		fmt.Fprintf(b, "\nMedian of runs: baseline **%.1f MB**, peak **%.1f MB** (%+.1f MB), VmRSS 60 s after the deploy finished **%.1f MB** (%+.1f MB). Report only: sampled every 1 s from outside; the peak is the higher of the sampled maximum and a new VmHWM (\"reset\": the bench reset the high-water mark just before the deploy, so VmHWM is the peak since).\n\n",
 			median(bases)/mb, median(peaks)/mb, (median(peaks)-median(bases))/mb, median(afters)/mb, (median(afters)-median(bases))/mb)
 	}
 }

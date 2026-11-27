@@ -364,12 +364,15 @@ for id in $SCENARIOS; do
       bench/measure.sh "$TARGET" "$total" 1 "$WORK/s$id-r$r.tsv" &
       mpid=$!
       m0=$(uptime_s); sleep "$DEPLOY_BASE"
+      # Best effort (direct path, root): reset the peak-RSS mark so VmHWM afterwards is the deploy's own peak.
+      pid=$(docker inspect -f '{{.State.Pid}}' "$TARGET"); reset=0
+      if [ -w "/proc/$pid/clear_refs" ] && echo 5 >"/proc/$pid/clear_refs" 2>/dev/null; then reset=1; fi
       d0=$(uptime_s)
       "$DRIVE" -addr "127.0.0.1:$HTTPS_PORT" -state "$WORK/session" deploy -services "$svcs" -timeout "${DEPLOY_MAX}s" >&2
       d1=$(uptime_s)
       sleep "$DEPLOY_POST"
       wait "$mpid"
-      echo "$(awk -v a="$m0" -v b="$d0" 'BEGIN{printf "%.2f", b-a}') $(awk -v a="$m0" -v b="$d1" 'BEGIN{printf "%.2f", b-a}') $DEPLOY_POST" >"$WORK/s$id-r$r.tsv.events"
+      echo "$(awk -v a="$m0" -v b="$d0" 'BEGIN{printf "%.2f", b-a}') $(awk -v a="$m0" -v b="$d1" 'BEGIN{printf "%.2f", b-a}') $DEPLOY_POST $reset" >"$WORK/s$id-r$r.tsv.events"
       ids=$(docker ps -aq --filter label=sdbench=1); [ -z "$ids" ] || docker rm -f $ids >/dev/null
       clean_host_docker
       r=$((r + 1)); continue
