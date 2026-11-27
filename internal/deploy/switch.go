@@ -336,8 +336,8 @@ func (rn *run) commitTx(ctx context.Context) error {
 	}
 	now := rn.now()
 	err := rn.r.cfg.DB.WriteTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ?, needs_attention = CASE WHEN needs_attention IN (?, ?, ?) THEN NULL ELSE needs_attention END
-			WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, AttentionPreviousDown, AttentionVersionsKept, AttentionDeleteConfirmAgain, rn.svc.id, old)
+		res, err := tx.ExecContext(ctx, `UPDATE services SET active_deploy_id = ?, needs_attention = CASE WHEN needs_attention IN (?, ?) THEN NULL ELSE needs_attention END
+			WHERE id = ? AND active_deploy_id IS ?`, rn.deploy, AttentionPreviousDown, AttentionVersionsKept, rn.svc.id, old)
 		if err != nil {
 			return err
 		}

@@ -665,8 +665,7 @@ func TestHealthyCandidateIsSwitchedCommittedAndTheOldOneRemoved(t *testing.T) {
 	g := newRRig(t)
 	old := g.live(g.svc, 1, "10.250.0.2")
 	oldID := g.containerOf(old).id
-	// A delete that asked to be confirmed again left its flag: a committed deploy
-	// means the service serves again, so the commit clears it.
+	// A delete that asked to be confirmed again left its hint: queuing the deploy clears it.
 	mustExec(t, g.st, `UPDATE services SET needs_attention = ? WHERE id = ?`, AttentionDeleteConfirmAgain, g.svc)
 	g.start(false)
 	d, job := g.deploy(g.svc)
@@ -676,7 +675,7 @@ func TestHealthyCandidateIsSwitchedCommittedAndTheOldOneRemoved(t *testing.T) {
 	var attn sql.NullString
 	g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&attn)
 	if attn.Valid {
-		t.Errorf("needs_attention %q after a committed deploy", attn.String)
+		t.Errorf("needs_attention %q after a queued and committed deploy", attn.String)
 	}
 	r := g.row(d)
 	if r.status != "succeeded" || r.code != "" || r.ip != "10.250.0.3" || r.imageID != testImageID || r.stage != StageDone {

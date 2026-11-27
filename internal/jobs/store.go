@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -119,7 +120,18 @@ func pruneFinished(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return err
 }
 
+// AttentionDeleteConfirmAgain is the services.needs_attention hint a delete job leaves
+// when it was refused at run time for want of fresh confirmation (internal/deploy
+// owns the meaning). It exists only while no work is queued or running for the
+// service, so every enqueue clears it in the transaction that inserts the job.
+const AttentionDeleteConfirmAgain = "delete_confirm_again"
+
 func insertJob(ctx context.Context, tx *sql.Tx, n NewJob, now time.Time) (int64, error) {
+	if id, ok := strings.CutPrefix(n.LockKey, "service:"); ok {
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention = ?`, id, AttentionDeleteConfirmAgain); err != nil {
+			return 0, err
+		}
+	}
 	attempts := n.MaxAttempts
 	if attempts == 0 {
 		attempts = 1

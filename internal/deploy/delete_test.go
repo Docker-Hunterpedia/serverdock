@@ -329,10 +329,13 @@ func TestDeleteAfterTheFreshWindowExpiresAsksToConfirmAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The new delete clears the flag when it is queued.
-	var after *string
-	if err := g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&after); err == nil && after != nil && *after == AttentionDeleteConfirmAgain {
-		t.Error("the confirm-again flag survived a new delete")
+	// The new delete clears the flag when it is queued (in the enqueue transaction).
+	var after sql.NullString
+	if err := g.st.R.QueryRow(`SELECT needs_attention FROM services WHERE id = ?`, g.svc).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Valid {
+		t.Errorf("the confirm-again flag survived a new delete: %q", after.String)
 	}
 	if s := g.wait(out2.Job); s != jobs.StateSucceeded {
 		t.Fatalf("second delete %s: %s", s, g.jobError(out2.Job))

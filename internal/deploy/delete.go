@@ -44,13 +44,18 @@ const ConfirmAgainMessage = "Confirming again is needed: the 5-minute window pas
 const AttentionDeleteInterrupted = "delete_interrupted"
 
 // AttentionDeleteConfirmAgain is services.needs_attention of a service whose delete
-// job was refused at run time for want of fresh two-factor confirmation: nothing was
-// deleted, the queued deploys of the service were cancelled when the delete was
-// queued, and the user must delete again. It is not delete_interrupted (the
-// reconciler skips those services; this one is whole). It is set only on a service
-// with no other reason, and cleared (1) when a new delete is queued and (2) when a
-// deploy of the service commits (the service is serving a version again).
-const AttentionDeleteConfirmAgain = "delete_confirm_again"
+// job was refused at run time for want of fresh two-factor confirmation. The refusal
+// comes before the job ran, so nothing was deleted and the service was left as it
+// was; the deploys and restarts that were queued, and a deploy that was running,
+// were cancelled or told to stop when the delete was queued.
+//
+// The rule: it is only a hint for the page ("Delete again"). It may only be written
+// over NULL, and it must never block versions_kept or previous_version_down (the
+// boot pass and the stop-first runs treat it as absent). It exists only while no
+// work is queued or running for the service: every enqueue (deploy, redeploy,
+// rollback, restart, delete) clears it in the same transaction (jobs.insertJob).
+// It is not delete_interrupted (the reconciler skips those services).
+const AttentionDeleteConfirmAgain = jobs.AttentionDeleteConfirmAgain
 
 // DeleteOut is the output of services.delete: the delete was queued, not done.
 type DeleteOut struct {
@@ -106,13 +111,6 @@ func (d *svcDeps) delete(ctx context.Context, c actions.Call, in ServiceRefIn) (
 		return DeleteOut{}, actions.InvalidInput("%v", strings.TrimPrefix(err.Error(), "jobs: invalid request: "))
 	case err != nil:
 		return DeleteOut{}, err
-	}
-	// A new delete answers the old "confirm again" (best effort: it is only a hint).
-	if err := d.DB.WriteTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = NULL WHERE id = ? AND needs_attention = ?`, r.id, AttentionDeleteConfirmAgain)
-		return err
-	}); err != nil {
-		d.Log.Warn("the confirm-again flag could not be cleared", "service", r.id, "err", err.Error())
 	}
 	return DeleteOut{Service: target, Job: out.JobID, Status: jobs.StateQueued, Cancelled: len(out.Cancelled), Flagged: len(out.CancelRunning)}, nil
 }

@@ -87,10 +87,10 @@ func ResolveInterrupted(ctx context.Context, st *store.Store, bootID string, now
 						// candidate) settles it. Another reason on the service is not overwritten.
 						if _, err := tx.ExecContext(ctx, `UPDATE services SET needs_attention = ? WHERE id = (SELECT service_id FROM deploys WHERE id = ?)
 							AND active_deploy_id IS NOT NULL -- a first deploy has no previous version to start, so nothing would ever clear the flag
-							AND (needs_attention IS NULL OR needs_attention = ?)
+							AND (needs_attention IS NULL OR needs_attention IN (?, ?))
 							AND EXISTS (SELECT 1 FROM deploys d WHERE d.id = ? AND json_valid(d.snapshot_json) AND json_extract(d.snapshot_json, '$.strategy') = 'stop_first')
 							AND EXISTS (SELECT 1 FROM deploy_stages WHERE deploy_id = ? AND stage = 'start' AND state IN ('running', 'ok'))`,
-							AttentionVersionsKept, dep, AttentionPreviousDown, dep, dep); err != nil {
+							AttentionVersionsKept, dep, AttentionPreviousDown, AttentionDeleteConfirmAgain, dep, dep); err != nil {
 							return err
 						}
 					}
