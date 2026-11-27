@@ -1562,3 +1562,110 @@ Recorded after step 14 and its reviews; later steps follow these.
 - **Watch CI:**
   - the zoom-200 test-server start flake;
   - the forced-colors Restart keyboard flake.
+
+## Revision 21 (step 15: record and close)
+
+Recorded after step 15 and its reviews. This is the last revision of plan 0004's implementation.
+
+- **Commits.**
+  - Research: `a6f0adb` (research 06, Docker engines before 28 and unpublished container ports).
+  - Measurement tooling: `f2b6fdd`, `4086e49`, `92186ad`, review fixes `c2133b9`, `ba0bc80`, `92227ad`, `197c847`.
+  - Docs:
+    - `772924b` security.md;
+    - `787fc57` architecture;
+    - `a4a0d18` plan 0002;
+    - `4db1192` roadmap;
+    - `38e4fe2` placeholders;
+    - review fixes `3b64014`, `11cd05e`, `f3ed674`, `1c5782b`, `7dcc94f`, `448c18e`, `953f0fa`;
+    - measurements `d5c2c77`, `5c5095b`.
+  - `0908c2e` ADR 0012 accepted.
+  - **Product fix (maintainer decision): `d5f0327`, with comments in `6ada1ea`.**
+- **Maintainer decision (2026-11-27): fix the worst-case boot reload before M3a closes.**
+  - **The measurement:** with 100 public ports and 2 of them held by other programs at the first route load after a start, bind isolation fell back to one port at a time: about 97 successful and 105 failed Caddy loads per operation, 0.45 s, about 0.5 s of CPU. The panel dropped new connections throughout, and 5 to 6 panel requests failed even after one retry on a new connection 50 ms later.
+  - Revision 11 had accepted the remaining reloads on the premise that a retry succeeds. During this burst it did not.
+  - `systems` recommended the fix and the maintainer chose it over recording an accepted risk.
+- **The fix** (`internal/agent/proxy/applier.go`, `Apply`; Revision 12's "cheaper algorithm"):
+  - While a failed load's bind error names a newly added port, drop that port and load again. **k taken ports cost k failed loads plus one that works** (none when what is left is already served).
+  - A bind error naming a port that is already served, or already dropped, is returned at once with the previous routes running.
+  - Only an error that names no port at all (for example a permission-denied bind) still probes the new ports one at a time.
+  - **Nothing is committed until a load works.** The old code committed part-way, so a cancel now leaves the table and the config at the last successful load.
+  - The failed-port bookkeeping, "Try again" and `retry_failed` are unchanged.
+  - A test-only counter `proxy.LoadAttempts()` (one atomic add per `Load`) replaced log-line counting. That had depended on test order, because Caddy pools its log writer per process, and it failed CI's integration job on `197c847` (`TestLoadCounterWithTheRealApplier`).
+  - Tests: `TestKTakenPortsCostAtMostKPlusOneLoads` (50 new ports, 2 and 3 taken, Try again still taken and freed) and `TestBindErrorOnAServedPortIsReturnedAfterOneLoad`. `TestTableAndConfigNeverDivergeAfterAFailedLoad` changed: its cancel is now after the first failed load, and nothing is committed.
+  - **After the fix:** the 2-taken boot case costs 1 successful and 2 failed loads per operation, 10.9 ms, with 0 failures after retry (research 05).
+  - This marks done the Revision 9 bind-isolation cost follow-up and the Revision 12 "cheaper algorithm" follow-up.
+- **The Do list, as done:**
+  - **docs/security.md** (Draft 4):
+    - the M3a surface table;
+    - A4 rows built, with their tests;
+    - the rule 1 validators; the G13 partial; the complete unattended list;
+    - the accepted risks in plain words: B10 (a deploy means the host's network reach); QM3a-9 (apps offline while ServerDock is down, with the measured outage and how it grows with the install and with Docker not answering at start); N13 (Docker before 28.0.0 may let LAN hosts reach unpublished ports when FORWARD is ACCEPT, per research 06); `system.exposure` names; deploy logs holding app credentials; the registry-host deferral; **no memory, CPU or disk limit per container until M3b** (added on `security`'s review);
+    - "Other costs M3a accepts";
+    - the close-out.
+  - **ADR 0012 accepted** after `security` approved.
+  - **Plan 0002:** the interrupt rule (the commit point is authoritative: a committed deploy is finished, an uncommitted one fails and is cleaned up by the resync), its test line, and the M3a status.
+  - **docs/architecture.md:** the image deploy flow, strategies as built, app network and static addresses, the reconciler order, Background work rows, the layout, failure handling (no persistent volumes in M3a, downgrade refused, M7b restore note).
+  - **docs/roadmap.md:** ticks only for what is built. "Confirm vision, features, architecture" is untouched.
+  - **research 05:** the release measurements, the reload cases, the zero-downtime recording.
+  - **bench/results:** `2026-11-27-m3a-release.md`.
+  - **The screen-reader checklist** gained an "As built" section.
+- **Departures from the plan text (accepted):**
+  - Scenarios "S2 with one exposed service", "S2 with 10 exposed services" and the deploy runs are bench scenarios 5–9 run **locally**, not in the CI bench job. They use host networking, and S5/S6 compare with scenario 9 (the same setup with 0 services), not with S2.
+  - The reload cases are an opt-in integration test (`SD_TEST_RELOAD_CASES=1`, not run by CI): one real app container behind 100 routes; the boot list is one real container with 100 real inspects; memory is the test process's (deltas only).
+  - The product fix above, inside "record and close", by the maintainer's decision.
+- **Measurements** (research 05; cloud container, amd64, 3 runs, medians; local, not the CI gate):
+
+  | Measurement | Result | Limit |
+  |---|---|---|
+  | S4 final | 47.3 MB (VmHWM 50.2), CPU 0.01 % | tripwire 50, ceiling 100; planning 45.5 |
+  | S4 step 13 build (A/B) | 48.0 MB (VmHWM 50.0) | the VmHWM question settled as noise |
+  | S2 live watcher | 54.7 MB local; **CI: PENDING (release gate)** | tripwire 80, planning 56 |
+  | S2 no Docker | 53.7 MB | report only |
+  | S5 one exposed service | 56.7 MB (gated: pass) | tripwire 80 |
+  | S6 10 exposed idle services | 57.5 MB, CPU 0.01 % | report only |
+  | S9 same setup, 0 services | 54.0 MB | baseline for S5/S6 |
+  | S7 one redeploy | +0.3 MB at peak and at +60 s | ≤ 5 MB |
+  | S8 two concurrent redeploys | +1.7 MB at peak and at +60 s; back to baseline within 1 MB not shown (baseline settling) | ≤ 5 MB |
+  | Binary | 20.0 MB gzip | 40 |
+  | SPA JS | 41.5 KB first load, 115.0 KB total | 250 |
+
+  - Restart outage: blue-green about 60–100 ms; stop-first gap about 2.4 s; Docker daemon restart 12.1 s in CI (QM3a-9).
+  - Reload cases: 1 load per operation, 6–10 ms, 0–0.8 drops per load per class, 0 failed after one retry.
+  - Redeploys used cached layers, so the pull-path peak is not measured.
+- **Regression runs on the final code** (`d5f0327`; later commits are comments and docs), all passing:
+  - build, and vet with the default, `integration` and `testhooks` tags;
+  - `go test -race ./...`;
+  - `-race -tags testhooks ./internal/deploy` (the lock-order checker);
+  - CI's integration command over dockerapi, agentops and deploy;
+  - **the kill -9 suite ×1** (22 passes; outages unchanged: blue-green 59–95 ms; stop-first 59–274 ms and the four gap stages 2.42–2.61 s);
+  - **the stop-first pair ×3** (maintenance 503s only, 0 drops, 0 retries, 0 Caddy loads, 2 `proxy_apply`);
+  - **blue-green ×3** and **unhealthy ×3** (0 non-2xx, drops, retries and loads);
+  - `-race -count=20 ./internal/deploy ./internal/jobs`;
+  - **full e2e:** UI set 2024 passed, 47 skipped, 1 failed: the known test-server start timeout, which passed 5 of 5 when re-run alone. Docker set 18 passed.
+- **Review verdicts:**
+  - `reviewer` APPROVE, after two rounds: the reload labels and the zero-downtime recording; overclaims; then wording.
+  - `security` APPROVE (required), after one round: no container resource limits recorded; the close-out wording; the bench listeners and clean-up. ADR 0012 accepted.
+  - `systems` APPROVE, after rounds on the reload measurement's honesty (the real worst case, the boot path, labels). It recommended the fix and approved it.
+  - `footprint` APPROVE on the release numbers and the fix.
+  - `accessibility` APPROVE (the manual pass is PENDING for the maintainer; the checklist has an "As built" section).
+
+### Revision 21, follow-ups (after M3a)
+
+- **Maintainer:**
+  - the manual screen-reader pass of steps 12–14 (`docs/accessibility/m3a-screen-reader-checklist.md`);
+  - the CI "S2 live watcher" number when the bench job runs on the ready PR (the release gate);
+  - the PR #6 ready and merge decision;
+  - "Confirm vision, features, architecture";
+  - whether to bring the Docker < 28 start warning forward from M3b (research 06).
+- **M3b:**
+  - memory, CPU and disk limits per container;
+  - the engine-version warning (and refusing a `nat-unprotected` network);
+  - the pull-path peak with a cold registry pull, and a many-redeploy leak loop.
+- **Optional:**
+  - avoid the repeated identical load when one port is left in the no-port-error probe (`systems` nit);
+  - an exact successful-load atomic to replace the 1 ms poller in the reload test (`reviewer`);
+  - `expect_live` on `services.redeploy`;
+  - a minimum `Kick()` interval;
+  - out-of-band agent errors;
+  - scope the e2e teardown sweep to its own run.
+- **Watch CI:** the e2e test-server start timeout under load (counts toward the flaky limit of 3).
