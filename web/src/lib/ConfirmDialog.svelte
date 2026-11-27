@@ -56,6 +56,7 @@
 		background: var(--bg);
 		border: 2px solid var(--border);
 		border-radius: 0.75rem;
+		overflow-wrap: anywhere; /* an image reference or target has no spaces to wrap at (320 px reflow) */
 	}
 	dialog::backdrop {
 		background: var(--qr-fg);
