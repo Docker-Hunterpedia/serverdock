@@ -272,3 +272,211 @@ export function mutationMessage(e: ApiError): string {
 	if (e.code === 'network') return 'Could not reach the server. The request may or may not have gone through: use Refresh to check before trying again.';
 	return actionMessage(e.message);
 }
+
+// ---- the deploy detail page (plan 0004 step 14) ---------------------------------
+
+export type DeployGet = Schemas['DeploysGetOutput'];
+export type DeployLog = Schemas['DeploysLogOutput'];
+export type StageItem = DeployGet['stages'][number];
+export type CancelResult = Schemas['DeploysCancelOutput'];
+
+export const getDeploy = (ref: string, number: number, signal?: AbortSignal) => runAction<DeployGet>('deploys.get', { service: ref, number }, signal);
+export const getDeployLog = (ref: string, number: number, signal?: AbortSignal) => runAction<DeployLog>('deploys.log', { service: ref, number }, signal);
+export const cancelDeploy = (ref: string, number: number) => runAction<CancelResult>('deploys.cancel', { service: ref, number });
+
+/** Not finished yet: the page polls while this is true. */
+export const isUnfinished = (status: string) => status === 'queued' || status === 'running';
+
+/** How often the page asks while a deploy runs and is visible: 2 s, 5 s once a pull has run 2 minutes. */
+export const POLL_FAST_MS = 2000;
+export const POLL_SLOW_MS = 5000;
+export const PULL_SLOW_AFTER_MS = 120_000;
+/** Data older than this, or a failed poll, is shown as "Status unknown". */
+export const STALE_AFTER_MS = 10_000;
+export const pollDelay = (pullSince: number | undefined, now: number) => (pullSince !== undefined && now - pullSince >= PULL_SLOW_AFTER_MS ? POLL_SLOW_MS : POLL_FAST_MS);
+
+const STAGE_LABELS: Record<string, string> = {
+	pull: 'Pull the image',
+	check: 'Checks',
+	maintenance: 'Show the maintenance page',
+	stop_old_first: 'Stop the old version',
+	start: 'Start the new version',
+	health: 'Health check',
+	switch: 'Switch traffic',
+	commit: 'Record the switch',
+	drain: 'Drain the old version',
+	stop_old: 'Stop the old version'
+};
+export const stageLabel = (stage: string) => STAGE_LABELS[stage] ?? stage;
+
+export const RETRY_PREFIX = 'waiting to retry';
+/** A pull (or other stage) that failed with a transient error and waits for its next attempt. */
+export const isRetrying = (s: StageItem) => s.state === 'pending' && (s.detail ?? '').startsWith(RETRY_PREFIX);
+
+/** One stage as word plus symbol; a stage that never ran on a finished deploy is Skipped. */
+export function stageView(s: StageItem, deployFinished: boolean): { symbol: string; word: string } {
+	if (isRetrying(s) && !deployFinished) return { symbol: '○', word: 'Waiting to retry' };
+	switch (s.state) {
+		case 'ok':
+			return { symbol: '✓', word: 'Done' };
+		case 'failed':
+			return { symbol: '✕', word: 'Failed' };
+		case 'skipped':
+			return { symbol: '—', word: 'Skipped' };
+		case 'running':
+			return { symbol: '…', word: 'Running' };
+		default:
+			return deployFinished ? { symbol: '—', word: 'Skipped' } : { symbol: '○', word: 'Waiting' };
+	}
+}
+
+/** The stage the deploy is in now: the running one, else the one waiting to retry, else deploys.stage. */
+export function currentStage(d: DeployGet): string {
+	return d.stages.find((s) => s.state === 'running')?.stage ?? d.stages.find((s) => isRetrying(s))?.stage ?? d.deploy.stage ?? '';
+}
+
+export function formatBytes(n: number): string {
+	if (!Number.isFinite(n) || n < 0) return '0 B';
+	const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+	let i = 0;
+	let v = n;
+	while (v >= 1024 && i < units.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return `${i === 0 ? v : v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
+/** The pull's progress in words (the <progress> is not a live region, so this text is not announced). */
+export function pullText(p: NonNullable<DeployGet['progress']> | null | undefined): string {
+	if (!p) return 'Waiting for the registry to report progress.';
+	const layers = p.layers > 0 ? ` · ${p.layers_done} of ${p.layers} layers` : '';
+	const size = p.bytes_total > 0 ? `${formatBytes(p.bytes)} of ${formatBytes(p.bytes_total)} (${Math.min(100, Math.floor((p.bytes / p.bytes_total) * 100))}%)` : p.bytes > 0 ? `${formatBytes(p.bytes)} downloaded, total size not known yet` : 'Size not known yet';
+	return `${size}${layers}${p.status ? ` · ${p.status}` : ''}`;
+}
+
+/** The number of the deploy that was live before deploy `n` (what "kept serving" means), from the history. */
+export function previousLive(deploys: DeployItem[], n: number): number | undefined {
+	let best: number | undefined;
+	for (const d of deploys) if (d.number < n && d.was_live && (best === undefined || d.number > best)) best = d.number;
+	return best;
+}
+
+/** "Your app: …" in words, by what the deploy did to it. */
+export function appSafetyText(d: DeployGet['deploy'], previous?: number): { symbol: string; text: string } {
+	if (d.status === 'queued') return { symbol: '○', text: 'nothing has changed yet. The current version keeps serving while this deploy waits.' };
+	if (d.status === 'running') {
+		return d.strategy === 'stop_first'
+			? { symbol: '…', text: 'stop-first: the app goes down briefly once the old version is stopped, until the new one is healthy.' }
+			: { symbol: '…', text: 'the current version keeps serving until the new one is healthy, then traffic switches.' };
+	}
+	if (d.status === 'succeeded') return d.active ? { symbol: '●', text: 'the new version is live.' } : { symbol: '○', text: 'this version was live and has since been replaced.' };
+	if (d.status === 'cancelled' || d.status === 'superseded') {
+		if (d.app_safe === 'no') return { symbol: '▲', text: 'not safe: the previous version is not serving. Deploy again or roll back.' };
+		return { symbol: '○', text: 'not changed: the previous version kept serving.' };
+	}
+	switch (d.app_safe) {
+		case 'yes':
+			return { symbol: '✓', text: `safe, ${previous ? `#${previous}` : 'the previous version'} kept serving.` };
+		case 'no':
+			return { symbol: '▲', text: `not safe: the previous version${previous ? ` (#${previous})` : ''} is not serving.${d.strategy === 'stop_first' ? ' Stop-first stops the old version before the new one starts.' : ''} Deploy again or roll back to a version that was live.` };
+		default:
+			return { symbol: '◌', text: 'unknown: ServerDock could not confirm whether the previous version kept serving. Check the service before relying on it.' };
+	}
+}
+
+/** What became of the new container, from the stages (deploys.get does not return its id). */
+export function newContainerText(d: DeployGet): string {
+	const start = d.stages.find((s) => s.stage === 'start');
+	const finished = !isUnfinished(d.deploy.status);
+	if (!start || start.state === 'pending' || start.state === 'skipped') return finished ? 'None was started.' : 'Not started yet.';
+	if (start.state === 'failed') return 'It could not be started.';
+	if (start.state === 'running') return 'Starting.';
+	if (d.deploy.status === 'succeeded') return d.deploy.active ? 'Running: this is the live version.' : 'It was the live version and has since been replaced.';
+	if (finished) return 'It was started, then removed because the deploy did not finish.';
+	return 'Started.';
+}
+
+/** Why Cancel cannot be used now, or null when it can. */
+export function cancelReason(d: DeployGet, cancelAsked: boolean): string | null {
+	if (!isUnfinished(d.deploy.status)) return null;
+	if (d.cancellable) return null;
+	if (cancelAsked) return 'Cancel was requested. The deploy stops at its next safe point.';
+	switch (d.deploy.stage) {
+		case 'switch':
+		case 'commit':
+			return 'Traffic is being switched to the new version. This cannot be stopped safely, and it takes a moment.';
+		case 'drain':
+		case 'stop_old':
+		case 'done':
+			return 'The new version is already serving and the old one is being retired. This cannot be stopped.';
+		default:
+			return 'This deploy cannot be cancelled now.';
+	}
+}
+
+/** What was announced before and what is announced now: one status line per stage change, one alert for a failure. */
+export function announcementFor(prev: DeployGet | undefined, next: DeployGet, previous?: number): { status?: string; alert?: string } {
+	if (!prev) return {};
+	const n = next.deploy.number;
+	const wasOpen = isUnfinished(prev.deploy.status);
+	if (!isUnfinished(next.deploy.status)) {
+		if (!wasOpen) return {};
+		switch (next.deploy.status) {
+			case 'succeeded':
+				return { status: `Deploy #${n} succeeded. The new version is live.` };
+			case 'failed': {
+				const interrupted = next.deploy.reason_code === 'interrupted';
+				const why = next.deploy.reason ? ` ${next.deploy.reason}.`.replace(/\.\.$/, '.') : '';
+				return { alert: `Deploy #${n} ${interrupted ? 'was interrupted' : 'failed'}.${why} Your app: ${appSafetyText(next.deploy, previous).text}` };
+			}
+			case 'cancelled':
+				return { status: `Deploy #${n} was cancelled.` };
+			case 'superseded':
+				return { status: `Deploy #${n} was replaced by ${next.deploy.superseded_by ? `#${next.deploy.superseded_by}` : 'a newer deploy'} before it ran.` };
+			default:
+				return {};
+		}
+	}
+	const a = stageKey(prev);
+	const b = stageKey(next);
+	if (a === b) return {};
+	const stage = currentStage(next);
+	if (!stage) return {};
+	const retry = next.stages.find((s) => s.stage === stage && isRetrying(s));
+	if (retry) {
+		const m = /\(attempt (\d+) of (\d+)\)/.exec(retry.detail ?? '');
+		return { status: `${stageLabel(stage)}: waiting to retry${m ? ` (attempt ${m[1]} of ${m[2]})` : ''}.` };
+	}
+	return { status: `Now: ${stageLabel(stage).toLowerCase()}.` };
+}
+
+/** Changes only when the deploy moves to another stage, or to another attempt of one: never on a progress tick. */
+export function stageKey(d: DeployGet): string {
+	if (!isUnfinished(d.deploy.status)) return `final:${d.deploy.status}`;
+	const stage = currentStage(d);
+	const retry = d.stages.find((s) => s.stage === stage && isRetrying(s));
+	const m = retry ? /\(attempt (\d+) of/.exec(retry.detail ?? '') : null;
+	return `${d.deploy.status}:${stage}${retry ? `:retry${m ? m[1] : ''}` : ''}`;
+}
+
+const LOG_SEPARATOR = '--- container output (';
+/**
+ * Splits a deploy log into what ServerDock wrote (the header and stage lines) and the
+ * container's output. The separator line is the first of its kind: the header comes before
+ * any container output, so a container that prints a line like it cannot move the split.
+ */
+export function splitLog(text: string): { header: string; output: string } {
+	const at = text.startsWith(LOG_SEPARATOR) ? 0 : text.indexOf('\n' + LOG_SEPARATOR);
+	if (at < 0) return { header: '', output: text };
+	const start = at === 0 ? 0 : at + 1;
+	const eol = text.indexOf('\n', start);
+	return { header: text.slice(0, start).replace(/\n+$/, ''), output: eol < 0 ? '' : text.slice(eol + 1) };
+}
+
+/** The last `n` lines of the container output. */
+export function tailLines(output: string, n: number): string {
+	const lines = output.split('\n');
+	if (lines.length && lines[lines.length - 1] === '') lines.pop();
+	return lines.slice(-n).join('\n');
+}
