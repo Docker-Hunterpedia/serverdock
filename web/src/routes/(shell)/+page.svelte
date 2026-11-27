@@ -176,7 +176,7 @@
 					<li data-state={st}><StateBadge state={st} />: <strong>{counts[st] ?? 0}</strong></li>
 				{/each}
 			</ul>
-			<p><a href="/services">All services</a></p>
+			<p><a class="button" href="/services">All services</a></p>
 		</section>
 
 		<section aria-labelledby="attention-title" class="block">
