@@ -48,7 +48,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    | Reconnect backoff timer | `internal/agent/client.go` `sleepCtx` (line 77) | 1 s → 30 s, jitter | only while a remote agent is disconnected | Phase 0 |
    | Hub cert renewal back-off | `internal/pki` | ≥ 1 min | only after a failed renewal; checked lazily on handshake, no goroutine | M1 |
    | Job scheduler "next due" timer | `internal/jobs` | next due time | one timer for all scheduled work | M3a |
-   | Docker events reconnect backoff | `internal/agent/dockerapi` | 1 s → 30 s | only while the events stream is down | M3a |
+   | Docker events reconnect backoff | `internal/deploy` (`Reconciler.Run`; built in the control plane, not in `dockerapi`) | 1 s → 30 s, jittered | only while the events stream is down | M3a |
    | Caddy/certmagic maintenance (`(*certmagic.Cache).maintainAssets`) and events | embedded Caddy | 10 min renew check, 1 h OCSP check (certmagic defaults) | whenever the proxy runs, in **server and agent mode** (`caddyhttp` provisions the `tls` app); certificate expiry alerts use these, not our own timer | running since M1 (S2 and S4); confirmed by a goroutine dump in M2 step 3 |
    | BuildKit idle stop | `internal/build` | 5 min | only while the BuildKit container runs | M5 |
    | Webhook replay-cache expiry | `internal/api` | none (lazy on insert) | no timer | M5 |
@@ -251,6 +251,7 @@ Full step plan in **Part B**.
 
 ## M3a — Deploy from image, safely
 
+- **Status (2026-11-27):** built on `phase-1-m3a`; the detailed plan is [plan 0004](0004-m3a-deploy-from-image.md), steps 1–14 done and reviewed (Revisions 5–20), step 15 "Record and close" in progress. **Open:** the `security` close-out review (ADR 0012 stays "proposed" until it approves), the maintainer's manual screen-reader pass for steps 12–14, and the release measurements (the CI "S2 live watcher" number, S2 with one and ten exposed services, full S4, RSS after a deploy, the reload cases with 100 routes), all PENDING in [research 05](../research/05-phase0-measurements.md#m3a-release-measurements-step-15). The interrupt rule below was amended in step 15 (the commit point is authoritative).
 - **Goal:** deploy a public image with blue-green or stop-first, a health gate and automatic rollback; one-click rollback; ServerDock never leaves the app down because of its own failure.
 - **Roadmap items:** deploy from image; blue-green, health gate, automatic and one-click rollback, auto-cancel superseded; stop-first; connection draining; logs of the last N deploys, live pull progress, restart and redeploy-without-rebuild.
 - **Packages:** `internal/jobs`, `internal/deploy` (new), `internal/agent` (op protocol v1), `internal/agent/dockerapi` (containers, images, events), `internal/agent/proxy`, `internal/store`, `web/`.
@@ -279,7 +280,10 @@ Full step plan in **Part B**.
 
       **The old container is stopped only after the commit.**
     - **Steps 3–4 cannot be cancelled.** A supersede that arrives during the health gate is treated as an unhealthy result: the candidate is removed and the newer deploy proceeds.
-    - **Interrupts:** on boot, any `running` deploy from an older `boot_id` is **rolled back**: containers labelled with its deploy + attempt are removed, routes follow `active_deploy_id`, and the deploy is marked `failed (interrupted by restart)`. There is no "resume".
+    - **Interrupts (amended in M3a step 15, ADR 0012 decision 7 and plan 0004 Revision 16: the commit point is authoritative):** on boot, a `running` deploy from an older `boot_id` is settled by whether it had **committed** (set `active_deploy_id`):
+      - **uncommitted:** **rolled back**: containers labelled with its deploy + attempt are removed, routes follow `active_deploy_id`, and the deploy is marked `failed (interrupted by restart)`;
+      - **committed:** **finished, not rolled back**: it is marked `succeeded`, the new version keeps serving and the old container is removed (with its log tail kept);
+      - the boot pass changes only database state; one resync rule set, run after every successful events connection, does all container clean-up. There is no "resume".
     - **Idempotency:** container names include deploy + attempt (`sd-<project>-<service>-d<deploy>-a<attempt>`), so a repeated create gets Docker's 409 and is treated as "already exists" after an inspect check.
     - **Pulls** get a job deadline and a stall timeout (no progress for N seconds → fail).
     - **Caddy routes are generated from DB desired state starting here** (the active deploys' upstreams), never patched in place.
@@ -295,7 +299,7 @@ Full step plan in **Part B**.
   - unit: state machine, commit order, a supersede during the health gate, name-collision handling;
   - integration:
     - an unhealthy candidate — the old version keeps serving with zero non-2xx responses;
-    - kill -9 at each stage, then restart — rolled back and marked interrupted, and the app is reachable;
+    - kill -9 at each stage, then restart — an uncommitted deploy is rolled back and marked interrupted, a committed one is finished (`succeeded`, old container removed), and the app is reachable; each run records the outage (research 05);
     - **the Docker daemon restarts — the app is reachable again through regenerated upstreams**;
     - an events-stream drop triggers a resync;
     - a stalled pull fails;
