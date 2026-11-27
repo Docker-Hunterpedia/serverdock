@@ -2,6 +2,28 @@
 
 **Result: PENDING (maintainer).** No one has run this checklist. Automated checks (axe, keyboard, focus and announcement-recording tests in Playwright) do not replace it. Record the outcome in the step 14 pull request using the results table at the end; fill in the date, commit and tester fields when it is run. Never mark a row done without a tester name and a date.
 
+## As built (what is already checked, and where the build departs from the plan)
+
+**Covered by automated tests** (Playwright with axe in all 8 projects: desktop, 390 px, 320 px, 200 % zoom, dark, reduced motion, forced colours, WebKit):
+- zero axe violations on every listed screen state, and no CSP violations;
+- keyboard-only paths, 44 px targets, default focus on Cancel in dialogs, Escape, focus returning;
+- each deploy stage transition announced once and no announcement for progress ticks (a MutationObserver records the live regions), and a failure announced once through the alert;
+- polling stops when the page is hidden or the deploy finished, and backs off after 2 minutes of pulling;
+- a hostile log renders as text.
+
+**What the tests cannot say:** how a real screen reader speaks any of this. That is this checklist. **The manual pass is PENDING (maintainer).**
+
+**Departures from the plan, with reasons:**
+- **"Status unknown" keeps the content on the page, marked stale**, instead of replacing it: removing the page lost the user's place and the last good state.
+- **Focus moves to the page heading only when the focused control vanished** (for example Cancel when a deploy ends); otherwise focus is left where the user put it.
+- **The log is `role="group"` with a name**, so a reader announces what it is when entering it; its lines are plain text.
+- **The M2 footer status poll** (every 15 s while the page is visible) is still the only always-on poll outside a deploy page.
+
+**Known gaps:**
+- Cancel is disabled while the status is unknown (a trade-off, `reviewer`).
+- The failure alert says "the previous version" without the deploy number.
+- There is no progress bar when the registry gives no size (the pull shows text only).
+
 ## Set-up
 
 - Build and start ServerDock, sign in, and deploy the test app once so that a service with history exists (`127.0.0.1:5000/sd-testapp:1`, port 8080, or any small public image, with `--allow-loopback-registry` for the local one).
