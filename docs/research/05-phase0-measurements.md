@@ -94,7 +94,7 @@ The outage is about 60–100 ms (the server's own start and its first route appl
 
 ## M3a release measurements (step 15)
 
-Status: **PENDING.** Plan 0004 step 15 asks for the numbers below. None of them is recorded yet: every cell that says PENDING is to be filled from the bench run for the M3a pull request (the maintainer fills them from the run in progress), with the commit, the date and the run link. **Nothing in this section is a measurement until its cell holds a number.** Scenarios 5 to 8 and the reload cases are described in `bench/run.sh` and `internal/deploy/reload_cases_integration_test.go`; results go to `bench/results/` (see [the placeholder](../../bench/results/2026-11-27-m3a-release-PENDING.md)).
+Status: **PENDING.** Plan 0004 step 15 asks for the numbers below. None of them is recorded yet: every cell that says PENDING is to be filled from the bench run for the M3a pull request (the maintainer fills them from the run in progress), with the commit, the date and the run link. **Nothing in this section is a measurement until its cell holds a number.** Scenarios 5 to 8 and the reload cases are described in `bench/run.sh` and `internal/deploy/reload_cases_integration_test.go` (they are being reworked; the cells follow the final output); results go to `bench/results/` (see [the placeholder](../../bench/results/2026-11-27-m3a-release-PENDING.md)).
 
 Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire 50 MB. VmRSS is the median of the per-run medians.
 
@@ -126,19 +126,47 @@ Already measured: see [the section above](#m3a-outage-while-serverdock-is-killed
 
 ### Remaining reload cases with 100 routes (plan 0004 Revision 11, step 15)
 
-A switch, revert, restart, rollback and the maintenance page never reload (zero-drop tests). These cases still reload the proxy. Run: `SD_TEST_RELOAD_CASES=1 SD_TEST_APP_IMAGE=127.0.0.1:5000/sd-testapp:1 go test -tags integration -run TestIntegrationReloadCasesWith100Routes -v -count=1 ./internal/deploy` (repeats per case: `SD_TEST_RELOAD_N`, default 3). One real app container is the upstream of all 100 routes, so VmHWM is the test process's, an upper bound of the server's. The drops are counted per reload, in the two connection classes; "never processed, safe to retry" is the Revision 9 reading, to be confirmed by the numbers.
+A switch, revert, restart, rollback and the maintenance page never reload the proxy (zero-drop tests). The cases below still do. The reload measurement test is being reworked by another agent, so **the exact columns follow its final output**; the structure below is what the reviews asked for. All cells are PENDING.
 
-| Case | Reloads | Reload time mean / max (ms) | Drops per reload, keep-alive | Drops per reload, new connection | Failed after one client retry | VmHWM before → after the case (MB) |
-|---|---|---|---|---|---|---|
-| `control_no_reload` (a switch, for comparison) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `add_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `change_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `clear_public_port` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `delete_exposed_service` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `first_sync_at_boot` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `try_again_port_still_taken` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `try_again_port_freed` | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| `bind_isolation` (worst case 2N + 3 reloads) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+**Caveats to print with the numbers:**
+- One real app container is the upstream of all 100 routes; the other 99 services are rows and fixtures.
+- Only 2 app routes carry load (the load generator's targets), plus the panel.
+- The first-sync-at-boot list is a fixture of 100 containers, but the inspects are real.
+- Memory is the **test process's** (Caddy, the route code, the store and the load generator together), not the server's. Only the **delta** across a case is a fair estimate; the absolute value is an upper bound.
+- Drops are read as "expected never to have been processed" until the measurements confirm it.
+
+Columns (every row): Caddy loads per operation (successful / failed) · drops per load, **per target (panel, app) x class (keep-alive, new connection)** · Go-internal keep-alive retries · requests that **failed after one retry on a new connection after 50 ms** · reload time mean / max (ms) · CPU per reload · VmHWM delta (MB).
+
+| Case | Loads per op (ok / failed) | Drops per load: panel keep-alive / new | Drops per load: app keep-alive / new | Go keep-alive retries | Failed after 1 retry | Reload ms mean / max | CPU per reload | VmHWM delta (MB) |
+|---|---|---|---|---|---|---|---|---|
+| No operation (load generator baseline) | PENDING | PENDING | PENDING | PENDING | PENDING | n/a | PENDING | PENDING |
+| One new port, taken (the fast path) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| First sync at boot with 1 taken port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| First sync at boot with 2 taken ports (worst case, about 2N + 3 loads) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Try again, port still taken | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Try again, port freed | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Add a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Change a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Clear a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Delete an exposed service | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| First sync at boot (all 100 routes) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+
+First sync at boot, extra figures (PENDING): time for the list and the 100 inspects before the first route apply: PENDING ms; time from process start to the first 2xx on an app: PENDING ms. Idle RSS with 100 routes configured (steady state, no load): PENDING MB.
+
+### Zero-downtime recording (plan 0004 exit evidence)
+
+PENDING, to be filled from the regression runs on the release commit. One row per run; every row also records the commit, the date and whether the run used the built binary.
+
+| Run | Strategy | Load (requests, keep-alive / new connection, GET and POST) | Non-2xx (and which) | Drops | Go retries | Caddy loads during the deploy | Commit recorded (stage, time) | Result |
+|---|---|---|---|---|---|---|---|---|
+| Blue-green, healthy candidate | blue-green | PENDING | PENDING (expect 0) | PENDING | PENDING | PENDING (expect 0) | PENDING | PENDING |
+| Blue-green, unhealthy candidate (old version keeps serving) | blue-green | PENDING | PENDING (expect 0) | PENDING | PENDING | PENDING (expect 0) | none (expected) | PENDING |
+| Stop-first, healthy | stop-first | PENDING | PENDING (only the maintenance 503 with `Retry-After`) | PENDING | PENDING | PENDING (expect 0) | PENDING | PENDING |
+| Stop-first, failing (old version started again) | stop-first | PENDING | PENDING (only the maintenance 503) | PENDING | PENDING | PENDING (expect 0) | none (expected) | PENDING |
+
+### Notes on scenarios 5 to 8
+
+Scenarios 5 to 8 (`bench/run.sh`) **run locally and are not part of the CI bench job**. They run the server with host networking (the app network's addresses are not reachable from another bridge) and `--allow-loopback-registry`, so they are not the shipped deployment shape. **Scenario 5 minus scenario 2 is not the cost of one service**: scenario 5 also includes the set-up (sign-in, service creation, the first deploy and its history rows) that scenario 2 does not do, so it is an upper bound.
 
 ### Earlier figures (not release numbers)
 
