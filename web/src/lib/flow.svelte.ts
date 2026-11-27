@@ -32,3 +32,14 @@ export function takeCreated(service: string, number: number): Created | undefine
 	for (const k of Object.keys(created) as (keyof Created)[]) delete created[k];
 	return mine;
 }
+
+/**
+ * A message for the Services list, set when a page sends the user there (a delete that
+ * was queued). The list takes it once and clears it.
+ */
+export const listNotice = $state<{ message?: string }>({});
+export function takeListNotice(): string {
+	const m = listNotice.message ?? '';
+	delete listNotice.message;
+	return m;
+}

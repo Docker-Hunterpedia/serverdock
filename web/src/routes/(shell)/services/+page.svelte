@@ -4,12 +4,15 @@
 	import PageHeading from '../../../lib/PageHeading.svelte';
 	import ResponsiveTable from '../../../lib/ResponsiveTable.svelte';
 	import StateBadge from '../../../lib/StateBadge.svelte';
+	import { takeListNotice } from '../../../lib/flow.svelte';
 	import { absolute } from '../../../lib/time';
 	import { DOCS_URL, appAddress, deployStatusInfo, listServices, loadErrorMessage, servicePath, type Service } from '../../../lib/services';
 
 	// Loaded on navigation and by Refresh; nothing else: no polling and no timers.
 	let services: Service[] | undefined = $state();
 	let error: string | null = $state(null);
+	// A message left by the page that sent us here (a queued delete): shown once, in the status region.
+	const notice = takeListNotice();
 	let status = $state('');
 	let loading = $state(true);
 	let alerts: Alerts | undefined = $state();
@@ -21,12 +24,12 @@
 		loading = true;
 		error = null;
 		clearTimeout(clearTimer);
-		status = announce ? 'Refreshing the list…' : '';
+		status = announce ? 'Refreshing the list…' : status;
 		try {
 			const list = await listServices(c.signal);
 			if (c !== ctrl) return;
 			services = list;
-			status = announce ? `Updated. ${list.length} ${list.length === 1 ? 'service' : 'services'}.` : '';
+			status = announce ? `Updated. ${list.length} ${list.length === 1 ? 'service' : 'services'}.` : status;
 			if (announce) clearLater();
 		} catch (e) {
 			if (c !== ctrl) return;
@@ -48,7 +51,14 @@
 		clearTimeout(clearTimer);
 		clearTimer = setTimeout(() => (status = ''), 8000);
 	}
-	onMount(() => void load(false));
+	onMount(async () => {
+		void load(false);
+		// Set after the region exists, so a screen reader announces it.
+		if (notice) {
+			await tick();
+			status = notice;
+		}
+	});
 	onDestroy(() => {
 		ctrl?.abort();
 		clearTimeout(clearTimer);

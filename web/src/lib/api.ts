@@ -53,13 +53,14 @@ export function signedOutReason(code: string | undefined): string {
 
 let csrf = '';
 
-type Options = { signal?: AbortSignal; body?: unknown };
+type Options = { signal?: AbortSignal; body?: unknown; confirm?: string };
 
 async function call<T>(method: string, path: string, opts: Options = {}): Promise<T> {
 	const headers: Record<string, string> = { Accept: 'application/json' };
 	if (method !== 'GET') {
 		headers['Content-Type'] = 'application/json';
 		if (csrf) headers['X-SD-CSRF'] = csrf;
+		if (opts.confirm) headers['SD-Confirm'] = opts.confirm;
 	}
 	let res: Response;
 	try {
@@ -109,8 +110,8 @@ export function setAuditHandler(fn: (() => void) | undefined) {
 }
 
 /** Runs a registered action (POST /api/v1/actions/{name}). An unrecorded audit outcome is never plain success: the registered handler is told. */
-export async function runAction<T>(name: string, input: object = {}, signal?: AbortSignal): Promise<T> {
-	const res = await call<{ data: T; audit?: string }>('POST', `/api/v1/actions/${encodeURIComponent(name)}`, { body: input, signal });
+export async function runAction<T>(name: string, input: object = {}, signal?: AbortSignal, confirm?: string): Promise<T> {
+	const res = await call<{ data: T; audit?: string }>('POST', `/api/v1/actions/${encodeURIComponent(name)}`, { body: input, signal, confirm });
 	if (res.audit === 'unrecorded') onAudit?.();
 	return res.data;
 }

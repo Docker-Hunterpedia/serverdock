@@ -147,3 +147,118 @@ export async function loadErrorMessage(e: unknown): Promise<string | undefined> 
 	}
 	return e.code === 'network' ? NETWORK_MESSAGE : e.message;
 }
+
+// ---- the service detail page (plan 0004 step 13) --------------------------------
+
+export type DeployItem = Schemas['DeploysListOutput']['deploys'][number];
+export type QueuedDeploy = Schemas['ServicesDeployOutput'];
+export type ServiceChange = Omit<Schemas['ServicesSetPublicPortOutput'], 'service'> & { service: Service };
+
+export const getService = (ref: string, signal?: AbortSignal) => runAction<Service>('services.get', { service: ref }, signal);
+export const listDeploys = (ref: string, signal?: AbortSignal) => runAction<{ deploys: DeployItem[] }>('deploys.list', { service: ref }, signal).then((r) => r.deploys);
+
+/** One result per deploy: word plus symbol, never colour alone. */
+export function deployResult(d: DeployItem): { symbol: string; word: string } {
+	switch (d.status) {
+		case 'queued':
+			return { symbol: '○', word: 'Queued' };
+		case 'running':
+			return { symbol: '…', word: 'Running' };
+		case 'superseded':
+			return { symbol: '⊘', word: d.superseded_by ? `Superseded by #${d.superseded_by}` : 'Superseded' };
+		case 'cancelled':
+			return { symbol: '⊘', word: 'Cancelled' };
+		case 'failed':
+			if (d.reason_code === 'interrupted') return { symbol: '◌', word: 'Interrupted' };
+			if (d.app_safe === 'yes') return { symbol: '▲', word: 'Failed · app safe' };
+			if (d.app_safe === 'no') return { symbol: '▲', word: 'Failed · app not safe' };
+			return { symbol: '▲', word: 'Failed · app safety unknown' };
+		case 'succeeded':
+			return d.active ? { symbol: '●', word: 'Live' } : { symbol: '○', word: 'Replaced' };
+		default:
+			return { symbol: '◌', word: 'Unknown' };
+	}
+}
+
+/** Only a deploy that was once live, and is not live now, can be rolled back to. */
+export const canRollBackTo = (d: DeployItem) => d.was_live && !d.active;
+
+const STAGES: Record<string, string> = {
+	pull: 'pulling the image',
+	check: 'checks',
+	maintenance: 'maintenance page',
+	stop_old_first: 'stopping the old version',
+	start: 'starting the new version',
+	health: 'health check',
+	switch: 'switching traffic',
+	commit: 'recording the switch',
+	drain: 'draining the old version',
+	stop_old: 'stopping the old version',
+	done: 'done'
+};
+/** What a deploy got to, from its stage and status (the stage list itself is the Deploy page's). */
+export function stagesSummary(d: DeployItem): string {
+	const at = d.stage ? (STAGES[d.stage] ?? d.stage) : '';
+	switch (d.status) {
+		case 'succeeded':
+			return 'All stages done';
+		case 'queued':
+			return 'Waiting to start';
+		case 'running':
+			return at ? `Now: ${at}` : 'Starting';
+		default:
+			return at ? `Stopped at: ${at}` : 'Stopped before the first stage';
+	}
+}
+
+const TRIGGERS: Record<string, string> = { user: 'Signed-in user', token: 'API token', mcp: 'MCP client', webhook: 'Webhook', system: 'ServerDock itself' };
+export const triggeredBy = (d: DeployItem) => TRIGGERS[d.triggered_by ?? ''] ?? 'Unknown';
+
+export const KIND_WORDS: Record<string, string> = { deploy: 'Deploy', redeploy: 'Redeploy', rollback: 'Rollback' };
+
+export function strategyWord(s: string): string {
+	return s === 'stop_first' ? 'Stop-first' : 'Blue-green';
+}
+/** What a deploy does to the running app, by strategy. */
+export function strategyConsequence(s: string): string {
+	return s === 'stop_first'
+		? 'This service is stop-first: the app is briefly down while the old version stops and the new one starts.'
+		: 'This service is blue-green: the app keeps serving until the new version is healthy, then traffic switches.';
+}
+
+/** The health check in one sentence. */
+export function healthText(s: Service): string {
+	const h = s.health;
+	const tail = `Gives up after ${h.timeout_s} s; needs ${h.passes} passing ${h.passes === 1 ? 'check' : 'checks'} in a row.`;
+	if (h.kind === 'http') return `HTTP: ${h.path || '/'} on port ${s.container_port ?? '?'} answers with success. ${tail}`;
+	if (h.kind === 'tcp') return `TCP: port ${s.container_port ?? '?'} accepts connections. ${tail}`;
+	return 'Stays running: no port check.';
+}
+
+/** The repository of an image reference (no tag, no digest), for the dialogs' wording. */
+export function repositoryOf(ref: string): string {
+	const noDigest = ref.split('@')[0];
+	const slash = noDigest.lastIndexOf('/');
+	const colon = noDigest.lastIndexOf(':');
+	return colon > slash ? noDigest.slice(0, colon) : noDigest;
+}
+
+/** A whole number in [lo, hi] from a form field: undefined when empty, 'bad' when not valid. */
+export function intField(v: string, lo: number, hi: number): number | 'bad' | undefined {
+	const t = v.trim();
+	if (t === '') return undefined;
+	if (!/^\d{1,5}$/.test(t)) return 'bad';
+	const n = Number(t);
+	return n < lo || n > hi ? 'bad' : n;
+}
+
+export const CONFIRM_AGAIN_FRAGMENT = 'Confirming again is needed';
+
+/** The shape of services.update's input that the Settings form sends. */
+export type UpdateInput = Schemas['ServicesUpdateInput'];
+
+/** What a service-detail action failure says: a network failure is not a "nothing changed" claim. */
+export function mutationMessage(e: ApiError): string {
+	if (e.code === 'network') return 'Could not reach the server. The request may or may not have gone through: use Refresh to check before trying again.';
+	return actionMessage(e.message);
+}
