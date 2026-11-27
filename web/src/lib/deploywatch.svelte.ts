@@ -204,6 +204,7 @@ export class DeployWatch {
 		else this.pullSince = undefined;
 		await this.keepFocus(() => {
 			this.unknown = false;
+			if (this.refused && this.alert === this.refused) this.alert = null;
 			this.refused = null;
 			this.data = d;
 		});

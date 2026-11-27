@@ -118,20 +118,24 @@ jobs:
       - name: install the browsers
         run: npx playwright install --with-deps chromium webkit
         working-directory: web
-      - name: playwright (UI projects, shard ${{ matrix.shard }} of 3)
-        run: E2E_SET=ui E2E_REPORT=ui-${{ matrix.shard }} npx playwright test --shard=${{ matrix.shard }}/3
+      - name: playwright (UI projects, one shard of 3)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: E2E_SET=ui E2E_REPORT="ui-$SHARD" npx playwright test --shard="$SHARD/3"
         working-directory: web
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: e2e-report-ui-${{ matrix.shard }}
+          include-hidden-files: true
           path: web/e2e/.reports
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-results-ui-${{ matrix.shard }}
+          include-hidden-files: true
           path: web/e2e/.results
           if-no-files-found: ignore
           retention-days: 7
@@ -189,13 +193,15 @@ jobs:
         if: always()
         with:
           name: e2e-report-docker
+          include-hidden-files: true
           path: web/e2e/.reports
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-results-docker
+          include-hidden-files: true
           path: web/e2e/.results
           if-no-files-found: ignore
           retention-days: 7
@@ -221,8 +227,11 @@ jobs:
           path: web/e2e/.reports
       - name: a job that did not finish fails the run
         if: needs.e2e-ui.result != 'success' || needs.e2e-docker.result != 'success'
+        env:
+          UI_RESULT: ${{ needs.e2e-ui.result }}
+          DOCKER_RESULT: ${{ needs.e2e-docker.result }}
         run: |
-          echo "e2e-ui: ${{ needs.e2e-ui.result }}, e2e-docker: ${{ needs.e2e-docker.result }}"
+          echo "e2e-ui: $UI_RESULT, e2e-docker: $DOCKER_RESULT"
           exit 1
       - name: flaky tests (fails above 3)
         if: always()

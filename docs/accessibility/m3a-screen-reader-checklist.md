@@ -17,7 +17,10 @@
 
 - Run every item below on every combination. Keyboard steps do not apply to C and D; use swipe navigation, the rotor (C) or the reading controls (D) instead.
 - **Expected** means the **content** is heard (state word, name, consequence). The exact strings in "Announcements" below are what the page puts into its live regions; a screen reader may add its own words ("alert", "status") or drop the symbols. Anything that is silent, announced twice, announced in the wrong place, or that moves focus unexpectedly is a failure: write down the item, the combination and what happened.
-- **NVDA only:** turn on "Report dynamic content changes" and set "Report progress bar updates" to **off** (the default is "beep" or "speak" in some versions). The pull's progress bar must stay silent in any case; if NVDA speaks it on its own setting, record the setting and treat it as a note, not a page failure, because the bar is not a live region.
+- **NVDA only** (Preferences, Settings, Document formatting and Object presentation):
+  - Report dynamic content changes: **on**.
+  - Report progress bar updates: **off** (the default is to beep; some versions speak it).
+  - The pull's progress bar must stay silent whatever this is set to. If NVDA speaks it anyway, record the setting as a note, not a page failure: the bar is not a live region.
 
 ## Announcements (exact strings in the page's live regions)
 

@@ -53,7 +53,7 @@ test.describe('Deploy detail: live updates', () => {
 		await expect(page.getByTestId('pull-progress')).toBeVisible();
 		await expect(status).toHaveText('');
 		await expect(status).toHaveText('Deploy #3: health check started.', { timeout: 10_000 });
-		await expect(alert).toContainText('Deploy #3 failed:', { timeout: 10_000 });
+		await expect(alert).toContainText('Deploy #3 failed.', { timeout: 10_000 });
 		await expect(status).toHaveText('');
 		const n = calls.length;
 		await page.waitForTimeout(5000);

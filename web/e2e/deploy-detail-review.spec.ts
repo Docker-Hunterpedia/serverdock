@@ -247,6 +247,44 @@ test.describe('focus and "Status unknown"', () => {
 	});
 });
 
+test.describe('stale data on return', () => {
+	test('coming back after more than 10 s shows "Status unknown" before any answer, then the answer replaces it', async ({ page, server, admin }) => {
+		seed(server);
+		await record(page);
+		await page.addInitScript(() => {
+			let state = 'visible';
+			Object.defineProperty(document, 'visibilityState', { get: () => state, configurable: true });
+			Object.defineProperty(document, 'hidden', { get: () => state === 'hidden', configurable: true });
+			(window as unknown as { __vis: (s: string) => void }).__vis = (s) => {
+				state = s;
+				document.dispatchEvent(new Event('visibilitychange'));
+			};
+		});
+		await freeze(page);
+		let n = 0;
+		let release: (() => void) | undefined;
+		await page.route('**/api/v1/actions/deploys.get', async (route) => {
+			const body = JSON.stringify({ audit: 'not_audited', data: deployStates.healthGate() });
+			if (n++ >= 1) await new Promise<void>((r) => (release = r)); // the request after the return hangs
+			await route.fulfill({ status: 200, contentType: 'application/json', body });
+		});
+		await signIn(page, server, admin);
+		await page.goto(url(server.baseURL));
+		await expect(page.getByTestId('stage-health')).toBeVisible();
+		await page.evaluate(() => (window as unknown as { __vis: (s: string) => void }).__vis('hidden'));
+		await page.clock.runFor(30_000);
+		await page.evaluate(() => (window as unknown as { __vis: (s: string) => void }).__vis('visible'));
+		await expect(page.getByTestId('status-unknown')).toBeVisible();
+		await expect(page.getByTestId('cancel-deploy')).toHaveAttribute('aria-disabled', 'true');
+		expect((await said(page)).status, 'nothing is announced before the answer').toEqual([]);
+		await expect.poll(() => !!release).toBe(true);
+		release?.();
+		await expect(page.getByTestId('status-unknown')).toHaveCount(0);
+		await expect(page.getByTestId('cancel-deploy')).not.toHaveAttribute('aria-disabled', 'true');
+		expect((await said(page)).status, 'a quiet entry is left quietly').toEqual([]);
+	});
+});
+
 test.describe('Redeploy refreshes first and names the live version', () => {
 	test('the dialog names the live deploy and image after a fresh answer', async ({ page, server, admin }) => {
 		seed(server);

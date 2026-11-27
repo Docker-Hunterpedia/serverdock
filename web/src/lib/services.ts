@@ -414,7 +414,7 @@ export function appSafetyText(d: DeployGet['deploy'], previous?: number, started
 			return verdict('◌', 'unknown', UNSURE);
 		default:
 			// No verdict recorded: only a deploy that never started is known to have changed nothing.
-			if ((d.status === 'cancelled' || d.status === 'superseded') && !started) return plain('○', 'not changed: this deploy never started, so the current version kept serving.');
+			if ((d.status === 'cancelled' || d.status === 'superseded') && !started) return plain('○', 'not changed: this deploy never started. Nothing was changed.');
 			return verdict('◌', 'unknown', UNSURE);
 	}
 }
@@ -477,7 +477,7 @@ export function announcementFor(prev: DeployGet | undefined, next: DeployGet, pr
 			case 'failed': {
 				const interrupted = next.deploy.reason_code === 'interrupted';
 				const head = `Deploy #${n} ${interrupted ? 'was interrupted' : 'failed'}`;
-				const why = next.deploy.reason ? `: ${sentence(next.deploy.reason)}` : '.';
+				const why = next.deploy.reason ? `. ${sentence(next.deploy.reason)}` : '.';
 				return { alert: `${head}${why} ${app.sentence}` };
 			}
 			case 'cancelled':

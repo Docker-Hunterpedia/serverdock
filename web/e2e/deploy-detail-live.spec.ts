@@ -267,10 +267,10 @@ test.describe('Deploy detail: announcements', () => {
 	});
 
 	for (const [state, re] of [
-		['failedAppSafe', /Deploy #3 failed: The new version did not become healthy within 60 s\. Your app is safe: the previous version kept serving\./],
-		['failedNotSafe', /Deploy #3 failed: .*did not come back\. Your app is not safe: /],
-		['interrupted', /Deploy #3 was interrupted: ServerDock stopped while the deploy was running\. Your app status is unknown: /],
-		['diskFull', /Deploy #3 failed: The server's disk is full: no space left on device\. Your app is safe: /]
+		['failedAppSafe', /Deploy #3 failed\. The new version did not become healthy within 60 s\. Your app is safe: the previous version kept serving\./],
+		['failedNotSafe', /Deploy #3 failed\. .*did not come back\. Your app is not safe: /],
+		['interrupted', /Deploy #3 was interrupted\. ServerDock stopped while the deploy was running\. Your app status is unknown: /],
+		['diskFull', /Deploy #3 failed\. The server's disk is full: no space left on device\. Your app is safe: /]
 	] as const) {
 		test(`a ${state} deploy is announced once, through the alert only, and focus does not move`, async ({ page, server, admin }) => {
 			seed(server);

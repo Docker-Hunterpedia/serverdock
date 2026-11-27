@@ -152,11 +152,12 @@
 	async function redeploy() {
 		if (!d || busy || stale) return;
 		const forRef = ref;
+		const forNumber = number;
 		// Redeploy always reuses the service's live deploy: ask again first, so the dialog names the one that is live now.
 		busy = true;
 		const fresh = await watch.refresh();
 		busy = false;
-		if (forRef !== ref) return;
+		if (forRef !== ref || forNumber !== number) return; // another deploy was opened meanwhile: say nothing about this one
 		if (!fresh) {
 			await say('Could not check which version is live, so nothing was started. Use Check again, then try again.');
 			return;
