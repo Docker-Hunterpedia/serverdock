@@ -37,7 +37,10 @@
 		tailLines,
 		triggeredBy,
 		currentStage,
-		isRetrying
+		isRetrying,
+		hasStarted,
+		sentence,
+		supersededText
 	} from '../../../../../../../lib/services';
 	import type { QueuedDeploy } from '../../../../../../../lib/services';
 	import { absolute } from '../../../../../../../lib/time';
@@ -72,6 +75,7 @@
 			}
 			fullLog = false;
 			busy = false;
+			watch.focusHeading = () => document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
 			if (Number.isInteger(number) && number >= 1) watch.open(ref, number);
 			else {
 				watch.destroy();
@@ -94,9 +98,12 @@
 	const unfinished = $derived(d ? isUnfinished(d.status) : false);
 	const result = $derived(d ? deployResult(d) : undefined);
 	const reason = $derived(watch.data ? cancelReason(watch.data, watch.cancelAsked) : null);
+	const staleWhy = 'The status is unknown right now: this page could not reach the server. Use Check again.';
 	const stage = $derived(watch.data ? currentStage(watch.data) : '');
 	const pulling = $derived(!!watch.data && unfinished && d?.stage === 'pull' && watch.data.stages.find((s) => s.stage === 'pull')?.state === 'running');
-	const safety = $derived(d ? appSafetyText(d, watch.previous) : undefined);
+	const safety = $derived(d && watch.data ? appSafetyText(d, watch.previous, hasStarted(watch.data)) : undefined);
+	/** What is shown may be out of date: nothing on the page can be acted on until the server answers again. */
+	const stale = $derived(watch.unknown || !!watch.refused);
 	const retrying = $derived(watch.data?.stages.find((s) => isRetrying(s)));
 	const strategy = $derived(d?.strategy || 'blue_green');
 	const logParts = $derived(watch.log.kind === 'text' ? splitLog(watch.log.log.text ?? '') : undefined);
@@ -119,18 +126,18 @@
 	}
 
 	async function cancel() {
-		if (!d || busy || reason) return;
+		if (!d || busy || reason || stale) return;
 		const forRef = ref;
 		const n = number;
 		busy = true;
 		watch.alert = null;
-		watch.status = 'Cancel request sent, waiting for the answer…';
+		void watch.announce('Cancel request sent, waiting for the answer…');
 		try {
 			const out = await cancelDeploy(forRef, n);
 			if (forRef !== ref || n !== number) return;
 			if (out.status === 'cancelling') {
 				watch.cancelAsked = true;
-				watch.status = 'Cancel requested. The deploy stops at its next safe point.';
+				void watch.announce('Cancel requested. The deploy stops at its next safe point.');
 			} else {
 				watch.status = '';
 			}
@@ -143,13 +150,26 @@
 	}
 
 	async function redeploy() {
-		if (!d || busy) return;
+		if (!d || busy || stale) return;
 		const forRef = ref;
-		const cur = d;
+		// Redeploy always reuses the service's live deploy: ask again first, so the dialog names the one that is live now.
+		busy = true;
+		const fresh = await watch.refresh();
+		busy = false;
+		if (forRef !== ref) return;
+		if (!fresh) {
+			await say('Could not check which version is live, so nothing was started. Use Check again, then try again.');
+			return;
+		}
+		const cur = watch.data?.deploy;
+		if (!cur || !cur.active) {
+			await say(`Deploy #${number} is no longer the live version, so Redeploy was not started. Redeploy it from the service page.`);
+			return;
+		}
 		const ok = await dialog?.ask({
 			title: `Redeploy ${forRef}?`,
 			lines: [
-				`Starts a new deploy that reuses the exact image of live deploy #${cur.number} (${cur.image_ref}) with its settings, in a fresh container. Nothing is pulled again.`,
+				`Redeploys the live version of ${forRef}: deploy #${cur.number} (${cur.image_ref}). It starts a new deploy that reuses that exact image with its settings, in a fresh container. Nothing is pulled again.`,
 				strategyConsequence(cur.strategy || 'blue_green')
 			],
 			confirm: 'Redeploy'
@@ -159,7 +179,7 @@
 	}
 
 	async function rollBack() {
-		if (!d || busy) return;
+		if (!d || busy || stale) return;
 		const forRef = ref;
 		const cur = d;
 		const ok = await dialog?.ask({
@@ -179,7 +199,7 @@
 	async function queue(label: string, run: () => Promise<QueuedDeploy>, forRef: string) {
 		busy = true;
 		watch.alert = null;
-		watch.status = label;
+		void watch.announce(label);
 		try {
 			const q = await run();
 			if (forRef !== ref) return;
@@ -189,6 +209,11 @@
 		} finally {
 			busy = false;
 		}
+	}
+
+	function toggleFull() {
+		fullLog = !fullLog;
+		void watch.announce(fullLog ? 'Full log shown.' : 'Last 40 lines shown.');
 	}
 
 	function skipLog(e: MouseEvent) {
@@ -238,15 +263,19 @@
 
 	<Alerts error={watch.alert} status={watch.status} bind:this={alerts} />
 
-	{#if watch.unknown || (!d && !watch.loading)}
-		<p class="note" data-testid="status-unknown"><span aria-hidden="true">◌</span> Status unknown: could not reach the server.</p>
-		<p class="hint">What this page showed before may be out of date. It asks again by itself while it is open; you can also ask now.</p>
-		<p><button type="button" data-testid="check-again" onclick={() => void watch.refresh()}>Check again</button></p>
+	{#if watch.refused}
+		<p class="note" data-testid="status-refused"><span aria-hidden="true">▲</span> The server refused to show this deploy: {watch.refused} This page does not ask again.</p>
+	{:else if watch.unknown || (!d && !watch.loading)}
+		<div data-vanishes>
+			<p class="note" data-testid="status-unknown"><span aria-hidden="true">◌</span> Status unknown: could not reach the server.{#if d} What is shown below may be out of date.{/if}</p>
+			<p class="hint">This page asks again by itself while it is open; you can also ask now.</p>
+			<p><button type="button" data-testid="check-again" onclick={() => void watch.refresh(true)}>Check again</button></p>
+		</div>
 	{:else if !d}
 		<p class="note">Loading the deploy…</p>
 	{/if}
 
-	{#if d && !watch.unknown && watch.data && safety}
+	{#if d && watch.data && safety}
 		<section aria-labelledby="h-what" class="block" data-testid="what-happened">
 			<h2 id="h-what">What happened</h2>
 			<dl>
@@ -256,12 +285,12 @@
 				<dd data-testid="app-safety"><span aria-hidden="true">{safety.symbol}</span> {safety.text}</dd>
 				<dt>New container</dt>
 				<dd data-testid="new-container">{newContainerText(watch.data)}</dd>
-				{#if d.status === 'failed' || (d.reason && d.status !== 'cancelled')}
+				{#if d.status === 'superseded'}
 					<dt>Reason</dt>
-					<dd data-testid="deploy-reason">{d.reason || 'No reason was recorded.'}</dd>
-				{:else if d.status === 'superseded'}
+					<dd data-testid="deploy-reason">{supersededText(watch.data)}</dd>
+				{:else if d.status === 'failed' || (d.reason && d.status !== 'cancelled')}
 					<dt>Reason</dt>
-					<dd data-testid="deploy-reason">{d.superseded_by ? `Replaced in the queue by deploy #${d.superseded_by}` : 'Replaced in the queue by a newer deploy'} before it started.</dd>
+					<dd data-testid="deploy-reason">{d.reason ? sentence(d.reason) : 'No reason was recorded.'}</dd>
 				{:else if d.status === 'cancelled'}
 					<dt>Reason</dt>
 					<dd data-testid="deploy-reason">It was cancelled.</dd>
@@ -318,27 +347,33 @@
 				{@const p = watch.data.progress}
 				{@const known = !!p && p.bytes_total > 0}
 				<div class="pull" data-testid="pull-progress">
-					<label for="pull-bar">Image pull progress</label>
-					<progress id="pull-bar" aria-describedby="pull-text" max={known ? p.bytes_total : undefined} value={known ? p.bytes : undefined}></progress>
+					{#if known}
+						<label for="pull-bar">Image pull progress</label>
+						<progress id="pull-bar" aria-describedby="pull-text" max={p.bytes_total} value={p.bytes}></progress>
+					{:else}
+						<!-- No bar without a size: an animated indeterminate bar cannot be paused (WCAG 2.2.2); the text says it. -->
+						<p id="pull-label" class="label">Image pull progress</p>
+					{/if}
 					<p id="pull-text" data-testid="pull-text">{pullText(p)}</p>
 				</div>
 			{/if}
 		</section>
 
 		{#if unfinished}
-			<div class="toolbar">
-				<button type="button" data-testid="cancel-deploy" onclick={cancel} aria-disabled={reason || busy ? 'true' : undefined} aria-describedby={reason ? 'cancel-reason' : undefined}>Cancel deploy</button>
+			<div class="toolbar" data-vanishes>
+				<button type="button" data-testid="cancel-deploy" onclick={cancel} aria-disabled={reason || busy || stale ? 'true' : undefined} aria-describedby={reason || stale ? 'cancel-reason' : undefined}>Cancel deploy</button>
 			</div>
-			{#if reason}<p id="cancel-reason" class="hint" data-testid="cancel-reason">{reason}</p>{/if}
+			{#if reason || stale}<p id="cancel-reason" class="hint" data-testid="cancel-reason">{stale && !reason ? staleWhy : reason}</p>{/if}
 		{:else if d.active || canRollBackTo(d)}
-			<div class="toolbar">
+			<div class="toolbar" data-vanishes>
 				{#if d.active}
-					<button type="button" data-testid="redeploy" onclick={redeploy} aria-disabled={busy ? 'true' : undefined}>Redeploy</button>
+					<button type="button" data-testid="redeploy" onclick={redeploy} aria-disabled={busy || stale ? 'true' : undefined} aria-describedby={stale ? 'act-stale' : undefined}>Redeploy</button>
 				{/if}
 				{#if canRollBackTo(d)}
-					<button type="button" data-testid="rollback" onclick={rollBack} aria-disabled={busy ? 'true' : undefined}>Roll back to #{d.number}</button>
+					<button type="button" data-testid="rollback" onclick={rollBack} aria-disabled={busy || stale ? 'true' : undefined} aria-describedby={stale ? 'act-stale' : undefined}>Roll back to #{d.number}</button>
 				{/if}
 			</div>
+			{#if stale}<p id="act-stale" class="hint">{staleWhy}</p>{/if}
 		{/if}
 
 		<section aria-labelledby="h-log" class="block" data-testid="log-section">
@@ -351,22 +386,24 @@
 				<p class="note" data-testid="log-message">{watch.log.message}</p>
 			{:else if watch.log.kind === 'busy' || watch.log.kind === 'error'}
 				<p class="note" data-testid="log-message">{watch.log.message}</p>
-				<p><button type="button" data-testid="log-retry" onclick={() => void watch.loadLog()}>Try again</button></p>
+				<p data-vanishes><button type="button" data-testid="log-retry" onclick={() => void watch.loadLog()}>Try again</button></p>
 			{:else if logParts}
 				{@const out = fullLog ? logParts.output : tailLines(logParts.output, 40)}
 				<p class="hint">Container output is shown as plain text, exactly as the container printed it. It can contain secrets: do not share it.</p>
 				{#if watch.log.log.truncated}<p class="note" data-testid="log-truncated">The log file holds more than 1 MiB: only the first 1 MiB is shown.</p>{/if}
-				<a class="skip-log" href="#show-full-log" data-testid="skip-log" onclick={skipLog}>Skip the container log</a>
-				{#if fullLog && logParts.header}
-					<h3>Written by ServerDock</h3>
-					<!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable log must be reachable by keyboard: plan 0004 accessibility rules) -->
-					<pre class="log head" tabindex="0" role="region" aria-label="Deploy header, written by ServerDock" data-testid="log-header">{logParts.header}</pre>
-					<h3>Printed by the container</h3>
-				{/if}
-				<!-- svelte-ignore a11y_no_noninteractive_tabindex (as above) -->
-				<pre class="log" tabindex="0" role="region" aria-label={fullLog ? 'Container output, full log' : 'Container output, last 40 lines'} data-testid={fullLog ? 'log-full' : 'log-tail'}>{out || '(the container printed nothing)'}</pre>
+				<div class="logbox">
+					<a class="skip-log" href="#show-full-log" data-testid="skip-log" onclick={skipLog}>Skip the container log</a>
+					{#if fullLog && logParts.header}
+						<h3 id="h-loghead">Written by ServerDock</h3>
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable log must be reachable by keyboard: plan 0004 accessibility rules) -->
+						<pre class="log head" tabindex="0" role="group" aria-labelledby="h-loghead" data-testid="log-header">{logParts.header}</pre>
+						<h3 id="h-logout">Printed by the container</h3>
+					{/if}
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex (as above) -->
+					<pre class="log" tabindex="0" role="group" aria-labelledby={fullLog && logParts.header ? 'h-logout' : 'h-log'} data-testid={fullLog ? 'log-full' : 'log-tail'}>{out || '(the container printed nothing)'}</pre>
+				</div>
 				<p>
-					<button type="button" id="show-full-log" data-testid="show-full-log" aria-expanded={fullLog} onclick={() => (fullLog = !fullLog)}>{fullLog ? 'Show last 40 lines only' : 'Show full log'}</button>
+					<button type="button" id="show-full-log" data-testid="show-full-log" onclick={toggleFull}>{fullLog ? 'Show last 40 lines only' : 'Show full log'}</button>
 				</p>
 				{#if !fullLog}<p class="hint">The header and stage lines ServerDock wrote are in the full log.</p>{/if}
 			{/if}
@@ -463,15 +500,30 @@
 		font-size: 1rem;
 	}
 	/* A skip link past the log: hidden until it has focus. */
+	.logbox {
+		position: relative;
+	}
 	.skip-log {
 		position: absolute;
 		left: -100vw;
 	}
+	/* Over the log's corner while it has focus: nothing moves. */
 	.skip-log:focus {
-		position: static;
+		left: auto;
+		right: 0.5rem;
+		top: 0.5rem;
+		z-index: 2;
 		display: inline-flex;
 		align-items: center;
 		min-height: var(--target);
-		margin: 0 0 0.5rem;
+		padding: 0 0.75rem;
+		background: var(--bg);
+		color: var(--text);
+		border: 2px solid var(--border);
+		border-radius: 0.5rem;
+	}
+	.label {
+		margin: 0;
+		font-weight: 600;
 	}
 </style>

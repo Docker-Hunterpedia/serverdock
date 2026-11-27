@@ -299,14 +299,29 @@ const STAGE_LABELS: Record<string, string> = {
 	pull: 'Pull the image',
 	check: 'Checks',
 	maintenance: 'Show the maintenance page',
-	stop_old_first: 'Stop the old version',
+	stop_old_first: 'Stop the old version first',
 	start: 'Start the new version',
 	health: 'Health check',
 	switch: 'Switch traffic',
 	commit: 'Record the switch',
 	drain: 'Drain the old version',
-	stop_old: 'Stop the old version'
+	stop_old: 'Retire the old version'
 };
+
+/** The same stages in a sentence ("Deploy #4: health check started."): never an imperative. */
+const STAGE_NOUNS: Record<string, string> = {
+	pull: 'image pull',
+	check: 'checks',
+	maintenance: 'maintenance page',
+	stop_old_first: 'first stop of the old version',
+	start: 'start of the new version',
+	health: 'health check',
+	switch: 'traffic switch',
+	commit: 'recording of the switch',
+	drain: 'draining of the old version',
+	stop_old: 'retirement of the old version'
+};
+export const stageNoun = (stage: string) => STAGE_NOUNS[stage] ?? stage;
 export const stageLabel = (stage: string) => STAGE_LABELS[stage] ?? stage;
 
 export const RETRY_PREFIX = 'waiting to retry';
@@ -362,27 +377,60 @@ export function previousLive(deploys: DeployItem[], n: number): number | undefin
 	return best;
 }
 
-/** "Your app: …" in words, by what the deploy did to it. */
-export function appSafetyText(d: DeployGet['deploy'], previous?: number): { symbol: string; text: string } {
-	if (d.status === 'queued') return { symbol: '○', text: 'nothing has changed yet. The current version keeps serving while this deploy waits.' };
+export type AppSafety = {
+	symbol: string;
+	/** For the "Your app" line: "safe, #2 kept serving." */
+	text: string;
+	/** For an announcement: "Your app is safe: #2 kept serving." */
+	sentence: string;
+};
+const UNSURE = 'ServerDock could not confirm whether the previous version kept serving. Check the service before relying on it.';
+function verdict(symbol: string, lead: 'safe' | 'not safe' | 'unknown', detail: string): AppSafety {
+	return { symbol, text: `${lead}, ${detail}`.replace(/^unknown, /, 'unknown: ').replace(/^not safe, /, 'not safe: '), sentence: `Your app ${lead === 'unknown' ? 'status is' : 'is'} ${lead}: ${detail}` };
+}
+const plain = (symbol: string, text: string): AppSafety => ({ symbol, text, sentence: `Your app: ${text}` });
+
+/** Did the deploy start (a stage ran) before it ended? A superseded or cancelled deploy can have been running. */
+export function hasStarted(d: DeployGet): boolean {
+	return !!d.deploy.started_at || d.stages.some((s) => s.state !== 'pending' && s.state !== 'skipped');
+}
+
+/** "Your app: …" in words, by what the deploy did to it. The server's app_safe decides for every ended deploy that did not succeed. */
+export function appSafetyText(d: DeployGet['deploy'], previous?: number, started = true): AppSafety {
+	if (d.status === 'queued') return plain('○', 'nothing has changed yet. The current version keeps serving while this deploy waits.');
 	if (d.status === 'running') {
 		return d.strategy === 'stop_first'
-			? { symbol: '…', text: 'stop-first: the app goes down briefly once the old version is stopped, until the new one is healthy.' }
-			: { symbol: '…', text: 'the current version keeps serving until the new one is healthy, then traffic switches.' };
+			? plain('…', 'stop-first: the app goes down briefly once the old version is stopped, until the new one is healthy.')
+			: plain('…', 'the current version keeps serving until the new one is healthy, then traffic switches.');
 	}
-	if (d.status === 'succeeded') return d.active ? { symbol: '●', text: 'the new version is live.' } : { symbol: '○', text: 'this version was live and has since been replaced.' };
-	if (d.status === 'cancelled' || d.status === 'superseded') {
-		if (d.app_safe === 'no') return { symbol: '▲', text: 'not safe: the previous version is not serving. Deploy again or roll back.' };
-		return { symbol: '○', text: 'not changed: the previous version kept serving.' };
-	}
+	if (d.status === 'succeeded') return d.active ? plain('●', 'the new version is live.') : plain('○', 'this version was live and has since been replaced.');
+	const kept = previous ? `#${previous} kept serving.` : 'the previous version kept serving.';
 	switch (d.app_safe) {
 		case 'yes':
-			return { symbol: '✓', text: `safe, ${previous ? `#${previous}` : 'the previous version'} kept serving.` };
+			return verdict('✓', 'safe', kept);
 		case 'no':
-			return { symbol: '▲', text: `not safe: the previous version${previous ? ` (#${previous})` : ''} is not serving.${d.strategy === 'stop_first' ? ' Stop-first stops the old version before the new one starts.' : ''} Deploy again or roll back to a version that was live.` };
+			return verdict('▲', 'not safe', `the previous version${previous ? ` (#${previous})` : ''} is not serving.${d.strategy === 'stop_first' ? ' Stop-first stops the old version before the new one starts.' : ''} Deploy again or roll back to a version that was live.`);
+		case 'unknown':
+			return verdict('◌', 'unknown', UNSURE);
 		default:
-			return { symbol: '◌', text: 'unknown: ServerDock could not confirm whether the previous version kept serving. Check the service before relying on it.' };
+			// No verdict recorded: only a deploy that never started is known to have changed nothing.
+			if ((d.status === 'cancelled' || d.status === 'superseded') && !started) return plain('○', 'not changed: this deploy never started, so the current version kept serving.');
+			return verdict('◌', 'unknown', UNSURE);
 	}
+}
+
+/** A sentence from a server text: first letter capital, a full stop unless it ends with punctuation. */
+export function sentence(text: string): string {
+	const t = text.trim();
+	if (!t) return '';
+	const c = t[0].toUpperCase() + t.slice(1);
+	return /[.!?]$/.test(c) ? c : c + '.';
+}
+
+/** Why a superseded deploy ended: stopped mid-run, or replaced in the queue before it started. */
+export function supersededText(d: DeployGet): string {
+	const by = d.deploy.superseded_by ? `#${d.deploy.superseded_by}` : 'a newer deploy';
+	return hasStarted(d) ? `Stopped and replaced by ${by}.` : `Replaced in the queue by ${by} before it started.`;
 }
 
 /** What became of the new container, from the stages (deploys.get does not return its id). */
@@ -415,25 +463,30 @@ export function cancelReason(d: DeployGet, cancelAsked: boolean): string | null 
 	}
 }
 
-/** What was announced before and what is announced now: one status line per stage change, one alert for a failure. */
+/** What is announced when the data changes: one status line per stage change, one alert for a failure. */
 export function announcementFor(prev: DeployGet | undefined, next: DeployGet, previous?: number): { status?: string; alert?: string } {
 	if (!prev) return {};
 	const n = next.deploy.number;
 	const wasOpen = isUnfinished(prev.deploy.status);
 	if (!isUnfinished(next.deploy.status)) {
 		if (!wasOpen) return {};
+		const app = appSafetyText(next.deploy, previous, hasStarted(next));
 		switch (next.deploy.status) {
 			case 'succeeded':
 				return { status: `Deploy #${n} succeeded. The new version is live.` };
 			case 'failed': {
 				const interrupted = next.deploy.reason_code === 'interrupted';
-				const why = next.deploy.reason ? ` ${next.deploy.reason}.`.replace(/\.\.$/, '.') : '';
-				return { alert: `Deploy #${n} ${interrupted ? 'was interrupted' : 'failed'}.${why} Your app: ${appSafetyText(next.deploy, previous).text}` };
+				const head = `Deploy #${n} ${interrupted ? 'was interrupted' : 'failed'}`;
+				const why = next.deploy.reason ? `: ${sentence(next.deploy.reason)}` : '.';
+				return { alert: `${head}${why} ${app.sentence}` };
 			}
 			case 'cancelled':
-				return { status: `Deploy #${n} was cancelled.` };
-			case 'superseded':
-				return { status: `Deploy #${n} was replaced by ${next.deploy.superseded_by ? `#${next.deploy.superseded_by}` : 'a newer deploy'} before it ran.` };
+				// A deploy that left the app not safe is a failure the user must hear at once.
+				return next.deploy.app_safe === 'no' ? { alert: `Deploy #${n} was cancelled. ${app.sentence}` } : { status: `Deploy #${n} was cancelled.` };
+			case 'superseded': {
+				const text = `Deploy #${n}: ${supersededText(next).replace(/^S/, 's').replace(/^Replaced/, 'replaced')}`;
+				return next.deploy.app_safe === 'no' ? { alert: `${text} ${app.sentence}` } : { status: text };
+			}
 			default:
 				return {};
 		}
@@ -443,12 +496,13 @@ export function announcementFor(prev: DeployGet | undefined, next: DeployGet, pr
 	if (a === b) return {};
 	const stage = currentStage(next);
 	if (!stage) return {};
+	const noun = stageNoun(stage);
 	const retry = next.stages.find((s) => s.stage === stage && isRetrying(s));
 	if (retry) {
 		const m = /\(attempt (\d+) of (\d+)\)/.exec(retry.detail ?? '');
-		return { status: `${stageLabel(stage)}: waiting to retry${m ? ` (attempt ${m[1]} of ${m[2]})` : ''}.` };
+		return { status: `Deploy #${n}: ${noun} did not succeed. Waiting to retry${m ? `, attempt ${m[1]} of ${m[2]}` : ''}.` };
 	}
-	return { status: `Now: ${stageLabel(stage).toLowerCase()}.` };
+	return { status: `Deploy #${n}: ${noun} started.` };
 }
 
 /** Changes only when the deploy moves to another stage, or to another attempt of one: never on a progress tick. */
