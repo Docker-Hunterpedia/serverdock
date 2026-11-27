@@ -256,7 +256,7 @@
 				<dd data-testid="app-safety"><span aria-hidden="true">{safety.symbol}</span> {safety.text}</dd>
 				<dt>New container</dt>
 				<dd data-testid="new-container">{newContainerText(watch.data)}</dd>
-				{#if d.status === 'failed' || d.reason}
+				{#if d.status === 'failed' || (d.reason && d.status !== 'cancelled')}
 					<dt>Reason</dt>
 					<dd data-testid="deploy-reason">{d.reason || 'No reason was recorded.'}</dd>
 				{:else if d.status === 'superseded'}
