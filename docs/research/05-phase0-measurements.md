@@ -130,11 +130,11 @@ Scenarios 5 to 9 run locally, are not part of the CI bench job, and run the serv
 
 ### Restart outage (QM3a-9)
 
-Measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms except the gap stages at about 2.4 s with a 2 s grace; a Docker daemon restart 12.1 s in CI; commit `e76aa77`, with one or two services). The 100-service outage is in the reload table below (PENDING).
+Measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms except the gap stages at about 2.4 s with a 2 s grace; a Docker daemon restart 12.1 s in CI; commit `e76aa77`, with one or two services). For 100 services, the boot cost before the first app is routed is in the reload table below (about 95 ms for the list, 100 inspects and the load in the test rig).
 
 ### Remaining reload cases with 100 routes (plan 0004 Revision 11, step 15)
 
-A switch, revert, restart, rollback and the maintenance page never reload the proxy (zero-drop tests). The cases below still do. All cells are PENDING until the final reload measurement on `d5f0327` is run.
+A switch, revert, restart, rollback and the maintenance page never reload the proxy (zero-drop tests). The cases below still do. Measured on commit `6ada1ea` (the `d5f0327` fix plus comments), `SD_TEST_RELOAD_N=5`, in the cloud container, 2026-11-27; the test passed (0 requests failed after one retry in every case). Drops are per **load attempt** (successful or failed); a case with no successful load still counts its failed loads. Before `d5f0327`, the 2-taken boot case cost about 97 successful and 105 failed loads per operation (0.45 s, about 0.5 s of CPU) and 5 to 6 panel requests failed even after one retry.
 
 **Caveats to print with the numbers:**
 - One real app container is the upstream of all 100 routes; the other 99 services are rows and fixtures.
@@ -147,30 +147,30 @@ Columns (every row): Caddy loads per operation (successful / failed) · drops pe
 
 | Case | Loads per op (ok / failed) | Drops per load: panel keep-alive / new | Drops per load: app keep-alive / new | Go keep-alive retries | Failed after 1 retry | Reload ms mean / max | CPU per reload | VmHWM delta (MB) |
 |---|---|---|---|---|---|---|---|---|
-| No operation (load generator baseline) | PENDING | PENDING | PENDING | PENDING | PENDING | n/a | PENDING | PENDING |
-| One new port, taken (the fast path) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| First sync at boot with 1 taken port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| First sync at boot with 2 taken ports (k + 1 = 3 loads; was about 2N + 3 before `d5f0327`) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Try again, port still taken | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Try again, port freed | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Add a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Change a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Clear a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Delete an exposed service | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| First sync at boot (all 100 routes) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| No operation (load generator baseline) | 0.00 / 0.00 | 0 / 0 (no load; counts over 5 x 250 ms) | 0 / 0 | 0 | 0 | n/a (250 ms idle window) | 0.00 ms net per op | 0.2 (max 0.5) |
+| One new port, taken (the fast path) | 0.00 / 1.00 | 0.00 / 0.20 | 0.00 / 0.00 | 0 | 0 | 5.8 / 7.5 | 5.20 ms net per op | 0.3 (max 0.7) |
+| First sync at boot with 1 taken port | 1.00 / 1.00 | 0.00 / 0.25 | 0.00 / 0.00 (no app load at boot) | 0 | 0 | 8.6 / 10.1 | 12.21 ms net per op | 0.3 (max 0.4) |
+| First sync at boot with 2 taken ports (k + 1 = 3 loads; was about 2N + 3 before `d5f0327`) | 1.00 / 2.00 | 0.00 / 0.17 | 0.00 / 0.00 (no app load at boot) | 0 | 0 | 10.9 / 11.9 | 15.04 ms net per op | 0.6 (max 0.8) |
+| Try again, port still taken | 0.00 / 1.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0 | 0 | 5.5 / 8.0 | 3.99 ms net per op | 0.5 (max 0.7) |
+| Try again, port freed | 1.00 / 0.00 | 0.00 / 0.20 | 0.40 / 0.20 | 1 | 0 | 6.3 / 7.6 | 4.87 ms net per op | 0.3 (max 0.7) |
+| Add a public port | 1.00 / 0.00 | 0.00 / 0.80 | 0.20 / 0.00 | 5 | 0 | 6.0 / 8.0 | 5.09 ms net per op | 0.2 (max 0.7) |
+| Change a public port | 1.00 / 0.00 | 0.00 / 0.20 | 0.60 / 0.00 | 0 | 0 | 9.9 / 19.0 | 3.76 ms net per op | 0.5 (max 1.1) |
+| Clear a public port | 1.00 / 0.00 | 0.20 / 0.20 | 0.80 / 0.00 | 0 | 0 | 7.2 / 12.2 | 5.74 ms net per op | 0.6 (max 0.8) |
+| Delete an exposed service | 1.00 / 0.00 | 0.20 / 0.60 | 0.20 / 0.20 | 2 | 0 | 7.3 / 11.1 | 6.73 ms net per op | 0.6 (max 1.1) |
+| First sync at boot (all 100 routes) | 1.00 / 0.00 | 0.00 / 0.33 | 0.00 / 0.00 (no app load at boot) | 0 | 0 | 6.5 / 8.3 | 10.34 ms net per op | 0.6 (max 1.3) |
 
-First sync at boot, extra figures (PENDING): time for the list and the 100 inspects before the first route apply: PENDING ms; the list and inspect of 100 containers plus the `Load`: PENDING ms. Idle RSS with 100 routes configured (steady state, no load): PENDING MB.
+First sync at boot, extra figures: time for the list and the 100 inspects before the first route apply: 88.6 ms (1-taken: 87.1 ms; 2-taken: 87.6 ms); the list and inspect of 100 containers plus the `Load`: about 95 ms. Idle RSS with 100 routes configured (steady state, no load, test process): +1.4 MB over no routes. The load generator itself used about 1.04 CPU-seconds per wall second, so the net CPU column subtracts that rate and is noisy.
 
 ### Zero-downtime recording (plan 0004 exit evidence)
 
-PENDING, to be filled from the regression runs on the release commit. One row per run; every row also records the commit, the date and whether the run used the built binary.
+From the regression runs on commit `d5f0327`, 2026-11-27, in the cloud container (`-race -tags integration`, the real embedded Caddy and a real app container, load on the deploying app, a second app and the panel, GET and POST): `TestBlueGreenSwitchWithZeroNon2xx`, `TestUnhealthyCandidateKeepsOldServingWithZeroNon2xx`, `TestIntegrationStopFirstGapUnderLoad` and `TestIntegrationFailedStopFirstRestartsOldUnderLoad`, 3 runs each. Ranges are over the 3 runs. These run in the integration test rig, not through the built binary; the kill -9 suite exercises the built binary.
 
 | Run | Strategy | Load (requests, keep-alive / new connection, GET and POST) | Non-2xx (and which) | Drops | Go retries | Caddy loads during the deploy | Commit recorded (stage, time) | Result |
 |---|---|---|---|---|---|---|---|---|
-| Blue-green, healthy candidate | blue-green | PENDING | PENDING (expect 0) | PENDING | PENDING | PENDING (expect 0) | PENDING | PENDING |
-| Blue-green, unhealthy candidate (old version keeps serving) | blue-green | PENDING | PENDING (expect 0) | PENDING | PENDING | PENDING (expect 0) | none (expected) | PENDING |
-| Stop-first, healthy | stop-first | PENDING | PENDING (only the maintenance 503 with `Retry-After`) | PENDING | PENDING | PENDING (expect 0) | PENDING | PENDING |
-| Stop-first, failing (old version started again) | stop-first | PENDING | PENDING (only the maintenance 503) | PENDING | PENDING | PENDING (expect 0) | none (expected) | PENDING |
+| Blue-green, healthy candidate | blue-green | 5,043–5,184 keep-alive / 3,214–3,354 new connection (3 runs) | 0 | 0 | 0 | 0 (1 `proxy_apply`, a table swap) | committed; the new container answered after the switch (old x188–196, new x1,915–1,995) | pass, 3 of 3 |
+| Blue-green, unhealthy candidate (old version keeps serving) | blue-green | 871–913 keep-alive / 852–898 new connection (3 runs) | 0 | 0 | 0 | 0 (no `proxy_apply`) | none (expected) | pass, 3 of 3 |
+| Stop-first, healthy | stop-first | 3 runs; deploy 2.10–2.20 s | only the maintenance 503 with `Retry-After`: 507–534 keep-alive, 463–489 new connection | 0 | 0 | 0 (2 `proxy_apply`, table swaps) | committed; the new container answered after the gap | pass, 3 of 3 |
+| Stop-first, failing (old version started again) | stop-first | 3 runs; deploy 7.47–7.71 s | only the maintenance 503: 2,114–2,207 keep-alive, 1,961–2,039 new connection | 0 | 0 | 0 (2 `proxy_apply`) | none (expected); the old version answered again | pass, 3 of 3 |
 
 ### Notes on scenarios 5 to 8
 
