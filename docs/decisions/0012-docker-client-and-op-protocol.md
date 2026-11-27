@@ -1,6 +1,6 @@
 # 0012 — Docker client and agent op protocol v1
 
-**Status:** accepted 2026-11-27, after `security` approval in step 15 of plan 0004 (`systems` reviewed every M3a step; revert this change if `security` does not approve) · **Date:** 2026-11-21 (proposed) · 2026-11-27 (accepted)
+**Status:** accepted 2026-11-27, after `security` approval in step 15 of plan 0004 (`systems` reviewed every M3a step) · **Date:** 2026-11-21 (proposed) · 2026-11-27 (accepted)
 
 **Context.** M3a is the first milestone that changes Docker state: it pulls images, creates, starts, stops and removes containers, follows Docker events, and reloads the embedded Caddy with app routes. Plan 0002 reserved an ADR for the Docker client and required a versioned op protocol between the control plane and the agent, with size caps and agent output treated as untrusted. M1 built a small typed client (`internal/agent/dockerapi`) with per-call deadlines and API negotiation (Engine 25+, API 1.44–1.52), and an op table in which the zero value is local-only (ADR 0009). Remote agents are logs-only until Phase 2 (Q1).
 
