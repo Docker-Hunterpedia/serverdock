@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test as base, type Page } from '@playwright/test';
-import { isDockerServer, signInWithRecoveryCode, startServer, type Admin, type TestServer } from './server';
+import { isDockerServer, signInWithRecoveryCode, startServer, totp, type Admin, type TestServer } from './server';
 
 export const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
@@ -86,3 +86,43 @@ export async function signIn(page: Page, server: TestServer, admin: Admin, n = 0
  * internal/auth/jobactor.go). Call this after firstRun() in any test that queues a job.
  */
 export const letTheAccountAge = () => new Promise((r) => setTimeout(r, 1500));
+
+/** Makes the next step-up-protected action ask for a fresh code (the 5-minute window ends now). */
+export const expireStepUp = (server: TestServer) => server.sql('UPDATE sessions SET mfa_fresh_until = 1');
+
+/** The first code a step-up dialog accepts after the sign-in (one step ahead of any code already used). */
+export const nextCode = (admin: Admin) => totp(admin.secret, Date.now() + 30_000);
+
+/**
+ * Calls an action as the signed-in page (cookies, CSRF and Origin like the SPA). For the
+ * setup of tests that deploy for real: the page then shows what the API made.
+ */
+export async function callAction<T = unknown>(page: Page, server: TestServer, name: string, input: object = {}, confirm?: string): Promise<T> {
+	const session = await page.request.get(`${server.baseURL}/api/v1/auth/session`);
+	const { csrf } = (await session.json()) as { csrf: string };
+	const res = await page.request.post(`${server.baseURL}/api/v1/actions/${name}`, {
+		data: input,
+		headers: { 'X-SD-CSRF': csrf, Origin: server.baseURL, ...(confirm ? { 'SD-Confirm': confirm } : {}) }
+	});
+	if (!res.ok()) throw new Error(`${name} ${res.status()}: ${await res.text()}`);
+	return ((await res.json()) as { data: T }).data;
+}
+
+/** Waits until a deploy of a real service reached the status (it fails fast, with the reason, on a failed deploy). */
+export async function waitForDeploy(server: TestServer, ref: string, number: number, status = 'succeeded', timeout = 180_000) {
+	const [project, name] = ref.split('/');
+	await expect
+		.poll(
+			() => {
+				const r = server.query<{ status: string; reason: string | null }>(
+					`SELECT d.status, d.reason FROM deploys d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.name = ? AND s.name = ? AND d.number = ?`,
+					project,
+					name,
+					number
+				)[0];
+				return r ? (r.status === 'failed' && status !== 'failed' ? `failed: ${r.reason}` : r.status) : 'no such deploy';
+			},
+			{ timeout, message: `deploy #${number} of ${ref}` }
+		)
+		.toBe(status);
+}

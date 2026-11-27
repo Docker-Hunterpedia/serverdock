@@ -29,6 +29,14 @@ export type SeedDeploy = {
 	finishedAt?: string;
 	/** make this the service's live deploy (it also gets committed_at) */
 	live?: boolean;
+	/** committed once and not live now ("Replaced": a rollback target); `live` implies it */
+	wasLive?: boolean;
+	/** the stage the deploy got to */
+	stage?: string;
+	/** a superseded deploy: the NUMBER of the deploy that replaced it (same service) */
+	supersededBy?: number;
+	/** user (default), token, mcp, webhook or system */
+	actorKind?: string;
 };
 
 export type SeedService = {
@@ -68,18 +76,20 @@ export function seedService(server: TestServer, s: SeedService): number {
 		const created = d.createdAt ?? AT;
 		const finished = d.finishedAt ?? (status === 'queued' || status === 'running' ? null : created);
 		server.sql(
-			`INSERT INTO deploys(service_id, number, kind, snapshot_json, ip, status, reason_code, reason, app_safe, committed_at, actor_kind, actor_id, created_at, finished_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', '1', ?, ?)`,
+			`INSERT INTO deploys(service_id, number, kind, snapshot_json, ip, status, stage, reason_code, reason, app_safe, committed_at, actor_kind, actor_id, created_at, finished_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1', ?, ?)`,
 			svc.id,
 			d.number,
 			d.kind ?? 'deploy',
 			JSON.stringify({ image_ref: d.image ?? image }),
 			d.ip ?? (d.live ? `10.250.0.${1 + d.number}` : null),
 			status,
+			d.stage ?? null,
 			d.reasonCode ?? null,
 			d.reason ?? null,
 			d.appSafe ?? null,
-			d.live ? created : null,
+			d.live || d.wasLive ? created : null,
+			d.actorKind ?? 'user',
 			created,
 			finished
 		);
@@ -88,7 +98,41 @@ export function seedService(server: TestServer, s: SeedService): number {
 			server.sql(`UPDATE services SET active_deploy_id = ? WHERE id = ?`, row.id, svc.id);
 		}
 	}
+	// "Superseded by #N" points at a deploy row, so it is set once every row exists.
+	for (const d of s.deploys ?? []) {
+		if (!d.supersededBy) continue;
+		const [by] = server.query<{ id: number }>(`SELECT id FROM deploys WHERE service_id = ? AND number = ?`, svc.id, d.supersededBy);
+		server.sql(`UPDATE deploys SET superseded_by = ? WHERE service_id = ? AND number = ?`, by.id, svc.id, d.number);
+	}
 	return svc.id;
+}
+
+/**
+ * A service whose history shows every result kind (plan 0004 step 13): #1 Replaced,
+ * #2 Failed app safe, #3 Failed app not safe, #4 Interrupted, #5 Cancelled, #6 Superseded
+ * by #7, #7 Replaced (a redeploy), #8 Live, #9 Queued. Rollback is offered on #1 and #7.
+ * Without Docker the state is "unknown"; with a Docker server and no container, "missing".
+ */
+export function seedHistory(server: TestServer, project = 'shop', name = 'api') {
+	const t = (n: number) => `2026-11-${String(10 + n).padStart(2, '0')}T09:00:00.000Z`;
+	return seedService(server, {
+		project,
+		name,
+		image: 'registry.example.com/shop/api:2.4.1',
+		containerPort: 8080,
+		publicPort: 8081,
+		deploys: [
+			{ number: 1, wasLive: true, image: 'registry.example.com/shop/api:2.3.0', createdAt: t(1), stage: 'done' },
+			{ number: 2, status: 'failed', reasonCode: 'health_timeout', reason: 'the new version did not become healthy', appSafe: 'yes', stage: 'health', createdAt: t(2) },
+			{ number: 3, status: 'failed', reasonCode: 'start_failed', reason: 'the old version did not come back', appSafe: 'no', stage: 'maintenance', createdAt: t(3) },
+			{ number: 4, status: 'failed', reasonCode: 'interrupted', reason: 'interrupted by restart', appSafe: 'unknown', stage: 'start', createdAt: t(4) },
+			{ number: 5, status: 'cancelled', reasonCode: 'cancelled', stage: 'pull', createdAt: t(5) },
+			{ number: 6, status: 'superseded', reasonCode: 'superseded', stage: 'pull', createdAt: t(6), supersededBy: 7 },
+			{ number: 7, kind: 'redeploy', wasLive: true, stage: 'done', createdAt: t(7), actorKind: 'token' },
+			{ number: 8, live: true, stage: 'done', createdAt: t(8), actorKind: 'system' },
+			{ number: 9, status: 'queued', createdAt: t(9) }
+		]
+	});
 }
 
 /** The three-services-in-two-projects set of the plan's "Services with 3 services" screen state. */
@@ -143,6 +187,42 @@ export function serviceFixture(over: Record<string, unknown> & { project: string
 		updated_at: AT,
 		...over
 	};
+}
+
+/** The deploys.list item with the given fields merged over a succeeded deploy. */
+export function deployFixture(over: Record<string, unknown> & { number: number }) {
+	return {
+		kind: 'deploy',
+		status: 'succeeded',
+		stage: 'done',
+		image_ref: 'nginx:1.27',
+		active: false,
+		was_live: false,
+		log_kept: false,
+		triggered_by: 'user',
+		created_at: AT,
+		finished_at: AT,
+		...over
+	};
+}
+
+/** Fakes services.get (and, when given, deploys.list) for the detail page: route error, missing container, versions_kept and so on. Register before navigating. */
+export async function mockServiceDetail(page: Page, service: ReturnType<typeof serviceFixture>, deploys: ReturnType<typeof deployFixture>[] = []) {
+	await mockAction(page, 'services.get', service);
+	await mockAction(page, 'deploys.list', { service: service.service, deploys });
+}
+
+/**
+ * Answers an action with an error envelope (the REST shape): for the refusals a
+ * test cannot provoke for real, such as versions_kept or "confirm again". `times`
+ * limits how many calls get the error (then the call goes on to the server).
+ */
+export async function mockActionError(page: Page, name: string, status: number, code: string, message: string, times = Infinity) {
+	let n = 0;
+	await page.route(`**/api/v1/actions/${name}`, (route) => {
+		if (n++ >= times) return route.continue();
+		return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error: { code, message } }) });
+	});
 }
 
 export const mockServices = (page: Page, services: ReturnType<typeof serviceFixture>[]) => mockAction(page, 'services.list', { services });
