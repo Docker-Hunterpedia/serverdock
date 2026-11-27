@@ -94,44 +94,52 @@ The outage is about 60–100 ms (the server's own start and its first route appl
 
 ## M3a release measurements (step 15)
 
-Status: **PENDING.** Plan 0004 step 15 asks for the numbers below. None of them is recorded yet: every cell that says PENDING is to be filled from the bench run for the M3a pull request (the maintainer fills them from the run in progress), with the commit, the date and the run link. **Nothing in this section is a measurement until its cell holds a number.** Scenarios 5 to 8 and the reload cases are described in `bench/run.sh` and `internal/deploy/reload_cases_integration_test.go` (they are being reworked; the cells follow the final output); results go to `bench/results/` (see [the placeholder](../../bench/results/2026-11-27-m3a-release-PENDING.md)).
+Status: **local runs recorded; the CI gate number is PENDING.** The numbers below are from local runs in a cloud container (amd64, `--memory 1g --cpus 1` containers, 3 runs each, median of the per-run medians), **not the CI gate and not a 1 GB VPS**. The CI "S2 live watcher" value is the release gate and is recorded when the bench job runs on the ready pull request (it does not run on a draft). Cells that say PENDING have no number yet. Scenarios are described in `bench/run.sh`; the result file is [bench/results/2026-11-27-m3a-release.md](../../bench/results/2026-11-27-m3a-release.md).
 
-Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire 50 MB. VmRSS is the median of the per-run medians.
+Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire 50 MB. VmHWM is a peak, is reported and is not gated.
 
-**Run:** commit PENDING · date PENDING · CI run PENDING · runner PENDING.
+**Run:** bench images built from commit `92186ad` (S2, S4) and `197c847` (S5 to S9); the bind-isolation fix `d5f0327` came after these images were built, so these numbers do not include it. Date 2026-11-27. Temporary vendor and cgroup shims were used for the local runs (never committed).
 
 ### Footprint
 
 | Measurement | Scenario | VmRSS (MB) | VmHWM (MB) | Idle CPU | Gate | Result |
 |---|---|---|---|---|---|---|
-| Full S4 (remote node: agent + Caddy) | 4 | PENDING | PENDING | PENDING | tripwire 50 MB | PENDING |
-| **S2 live watcher (CI, the release gate)** | 2 | **PENDING (release gate: the CI bench job does not run on a draft PR, so this number comes only after the PR is marked ready)** | PENDING | PENDING | tripwire 80 MB; planning figure ≤ 56 MB | PENDING |
-| S2 no Docker (report only) | 2 with `S2_DOCKER=0` | PENDING | PENDING | PENDING | none | PENDING |
-| S2 with one exposed service (gated against the tripwire) | 5 | PENDING | PENDING | PENDING | tripwire 80 MB | PENDING |
-| S2 with 10 exposed idle services (report only) | 6 | PENDING | PENDING | PENDING (the one app ticker) | none (reported against 80 MB) | PENDING |
-| RSS 60 s after a deploy finishes | 7 | idle baseline PENDING · peak PENDING · 60 s after PENDING | PENDING | | back to the baseline | PENDING |
-| Peak RSS during two concurrent deploys | 8 | peak PENDING | PENDING | | none | PENDING |
-| Step 13 build versus the final build, same session (settles whether S4's VmHWM of 49.7 to 50.3 MB is noise; plan 0004 Revision 20) | 4 | step 13: PENDING · final: PENDING | PENDING / PENDING | | none (nothing gates VmHWM) | PENDING |
+| Full S4 (remote node: agent + Caddy) | 4 | **47.3** median (47.0, 47.3, 47.8) | max 50.2 | 0.01% | tripwire 50 MB, ceiling 100 | under both; 1.8 MB over the 45.5 MB planning figure (file-backed pages of the larger binary; no agent-mode code added) |
+| Step 13 build, same session (A/B) | 4 | 48.0 median (48.0, 48.0, 47.7) | 50.0 | | none | the step 13 build (50.0) and the final build (50.2) differ by less than the run-to-run spread: noise |
+| **S2 live watcher (CI, the release gate)** | 2 | **PENDING (release gate: recorded when the CI bench job runs on the ready PR)** | PENDING | PENDING | tripwire 80 MB; planning figure 56 MB | PENDING |
+| S2 live watcher, local cloud container (not the gate) | 2 | 54.7 median (53.3, 55.5, 54.7) | 57.6 | 0.01% | tripwire 80 MB | under |
+| S2 no Docker (report only) | 2 with `S2_DOCKER=0` | 53.7 | 57.3 | | none | reported |
+| S9: same setup, 0 services (the baseline of S5 and S6) | 9 | 54.0 | about 71 | | none | reported |
+| S2 with one exposed service (gated) | 5 | 56.7 (+2.7 over S9) | about 71 | 0.01% | tripwire 80 MB | **pass** |
+| S2 with 10 exposed idle services (report only) | 6 | 57.5 (+3.5 over S9) | about 71 | 0.01% | none (reported against 80 MB) | under; ten services cost about 0.8 MB more than one |
+| One redeploy | 7 | baseline 56.0 · peak 56.3 (+0.3) · +60 s 56.3 | | | budget 5 MB | within |
+| Two concurrent redeploys | 8 | baseline 55.6 · peak 57.3 (+1.7) · +60 s 57.3 | | | budget 5 MB | within |
+
+Reading S5 to S9: VmHWM is about 71 MB in S5, S6 and S9 alike, so it comes from the shared setup (sign-in, argon2, the API session), not from the services. All are under the 80 MB tripwire (VmHWM margin about 9 MB). **S5 minus S2 is not the cost of one service**; minus S9 is.
+
+Reading S7 and S8: at +60 s the value equals the peak, so nothing grew after it. Baselines were unstable (3 to 4 MB of settling) in 2 of 3 runs, and in S8 2 of 3 runs were not within 1 MB of the baseline at +60 s. We read this as baseline settling, not a leak, because the post-redeploy level matches the S6 steady state. **"Back to baseline within 60 s" is not demonstrated at 1 MB resolution for S8.** Redeploys used cached layers, so pull-time buffers are not measured.
+
+Scenarios 5 to 9 run locally, are not part of the CI bench job, and run the server with host networking and `--allow-loopback-registry`, so they are not the shipped deployment shape.
 
 ### Size
 
 | Measurement | Value | Gate | Result |
 |---|---|---|---|
-| Binary, gzip -9 (amd64) | PENDING | 40 MB | PENDING |
-| SPA first-load JS (gzip) | PENDING | 250 KB | PENDING |
+| Binary, gzip -9 (amd64) | 20.0 MB (54.9 MB raw) | 40 MB | pass |
+| SPA first-load JS (gzip) | 41.5 KB first load; 115.0 KB total | 250 KB | pass |
 
 ### Restart outage (QM3a-9)
 
-Already measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms at the other stages, 0.23 to 0.35 s at `start:before` (the old version started again) and about 2.4 s inside the gap with a 2 s grace; a Docker daemon restart 12.1 s in CI, on commit `e76aa77`). To be re-run on the release commit if the maintainer wants the final figure: PENDING.
+Measured: see [the section above](#m3a-outage-while-serverdock-is-killed-and-restarted-qm3a-9) (blue-green 59 to 99 ms at every stage; stop-first 58 to 118 ms except the gap stages at about 2.4 s with a 2 s grace; a Docker daemon restart 12.1 s in CI; commit `e76aa77`, with one or two services). The 100-service outage is in the reload table below (PENDING).
 
 ### Remaining reload cases with 100 routes (plan 0004 Revision 11, step 15)
 
-A switch, revert, restart, rollback and the maintenance page never reload the proxy (zero-drop tests). The cases below still do. The reload measurement test is being reworked by another agent, so **the exact columns follow its final output**; the structure below is what the reviews asked for. All cells are PENDING.
+A switch, revert, restart, rollback and the maintenance page never reload the proxy (zero-drop tests). The cases below still do. All cells are PENDING until the final reload measurement on `d5f0327` is run.
 
 **Caveats to print with the numbers:**
 - One real app container is the upstream of all 100 routes; the other 99 services are rows and fixtures.
 - Only 2 app routes carry load (the load generator's targets), plus the panel.
-- The first-sync-at-boot list is a fixture of 100 containers, but the inspects are real.
+- The first-sync-at-boot list is one real container with 100 real inspects; `loadServices` and the settle step are not run.
 - Memory is the **test process's** (Caddy, the route code, the store and the load generator together), not the server's. Only the **delta** across a case is a fair estimate; the absolute value is not comparable to the server's (the server also holds the API, auth, the hub, the SPA and the reconciler, so its own VmHWM can be higher).
 - Drops are read as "expected never to have been processed" until the measurements confirm it.
 
@@ -142,7 +150,7 @@ Columns (every row): Caddy loads per operation (successful / failed) · drops pe
 | No operation (load generator baseline) | PENDING | PENDING | PENDING | PENDING | PENDING | n/a | PENDING | PENDING |
 | One new port, taken (the fast path) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | First sync at boot with 1 taken port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| First sync at boot with 2 taken ports (worst case, about 2N + 3 loads) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| First sync at boot with 2 taken ports (k + 1 = 3 loads; was about 2N + 3 before `d5f0327`) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | Try again, port still taken | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | Try again, port freed | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | Add a public port | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
@@ -151,7 +159,7 @@ Columns (every row): Caddy loads per operation (successful / failed) · drops pe
 | Delete an exposed service | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | First sync at boot (all 100 routes) | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 
-First sync at boot, extra figures (PENDING): time for the list and the 100 inspects before the first route apply: PENDING ms; time from process start to the first 2xx on an app: PENDING ms. Idle RSS with 100 routes configured (steady state, no load): PENDING MB.
+First sync at boot, extra figures (PENDING): time for the list and the 100 inspects before the first route apply: PENDING ms; the list and inspect of 100 containers plus the `Load`: PENDING ms. Idle RSS with 100 routes configured (steady state, no load): PENDING MB.
 
 ### Zero-downtime recording (plan 0004 exit evidence)
 
