@@ -72,6 +72,8 @@ export default defineConfig({
 					...p,
 					testMatch: DOCKER_SPECS,
 					fullyParallel: false,
+					// Serial even in a local all-in-one run (Docker networks and containers appearing change the host's interfaces).
+					workers: 1,
 					// One after the other, and (unset SET) after every UI project.
 					dependencies: SET === 'all' ? ['desktop', 'phone-390', 'phone-320', 'zoom-200', 'dark', 'reduced-motion', 'forced-colors', 'webkit'].concat(i > 0 ? [all[i - 1].name] : []) : i > 0 ? [all[i - 1].name] : []
 				}))

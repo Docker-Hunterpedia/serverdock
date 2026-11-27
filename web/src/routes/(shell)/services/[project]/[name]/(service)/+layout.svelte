@@ -216,7 +216,7 @@
 		{:else if svc.needs_attention === 'previous_version_down'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A stop-first deploy failed and the previous version did not come back. Deploy again or roll back to a version that was live.</p></div>
 		{:else if svc.needs_attention === 'delete_confirm_again'}
-			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service needed a fresh confirmation and did not run. Nothing was deleted and the service was left as it was. Deploys and restarts that were queued, and a deploy that was running, were cancelled. Open Settings and use Delete again.</p></div>
+			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service needed a fresh confirmation and did not run. Nothing was deleted and the service was left as it was. Deploys and restarts that were queued were cancelled, and a deploy that was running was stopped or, if it had already switched, finished early. Open Settings and use Delete again.</p></div>
 		{:else if svc.needs_attention === 'delete_interrupted'}
 			<div class="banner" data-testid="needs-attention"><p><span aria-hidden="true">▲</span> A delete of this service did not finish. Open Settings and delete it again to finish it.</p></div>
 		{/if}

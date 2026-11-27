@@ -501,7 +501,7 @@
 
 	<section aria-labelledby="h-danger" class="block danger">
 		<h2 id="h-danger">Danger zone</h2>
-		{#if svc.needs_attention === 'delete_confirm_again'}<p><span aria-hidden="true">▲</span> A delete of this service was queued and did not run: it needed a fresh confirmation. Nothing was deleted. Deploys and restarts that were queued, and a deploy that was running, were cancelled. The service was left as it was.</p>{/if}
+		{#if svc.needs_attention === 'delete_confirm_again'}<p><span aria-hidden="true">▲</span> A delete of this service was queued and did not run: it needed a fresh confirmation. Nothing was deleted. Deploys and restarts that were queued were cancelled, and a deploy that was running was stopped or, if it had already switched, finished early. The service was left as it was.</p>{/if}
 		<p>Delete {ctx.ref}: stops and removes its containers and deletes its deploy history and logs. This cannot be undone.</p>
 		<Alerts error={dSummary} status={dStatus} bind:this={dAlerts} />
 		<div class="actions"><button type="button" class="danger-button" onclick={deleteService} aria-disabled={ctx.busy ? 'true' : undefined}>{deleteAgain ? 'Delete again' : 'Delete service'}</button></div>
