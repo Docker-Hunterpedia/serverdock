@@ -53,6 +53,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: npm audit
         run: npm audit --audit-level=high
+      - name: npm audit (deploy lockfile)
+        working-directory: site/deploy
+        run: npm audit --audit-level=high
       - name: astro check
         run: npm run check
       - name: unit tests (gates, page weight, local server)

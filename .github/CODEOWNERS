@@ -8,3 +8,9 @@
 /site/scripts/gates.mjs @Docker-Hunterpedia
 /site/src/docs.config.ts @Docker-Hunterpedia
 /site/deploy/ @Docker-Hunterpedia
+/site/budgets.json @Docker-Hunterpedia
+/site/scripts/page-weight.mjs @Docker-Hunterpedia
+/site/public/.well-known/ @Docker-Hunterpedia
+/site/package.json @Docker-Hunterpedia
+/site/package-lock.json @Docker-Hunterpedia
+/site/astro.config.mjs @Docker-Hunterpedia
