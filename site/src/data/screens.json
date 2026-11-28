@@ -1,11 +1,11 @@
 {
   "deploy-live": {
     "alt": "Deploy #7 of demo/api in ServerDock: Pull the image, Checks and Start the new version are done, Health check is running, and the four stages from Switch traffic on are waiting.",
-    "shows": "The live deploy page for deploy #7 of the demo service api, with the Health check stage running."
+    "shows": "The deploy page for deploy #7 of the demo service api, with the Health check stage running."
   },
   "services": {
-    "alt": "ServerDock's Services page for project demo: web is Running, api is Running with deploy #7 still running, and worker is Unknown.",
-    "shows": "The services list for project demo, with one service running, one deploying and one whose state is unknown."
+    "alt": "ServerDock's Services page for project demo: web is Running, api is Running with deploy #7 running, and worker is Unknown.",
+    "shows": "The services list for project demo: web and api are Running, api's deploy #7 is Running, and worker is Unknown."
   },
   "service-detail": {
     "alt": "The deploy history of demo/api: deploy #6 is Live, deploy #5 is Replaced and has a Roll back to #5 button, and deploy #4 is Failed with the app safe.",

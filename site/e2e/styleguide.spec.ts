@@ -117,6 +117,9 @@ test.describe('screenshot figures (Screen)', () => {
 
 	test('only the eager image loads on the first view at 320 px; lazy images wait', async ({ page }, info) => {
 		test.skip(info.project.name !== 'phone-320', '320 px only');
+		// The lazy figure is far below the first screen, so a browser that honours loading="lazy" never requests it
+		// without scrolling. Browsers may fetch lazy images near the viewport, so the request count alone could pass or
+		// fail by layout: assert the markup (the lasting guarantee) and then the count, and keep the lazy figure far down.
 		const seen: string[] = [];
 		page.on('request', (r) => {
 			if (r.url().includes('/styleguide/screens/')) seen.push(new URL(r.url()).pathname);
@@ -124,9 +127,14 @@ test.describe('screenshot figures (Screen)', () => {
 		await page.goto('/styleguide/');
 		await page.waitForLoadState('load');
 		await page.waitForTimeout(300);
+		const imgs = page.locator('figure.screen img');
+		expect(await imgs.count()).toBe(2);
+		expect(await imgs.nth(0).getAttribute('loading'), 'the eager image has no loading attribute').toBeNull();
+		expect(await imgs.nth(0).getAttribute('fetchpriority')).toBe('high');
+		expect(await imgs.nth(1).getAttribute('loading')).toBe('lazy');
+		const below = await imgs.nth(1).evaluate((el) => el.getBoundingClientRect().top - window.innerHeight);
+		expect(below, 'the lazy figure is more than two screens below the first view').toBeGreaterThan(1136);
 		expect(seen, 'screenshot requests before any scrolling').toHaveLength(1);
-		expect(await page.locator('figure.screen').first().locator('img').getAttribute('fetchpriority')).toBe('high');
-		expect(await page.locator('figure.screen--phone img').getAttribute('loading')).toBe('lazy');
 		expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 	});
 });
