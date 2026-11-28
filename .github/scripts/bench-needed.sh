@@ -30,14 +30,18 @@ has_commit() {
 }
 
 # docs_only succeeds only when EVERY path changed between $1 and $2 is under
-# docs/, ends in .md, or is .github/CODEOWNERS, and no .go file changed anywhere
-# (docs/ may hold Go code that `go vet ./...` compiles). It uses git pathspecs
+# docs/, ends in .md, is .github/CODEOWNERS, or is under the repo-root site/
+# (the public website, plan 0014: not embedded, not benched), and no .go file
+# changed anywhere (docs/ may hold Go code that `go vet ./...` compiles; the
+# .go check also covers site/). `site/` is anchored at the repo root, so `sitex/`
+# and `web/site/` still count. .github/workflows/site.yml is NOT excluded. It
+# uses git pathspecs
 # and exit codes, never parsed path text, so quoting, newlines and non-ASCII
 # names cannot hide a file. Any other result, including a git error, is "not
 # docs-only", i.e. bench.
 docs_only() {
 	git diff --quiet "$1" "$2" -- ':(glob)**/*.go' || return 1
-	git diff --quiet "$1" "$2" -- ':(exclude)docs' ':(exclude,glob)**/*.md' ':(exclude).github/CODEOWNERS' || return 1
+	git diff --quiet "$1" "$2" -- ':(exclude)docs' ':(exclude,glob)**/*.md' ':(exclude).github/CODEOWNERS' ':(exclude)site/' || return 1
 }
 
 # full_diff decides from the whole PR (or push) diff against the base.
