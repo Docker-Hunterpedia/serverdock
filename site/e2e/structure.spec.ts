@@ -9,7 +9,7 @@ const TARGETS = [
 for (const path of sitePaths()) {
 	test.describe(path, () => {
 		test('skip link is the first tab stop and moves focus to main', async ({ page, browserName }) => {
-			test.skip(browserName === 'webkit', 'WebKit does not Tab to links by default (Safari needs Option+Tab)');
+			test.skip(browserName === 'webkit' && process.platform === 'darwin', 'WebKit on macOS does not Tab to links by default (Safari needs Option+Tab)');
 			await page.goto(path);
 			await page.keyboard.press('Tab');
 			const first = await page.evaluate(() => (document.activeElement as HTMLElement).className);
@@ -20,7 +20,7 @@ for (const path of sitePaths()) {
 		});
 
 		test('focus is visible on every link and summary', async ({ page, browserName }) => {
-			test.skip(browserName === 'webkit', 'WebKit does not Tab to links by default');
+			test.skip(browserName === 'webkit' && process.platform === 'darwin', 'WebKit on macOS does not Tab to links by default');
 			await page.goto(path);
 			const n = await page.locator('a:visible, summary:visible').count();
 			for (let i = 0; i < n + 1; i++) {

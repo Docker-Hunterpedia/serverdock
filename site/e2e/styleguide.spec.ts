@@ -33,7 +33,6 @@ test.describe('styleguide components', () => {
 		await expect(page.locator(`#${label}`)).toHaveText('Example figures');
 		expect(await page.locator('.table-region table').evaluate((t) => getComputedStyle(t).display)).toBe('table');
 		const narrow = (viewport?.width ?? 1280) < 600;
-		await expect(page.locator('.scroll-cue')).toBeVisible({ visible: narrow } as never).catch(() => undefined);
 		expect(await page.locator('.scroll-cue').isVisible()).toBe(narrow);
 	});
 
@@ -54,6 +53,8 @@ test.describe('styleguide components', () => {
 		expect(await page.evaluate(() => document.querySelector('.docs-nav')!.compareDocumentPosition(document.querySelector('main')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
 	});
 
+	// Computed styles only: this cannot see how Windows high contrast or Firefox forced colours
+	// actually render. Checklist rows 9 and 10 stay manual.
 	test('forced colours: the meter and the stage dots use system colours and borders stay', async ({ page }, info) => {
 		test.skip(info.project.name !== 'forced-colors', 'forced-colors project only');
 		await page.goto('/styleguide/');

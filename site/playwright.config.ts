@@ -13,6 +13,7 @@ export default defineConfig({
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
 	retries: 0, // a retry would hide a flaky accessibility check
+	// If the 10-minute job ceiling is approached, workers is the lever (CI uses 2; the job has 2 vCPUs).
 	workers: process.env.CI ? 2 : undefined,
 	reporter: process.env.CI ? [['list'], ['github']] : 'list',
 	use: { baseURL: BASE_URL, trace: 'retain-on-failure' },
