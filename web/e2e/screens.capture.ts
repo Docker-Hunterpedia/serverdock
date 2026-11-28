@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { hostname, networkInterfaces, tmpdir, userInfo } from 'node:os';
-import { relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, hostname, networkInterfaces, tmpdir, userInfo } from 'node:os';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { components } from '../src/lib/api-types';
 import { expect, signIn, test } from './fixtures';
 import { mockAction, mockDeployGet, seedService } from './seed';
@@ -136,13 +137,62 @@ const LIVE_DEPLOY = {
 		created_at: iso(3),
 		started_at: iso(3)
 	},
-	stages: ['pull', 'check', 'start', 'health', 'switch', 'commit', 'drain', 'stop_old'].map((stage, i) => ({
+	stages: ['pull', 'check', 'start', 'health', 'switch', 'commit', 'drain', 'stop_old'].map((stage, i): Schemas['DeploysGetOutput']['stages'][number] => ({
 		stage,
 		state: i < 3 ? 'ok' : i === 3 ? 'running' : 'pending',
 		...(i < 4 ? { started_at: iso(3) } : {}),
 		...(i < 3 ? { finished_at: iso(2) } : {})
 	}))
 } satisfies Schemas['DeploysGetOutput'];
+
+// ---- the values the types cannot check -------------------------------------------------------------
+// The generated API types say `string` for these. The lists are copied from the product (internal/deploy/stages.go,
+// internal/deploy/rundeploy.go, the OpenAPI descriptions of services.get and deploys.get), and every answer above is
+// checked against them when the capture runs, so a mock cannot show a state the product never produces.
+export const ENUMS = {
+	stage: ['pull', 'check', 'maintenance', 'stop_old_first', 'start', 'health', 'switch', 'commit', 'drain', 'stop_old', 'done'],
+	stageState: ['pending', 'running', 'ok', 'failed', 'skipped'],
+	deployStatus: ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'superseded'],
+	deployKind: ['deploy', 'redeploy', 'rollback'],
+	strategy: ['blue_green', 'stop_first'],
+	appSafe: ['yes', 'no', 'unknown'],
+	triggeredBy: ['user', 'token', 'mcp', 'webhook', 'system'],
+	serviceState: ['not_deployed', 'running', 'restarting', 'exited', 'missing', 'unknown'],
+	healthKind: ['tcp', 'http', 'running']
+};
+type DeployLike = { status: string; kind: string; stage?: string; strategy?: string; app_safe?: string; triggered_by?: string };
+
+/** The enum values of one answer that do not exist in the product (empty when all are real). */
+export function badValues(a: { service?: string; deploy?: DeployLike; deploys?: DeployLike[]; stages?: { stage: string; state: string }[]; services?: { state: string; strategy: string; health: { kind: string }; last_deploy?: DeployLike | null }[]; state?: string; strategy?: string; health?: { kind: string }; last_deploy?: DeployLike | null }): string[] {
+	const bad: string[] = [];
+	const one = (what: string, value: string | undefined, allowed: string[]) => {
+		if (value !== undefined && !allowed.includes(value)) bad.push(`${what}: "${value}"`);
+	};
+	const deploy = (d: DeployLike | null | undefined, at: string) => {
+		if (!d) return;
+		one(`${at} status`, d.status, ENUMS.deployStatus);
+		one(`${at} kind`, d.kind, ENUMS.deployKind);
+		one(`${at} stage`, d.stage, ENUMS.stage);
+		one(`${at} strategy`, d.strategy, ENUMS.strategy);
+		one(`${at} app_safe`, d.app_safe, ENUMS.appSafe);
+		one(`${at} triggered_by`, d.triggered_by, ENUMS.triggeredBy);
+	};
+	const svc = (s: { state?: string; strategy?: string; health?: { kind: string }; last_deploy?: DeployLike | null }, at: string) => {
+		one(`${at} state`, s.state, ENUMS.serviceState);
+		one(`${at} strategy`, s.strategy, ENUMS.strategy);
+		one(`${at} health kind`, s.health?.kind, ENUMS.healthKind);
+		deploy(s.last_deploy, `${at} last_deploy`);
+	};
+	svc(a, 'service');
+	for (const s of a.services ?? []) svc(s, `service ${(s as { name?: string }).name ?? ''}`);
+	deploy(a.deploy, 'deploy');
+	for (const d of a.deploys ?? []) deploy(d, `deploy #${(d as { number?: number }).number ?? ''}`);
+	for (const st of a.stages ?? []) {
+		one('stage name', st.stage, ENUMS.stage);
+		one('stage state', st.state, ENUMS.stageState);
+	}
+	return bad;
+}
 
 // ---- leak check ---------------------------------------------------------------------------
 
@@ -211,6 +261,7 @@ async function assertNoLeaks(page: Page, secrets: Secrets, what: string, clip: {
 		return out;
 	}, clip);
 	const found = findLeaks(texts.join('\n'), secrets);
+	// SCREENS_DEBUG prints the scanned page text on a hit. Local use only: never set it in CI (the text may hold a runtime value).
 	if (found.length && process.env.SCREENS_DEBUG) console.log(JSON.stringify(texts));
 	expect(found, `the capture of ${what} would show: ${found.join(', ')}`).toEqual([]);
 	expect(await page.locator(FORBIDDEN_ELEMENTS).count(), `${what} has a TOTP, QR or recovery-code element`).toBe(0);
@@ -291,13 +342,52 @@ async function encodeAll(page: Page, png: Buffer, clip: { width: number; height:
 
 // ---- output -----------------------------------------------------------------------------------
 
-function outDir(): string {
-	const dir = process.env.SCREENS_OUT;
+/** The marker the capture writes into its own output directory: only a directory with it is emptied completely. */
+const MARKER = '.serverdock-screens';
+/** The committed screenshots, anchored to this file's location (not to the working directory). */
+const COMMITTED = fileURLToPath(new URL('../../site/public/screens', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+
+/** realpath of a path that may not exist yet: the realpath of its nearest existing ancestor plus the rest. */
+function realish(p: string): string {
+	const abs = resolve(p);
+	if (existsSync(abs)) return realpathSync(abs);
+	const parent = dirname(abs);
+	return parent === abs ? abs : join(realish(parent), basename(abs));
+}
+const inside = (child: string, parent: string) => child === parent || child.startsWith(parent + sep);
+
+/**
+ * Checks SCREENS_OUT and returns it. It must not be `/`, the home directory, the repository root or any ancestor of
+ * the working directory, nor site/public/screens (compared by realpath, anchored to this file).
+ */
+export function outDir(dir = process.env.SCREENS_OUT, cwd = process.cwd(), home = homedir()): string {
 	if (!dir) throw new Error('SCREENS_OUT must name a scratch directory (never site/public/screens: only the CI artifact is committed)');
-	const abs = resolve(dir);
-	const rel = relative(resolve('..', 'site', 'public', 'screens'), abs);
-	if (rel === '' || (!rel.startsWith('..') && !rel.startsWith(sep))) throw new Error('SCREENS_OUT must not be site/public/screens');
+	const abs = realish(dir);
+	if (inside(abs, realish(COMMITTED))) throw new Error('SCREENS_OUT must not be site/public/screens');
+	if (abs === resolve('/') || abs === realish(home) || abs === realish(REPO_ROOT) || inside(realish(cwd), abs)) {
+		throw new Error(`SCREENS_OUT must not be ${abs}: it is the filesystem root, the home directory, the repository or a parent of the working directory`);
+	}
 	return abs;
+}
+
+/**
+ * Prepares the output directory. A new or empty directory is used as is; a directory with the marker the capture
+ * wrote is emptied; any other directory may only hold *.webp files and entries.json (they are removed), else it throws.
+ */
+export function prepareOut(abs: string) {
+	if (existsSync(abs)) {
+		const names: string[] = readdirSync(abs);
+		if (names.includes(MARKER)) {
+			for (const n of names) rmSync(join(abs, n), { recursive: true, force: true });
+		} else if (names.length > 0) {
+			const foreign = names.filter((n) => !n.endsWith('.webp') && n !== 'entries.json');
+			if (foreign.length > 0) throw new Error(`${abs} is not empty and was not made by the capture (it holds ${foreign.slice(0, 3).join(', ')}): use a new directory`);
+			for (const n of names) rmSync(join(abs, n), { force: true });
+		}
+	}
+	mkdirSync(abs, { recursive: true });
+	writeFileSync(join(abs, MARKER), 'made by web/e2e/screens.capture.ts\n');
 }
 
 type Entry = {
@@ -312,8 +402,7 @@ let out = '';
 
 test.beforeAll(() => {
 	out = outDir();
-	rmSync(out, { recursive: true, force: true });
-	mkdirSync(out, { recursive: true });
+	prepareOut(out);
 });
 
 test.afterAll(() => {
@@ -339,6 +428,7 @@ async function open(page: Page, server: TestServer): Promise<Secrets> {
 
 async function capture(page: Page, server: TestServer, secrets: Secrets, view: View, prepare?: () => Promise<void>) {
 	expect(VIEWS.map((v) => v.id), 'the view is in the allowlist').toContain(view.id);
+	for (const answer of [SERVICES, HISTORY, LIVE_DEPLOY, service('api')]) expect(badValues(answer), 'a mocked answer has a value the product never produces').toEqual([]);
 	const main = page.locator('main');
 	await expect(main).toBeVisible();
 	if (prepare) await prepare();
@@ -512,10 +602,48 @@ test.describe('leak check', () => {
 		expect(out.readUInt32LE(4) + 8).toBe(out.length);
 		expect(out[20] & (0x20 | 0x08 | 0x04)).toBe(0);
 	});
-	test('the output directory refuses site/public/screens', () => {
-		const before = process.env.SCREENS_OUT;
-		process.env.SCREENS_OUT = resolve('..', 'site', 'public', 'screens');
-		expect(() => outDir()).toThrow(/must not be/);
-		process.env.SCREENS_OUT = before;
+	test('badValues accepts the demo answers and rejects a state, stage or status the product does not have', () => {
+		for (const answer of [SERVICES, HISTORY, LIVE_DEPLOY, service('api')]) expect(badValues(answer)).toEqual([]);
+		expect(badValues({ ...service('api'), state: 'runing' })).toHaveLength(1);
+		expect(badValues({ ...LIVE_DEPLOY, stages: [{ stage: 'pull', state: 'done' }] })).toHaveLength(1);
+		expect(badValues({ ...LIVE_DEPLOY, stages: [{ stage: 'warm_up', state: 'ok' }] })).toHaveLength(1);
+		expect(badValues({ ...LIVE_DEPLOY, deploy: { ...LIVE_DEPLOY.deploy, status: 'deploying' } })).toHaveLength(1);
+		expect(badValues({ ...HISTORY, deploys: [{ ...HISTORY.deploys[0], kind: 'rolled_back' }] })).toHaveLength(1);
+		expect(badValues({ ...SERVICES, services: [{ ...SERVICES.services[0], strategy: 'canary' }] })).toHaveLength(1);
+	});
+	test('the output directory refuses site/public/screens, the repository root, /, home and a parent of the working directory', () => {
+		expect(() => outDir(resolve('..', 'site', 'public', 'screens'))).toThrow(/must not be/);
+		expect(() => outDir(resolve('..', 'site', 'public', 'screens', 'sub'))).toThrow(/must not be/);
+		expect(() => outDir(resolve('..'))).toThrow(/must not be/); // the repository root
+		expect(() => outDir('/')).toThrow(/must not be/);
+		expect(() => outDir(homedir())).toThrow(/must not be/);
+		expect(() => outDir(resolve('.'))).toThrow(/must not be/); // the working directory itself (an ancestor of itself)
+		expect(() => outDir('')).toThrow(/must name a scratch/);
+		expect(outDir(join(tmpdir(), 'serverdock-screens-test-new'))).toContain('serverdock-screens-test-new');
+	});
+	test('prepareOut: a non-empty directory it did not make throws; its own marked directory is emptied; stray webp files are replaced', () => {
+		const base = join(tmpdir(), `sd-screens-prepare-${process.pid}`);
+		rmSync(base, { recursive: true, force: true });
+		try {
+			const foreign = join(base, 'foreign');
+			mkdirSync(foreign, { recursive: true });
+			writeFileSync(join(foreign, 'notes.txt'), 'mine');
+			expect(() => prepareOut(foreign)).toThrow(/not empty/);
+			expect(existsSync(join(foreign, 'notes.txt'))).toBe(true);
+			const mine = join(base, 'mine');
+			prepareOut(mine);
+			writeFileSync(join(mine, 'a.webp'), 'x');
+			mkdirSync(join(mine, 'sub'));
+			prepareOut(mine); // marked: emptied
+			expect(readdirSync(mine)).toEqual([MARKER]);
+			const old = join(base, 'old');
+			mkdirSync(old, { recursive: true });
+			writeFileSync(join(old, 'a.webp'), 'x');
+			writeFileSync(join(old, 'entries.json'), '{}');
+			prepareOut(old); // only webp and entries.json: replaced
+			expect(readdirSync(old)).toEqual([MARKER]);
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
 	});
 });

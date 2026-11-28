@@ -13,8 +13,9 @@ declare module 'node:net';
 declare module 'node:os';
 declare module 'node:path';
 declare module 'node:sqlite';
+declare module 'node:url';
 declare module 'node:zlib';
-declare const process: { env: Record<string, string | undefined>; platform: string; cwd(): string; on(event: string, fn: () => void): void };
+declare const process: { env: Record<string, string | undefined>; platform: string; pid: number; cwd(): string; on(event: string, fn: () => void): void };
 declare const Buffer: any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Buffer = any;
