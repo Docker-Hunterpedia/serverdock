@@ -1,0 +1,9 @@
+{
+  "name": "serverdock-site-deploy",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The deploy job's only dependency: Cloudflare's CLI. Kept apart so the build never installs it and the deploy installs nothing else.",
+  "devDependencies": {
+    "wrangler": "4.169.0"
+  }
+}
