@@ -15,6 +15,8 @@ export const STORAGE = 'e2e/.auth.json';
 // Unset, one run does both: the docker projects wait for all the UI projects.
 const SET = process.env.E2E_SET ?? 'all';
 const DOCKER_SPECS = /.*\.docker\.spec\.ts/;
+// The screenshot capture (plan 0014) runs only through playwright.screens.config.ts, in no set of this config.
+const SCREENS_CAPTURE = /screens\.capture\.ts$/;
 
 export default defineConfig({
 	testDir: 'e2e',
@@ -59,7 +61,7 @@ export default defineConfig({
 			}
 		}
 	]
-		.map((p) => ({ ...p, testIgnore: DOCKER_SPECS }))
+		.map((p) => ({ ...p, testIgnore: [DOCKER_SPECS, SCREENS_CAPTURE] }))
 		.filter(() => SET !== 'docker')
 		.concat(
 			[
@@ -71,6 +73,7 @@ export default defineConfig({
 				.map((p, i, all) => ({
 					...p,
 					testMatch: DOCKER_SPECS,
+					testIgnore: SCREENS_CAPTURE,
 					fullyParallel: false,
 					// Serial even in a local all-in-one run (Docker networks and containers appearing change the host's interfaces).
 					workers: 1,
