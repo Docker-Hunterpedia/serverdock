@@ -808,8 +808,8 @@ Stage names are the on-screen labels from `STAGE_LABELS` in `web/src/lib/service
 
 | id | Route | Demo state | Viewports | Used on | Page text that carries the claim |
 |---|---|---|---|---|---|
-| `deploy-live` | `(shell)/services/[project]/[name]/deploys/[number]` | blue-green deploy #7 of `api`: "Pull the image" and "Start the new version" done, "Health check" running, live log below | desktop | Home hero, Features | Home: a visible ordered list next to the hero (after the h1 and sub line) of the blue-green stages, in the order the product runs them. The site build does not import `web/`. The list lives in `site/src/data/stages.json`, and a gate (in `gates.mjs`, `node:` built-ins only) fails unless each label exactly matches its key in `STAGE_LABELS` in `web/src/lib/services.ts` (read as text) and the order is the blue-green order. Plus one sentence: traffic switches only after the health check passes. Features: the "Blue-green deploys" sentence |
-| `services` | `(shell)/services` | three services: running, deploying, needs attention | desktop | Features | Features: "Every service shows its true state, including unknown" |
+| `deploy-live` | `(shell)/services/[project]/[name]/deploys/[number]` | blue-green deploy #7 of `api`: "Pull the image", "Checks" and "Start the new version" done, "Health check" running, the later stages waiting (the product shows no log while a deploy runs, only a note saying so) | desktop | Home hero, Features | Home: a visible ordered list next to the hero (after the h1 and sub line) of the blue-green stages, in the order the product runs them. The site build does not import `web/`. The list lives in `site/src/data/stages.json`, and a gate (in `gates.mjs`, `node:` built-ins only) fails unless each label exactly matches its key in `STAGE_LABELS` in `web/src/lib/services.ts` (read as text) and the order is the blue-green order. Plus one sentence: traffic switches only after the health check passes. Features: the "Blue-green deploys" sentence |
+| `services` | `(shell)/services` | three services: web and api Running (api's deploy #7 Running), worker Unknown | desktop | Features | Features: "Every service shows its true state, including unknown" |
 | `service-detail` | `(shell)/services/[project]/[name]/(service)` | live deploy and history, with a rolled-back deploy | desktop | Features | Features: "Deploy history with one-click rollback" |
 | `rollback-dialog` | same route, with the existing `ConfirmDialog` open | dialog with the confirm button "Roll back to #5" | desktop | Features | Features: "Rollback asks for confirmation and names the target deploy" |
 | `new-service` | `(shell)/services/new` | form filled with a demo image | desktop | Features | Features: "Deploy from a container image" |
@@ -954,7 +954,7 @@ Reviewer checklist item: every figure has the sentence in this column on the sam
 
 ### Accessibility
 - **Alt text** describes what the screen shows and why it matters, using the on-screen labels.
-  - Example for `deploy-live`: "ServerDock's deploy page for deploy #7 of service api in project demo: Pull the image and Start the new version are done, Health check is running, and the live log is below."
+  - Example for `deploy-live`: "ServerDock's deploy page for deploy #7 of service api in project demo: Pull the image, Checks and Start the new version are done, Health check is running, and four stages are waiting."
   - `rollback-dialog` names the dialog's title and its exact target: "…confirm button Roll back to #5".
   - It never says "screenshot" or "image of".
   - The alt text and captions live in `site/src/data/screens.json`, keyed by id, and the accessibility reviewer edits them there.
@@ -1152,3 +1152,25 @@ All four reviewers approved Revision 3 (`94a0493`). These NITs from their approv
 - **JavaScript detections (Q5): the maintainer chose to leave it on** for the zone. Its injected script is blocked by the site's CSP; the launch check records the resulting console message as a known, harmless exception rather than failing. Email Obfuscation is turned off for the ServerDock hostname only by the Configuration Rule.
 - **Token handling.** The maintainer creates the API token and stores it as the GitHub secret by hand; the assistant creates the Pages project, the custom domain, DNS and the Configuration Rule through the API, and writes the deploy job.
 
+## Step 3b record (implementer, 2026-11-28)
+
+AI-written; the maintainer has not confirmed it. The first numbers below were measured by the CI run that made the first artifact (runner `ubuntu26-20261122.9.1`, Chrome for Testing 159.0.8154.6).
+
+- **Sizes (CI-measured), quality 0.8 for every file:**
+  - 24 files, 1,193,278 bytes in total (budget 2 MB).
+  - Largest 1600 w file: 96,076 bytes (`rollback-dialog` light, cap 120 KB). Largest 800 w: 43,270 (cap 50 KB). Largest 600 w: 32,802 (cap 60 KB). Largest 300 w: 12,694 (cap 25 KB).
+  - The hero (`deploy-live` 1600 w): 86,140 bytes dark, 89,682 light.
+  - Home worst case 122,484 bytes against 190 KB. Features worst case 430,386 against 700 KB.
+  - No cap was raised, so no text was made less readable to fit.
+- **Job times:** `screens-capture` 58 s (Chromium install 13 s, capture 12 s), `screens-hash` 9 s. The `main` slow-path count per week and the checkout time with `fetch-depth: 0` are not measured yet.
+- **Phone hero:** the art-direction decision (`<source media="(max-width: 37.5rem)">`) is deferred to step 4, where Home is built. Without it the worst case on a 3x phone is the 1600 w hero, 89.7 KB, inside the 120 KB eager cap.
+- **`main` trigger:** the slow path runs only on bench-relevant, `site/public/screens/` or `openapi.json` pushes, plus nightly (accepted by the reviewer and footprint).
+- **Determinism:** two local runs gave byte-identical files. Same bytes on CI for an unchanged hash is not shown yet. That is the warning-week criterion: the check stays `continue-on-error` until `main` shows it for a clean week.
+- **Cloud agents:** whether a cloud agent can run `gh run download` and commit the binary files is unknown. The maintainer is the fallback for the refresh procedure.
+- **What the leak check found:** a real loopback address. The new-service page says "This panel was opened on 127.0.0.1" below the fold, so the check scans only what intersects the clip.
+- **Other differences from the plan above:**
+  - Chromium's canvas WebP carries an `ICCP` chunk, so the capture rewrites the container without ICCP, EXIF and XMP; gate 10 also reads each file's real size from its header and gate `5 screenshot files` re-checks the chunks on the deploy artifact.
+  - The product shows no log while a deploy runs, and the services list has no "needs attention" state; the views table now says what ships.
+  - Per-view clip heights are 820, 600, 620, 760, 560 and 560 CSS px; the service detail and phone views scroll to the Deploys and Stages headings first.
+  - The `screens` job (always runs) is the one to make required, because a skipped required job counts as passing.
+  - Mocked answers are type-checked, and their state, stage, status and kind values are checked at run time against lists copied from `internal/deploy`.
