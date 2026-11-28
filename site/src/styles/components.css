@@ -116,7 +116,7 @@
 @media (max-width: 37.49rem) {
 	.scroll-cue { display: block; }
 	.table-region td, .table-region th { min-width: 8rem; }
-	.table-region th:first-child {
+	.table-region th:first-child, .table-region td:first-child {
 		position: sticky;
 		inset-inline-start: 0;
 		max-width: 40cqi;
@@ -125,6 +125,7 @@
 		border-inline-end: 1px solid var(--border);
 	}
 	.table-region thead th:first-child { background: var(--bg2); }
+	.table-region td:first-child { min-width: 0; }
 }
 
 /* Code (Prism token classes; colours are tokens in tokens.css) */

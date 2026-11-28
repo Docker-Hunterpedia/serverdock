@@ -48,7 +48,7 @@
 	--prism-variable: #ffb48a;
 }
 
-@media (prefers-color-scheme: light) {
+@media print, (prefers-color-scheme: light) {
 	:root {
 		--bg: #ffffff;
 		--bg2: #f4f7fa;

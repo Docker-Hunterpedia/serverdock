@@ -22,7 +22,7 @@ function vars(body) {
 	return out;
 }
 const dark = vars(block(tokensCss, ':root {'));
-const lightRaw = vars(block(block(tokensCss, '@media (prefers-color-scheme: light)'), ':root {'));
+const lightRaw = vars(block(block(tokensCss, '@media print, (prefers-color-scheme: light)'), ':root {'));
 const light = { ...dark, ...lightRaw };
 
 const resolve = (theme, name) => {
@@ -49,6 +49,9 @@ for (const [themeName, theme] of [['dark', dark], ['light', light]]) {
 			const r = ratio(resolve(theme, t), resolve(theme, s));
 			assert.ok(r >= 4.5, `${t} on ${s}: ${r.toFixed(2)}`);
 		}
+	});
+	test(`${themeName}: the stage dot and tick (--accent-text with --bg) are at least 4.5:1`, () => {
+		for (const s of ['--bg', '--card']) assert.ok(ratio(resolve(theme, '--accent-text'), resolve(theme, s)) >= 4.5, s);
 	});
 	test(`${themeName}: --border and the focus ring are at least 3:1 on every surface`, () => {
 		for (const t of ['--border', '--accent2-text']) for (const s of SURFACES) {

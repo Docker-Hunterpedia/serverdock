@@ -153,7 +153,6 @@ main { display: block; padding: 1.5rem 1rem 3rem; max-inline-size: 64rem; margin
 .site-footer a { color: var(--accent2-text); }
 
 @media print {
-	:root { --bg: #fff; --text: #000; --muted: #333; --accent2-text: #000; --border: #000; --card: #fff; --code-bg: #fff; }
 	.site-header nav, .nav-narrow, .skip-link, .docs-nav, .site-footer nav, .scroll-cue { display: none !important; }
 	a[href^="http"]::after, a[href^="/"]::after { content: " (" attr(href) ")"; overflow-wrap: anywhere; }
 	.sr-only { display: none; }
