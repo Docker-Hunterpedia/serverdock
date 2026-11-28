@@ -39,7 +39,7 @@ export const VIEWS: View[] = [
 	{ id: 'deploy-live', route: '(shell)/services/[project]/[name]/deploys/[number]', viewport: 'desktop', title: 'the live deploy page', clipHeight: 820 },
 	{ id: 'services', route: '(shell)/services', viewport: 'desktop', title: 'the services list', clipHeight: 600 },
 	{ id: 'service-detail', route: '(shell)/services/[project]/[name]/(service)', viewport: 'desktop', title: 'a service with its deploy history', clipHeight: 620, scrollTo: 'Deploys' },
-	{ id: 'rollback-dialog', route: '(shell)/services/[project]/[name]/(service)', viewport: 'desktop', title: 'the roll back confirmation', clipHeight: 660 },
+	{ id: 'rollback-dialog', route: '(shell)/services/[project]/[name]/(service)', viewport: 'desktop', title: 'the roll back confirmation', clipHeight: 760 },
 	{ id: 'new-service', route: '(shell)/services/new', viewport: 'desktop', title: 'deploy from an image', clipHeight: 560 },
 	{ id: 'phone-deploy', route: '(shell)/services/[project]/[name]/deploys/[number]', viewport: 'phone', title: 'the live deploy page on a phone', clipHeight: 560, scrollTo: 'Stages' }
 ];
