@@ -288,6 +288,20 @@ export function webpProblem(buf) {
 	return null;
 }
 
+/** The pixel size [width, height] a WebP declares in its first VP8, VP8L or VP8X chunk, or null. */
+export function webpSize(buf) {
+	if (buf.length < 25) return null;
+	const id = buf.toString('latin1', 12, 16);
+	const d = 20; // the first chunk's data
+	if (id === 'VP8X' && buf.length >= d + 10) return [1 + buf.readUIntLE(d + 4, 3), 1 + buf.readUIntLE(d + 7, 3)];
+	if (id === 'VP8L' && buf[d] === 0x2f) {
+		const bits = buf.readUInt32LE(d + 1);
+		return [1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff)];
+	}
+	if (id === 'VP8 ' && buf.length >= d + 10 && buf[d + 3] === 0x9d && buf[d + 4] === 0x01 && buf[d + 5] === 0x2a) return [buf.readUInt16LE(d + 6) & 0x3fff, buf.readUInt16LE(d + 8) & 0x3fff];
+	return null;
+}
+
 /** Alt text problems for one text; `others` are the alt texts of the other figures on the page, `caption` its caption. */
 export function altProblems(alt, caption, others = []) {
 	const errs = [];
@@ -364,6 +378,11 @@ export function gateScreens(siteDir, dist) {
 								if (buf.length !== f.bytes) errs.push(`${f.name}: ${buf.length} bytes on disk, manifest says ${f.bytes}`);
 								const p = webpProblem(buf);
 								if (p) errs.push(`${f.name}: ${p}`);
+								else {
+									const size = webpSize(buf);
+									if (!size) errs.push(`${f.name}: cannot read the image size from its header`);
+									else if (size[0] !== f.width || size[1] !== f.height) errs.push(`${f.name}: the file is ${size[0]}x${size[1]}, the manifest says ${f.width}x${f.height}`);
+								}
 							}
 							const key = `${e.id}/${f.width}`;
 							dims.set(key, [...(dims.get(key) ?? []), `${f.width}x${f.height}`]);
@@ -425,6 +444,23 @@ export function gateScreens(siteDir, dist) {
 	return errs;
 }
 
+/** Screenshot files in a built site (also run on the deploy artifact): only valid WebP files and manifest.json. */
+export function gateScreenFiles(dist) {
+	const base = join(dist, 'screens');
+	if (!existsSync(base)) return [];
+	const errs = [];
+	for (const f of walk(base)) {
+		const name = rel(dist, f);
+		if (name === 'screens/manifest.json') continue;
+		if (!/^screens\/[^/]+\.webp$/.test(name)) errs.push(`${name}: only .webp files and manifest.json belong in screens/`);
+		else {
+			const p = webpProblem(readFileSync(f));
+			if (p) errs.push(`${name}: ${p}`);
+		}
+	}
+	return errs;
+}
+
 // ---- Gate 10b: the Home stage list against the product's labels ----------------------------------------
 
 /** The blue-green stage order, as the product runs it (web/e2e/seed.ts stageRows, internal/deploy). */
@@ -459,6 +495,7 @@ export function runGates(dist, { distOnly = false, now = Date.now(), expectedDoc
 		['3 security.txt', gateSecurityTxt(dist, now)],
 		['4 no functions', gateNoFunctions(dist)],
 		['5 no styleguide', gateNoStyleguide(dist)],
+		['5 screenshot files', gateScreenFiles(dist)],
 	];
 	if (!distOnly) {
 		out.push(['6 docs routes', gateDocsRoutes(dist, expectedDocs)]);

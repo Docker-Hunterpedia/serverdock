@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { BLUE_GREEN_ORDER, DEMO_SENTENCE, SCREEN_ROUTES, altProblems, gateScreens, gateStages, webpProblem } from '../scripts/gates.mjs';
+import { BLUE_GREEN_ORDER, DEMO_SENTENCE, SCREEN_ROUTES, altProblems, gateScreenFiles, gateScreens, gateStages, webpProblem, webpSize } from '../scripts/gates.mjs';
 
 const ROUTE = SCREEN_ROUTES[1]; // (shell)/services
 const WEBP = Buffer.from('UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==', 'base64'); // a valid 1x1 lossless WebP, 34 bytes
@@ -12,6 +12,14 @@ const riff = (...chunks) => {
 	const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), ...chunks]);
 	return Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from(new Uint32Array([body.length]).buffer), body]);
 };
+/** A tiny WebP whose VP8L header declares w x h (the gate reads the header, not the pixels). */
+const webpOf = (w, h) => {
+	const data = Buffer.alloc(6);
+	data[0] = 0x2f;
+	data.writeUInt32LE((w - 1) | ((h - 1) << 14), 1);
+	return riff(Buffer.concat([Buffer.from('VP8L', 'latin1'), Buffer.from(new Uint32Array([5]).buffer), data]));
+};
+const LEN = webpOf(1, 1).length;
 const HASH = 'a'.repeat(40);
 
 /** A repo root with site/ and web/ pieces. `over` replaces or (null) removes a manifest/data/file piece. */
@@ -22,7 +30,7 @@ function build(over = {}) {
 		mkdirSync(dirname(join(root, path)), { recursive: true });
 		writeFileSync(join(root, path), content);
 	};
-	const file = (id, theme, w, h) => ({ name: `${id}-${theme}-${w}.webp`, width: w, height: h, bytes: WEBP.length });
+	const file = (id, theme, w, h) => ({ name: `${id}-${theme}-${w}.webp`, width: w, height: h, bytes: LEN });
 	const entry = (theme) => ({ id: 'services', route: ROUTE, viewport: 'desktop', theme, files: [file('services', theme, 800, 500), file('services', theme, 1600, 1000)] });
 	const manifest = {
 		inputs_hash: HASH, captured_at: '2026-11-28T10:00:00Z', run_id: '123', runner_image: 'ubuntu24-20260101.1', chromium: 'Chromium 150',
@@ -30,7 +38,7 @@ function build(over = {}) {
 		entries: [entry('dark'), entry('light')],
 		...over.manifest,
 	};
-	if (over.manifest !== null) for (const e of manifest.entries ?? []) for (const f of e.files ?? []) if (f?.name) put(`site/public/screens/${f.name}`, WEBP);
+	if (over.manifest !== null) for (const e of manifest.entries ?? []) for (const f of e.files ?? []) if (f?.name) put(`site/public/screens/${f.name}`, webpOf(f.width, f.height));
 	if (over.manifest !== null) put('site/public/screens/manifest.json', JSON.stringify(manifest));
 	put(`web/src/routes/${ROUTE}/+page.svelte`, '<h1>x</h1>');
 	put('site/src/data/screens.json', JSON.stringify(over.data ?? { services: { alt: 'The services list with three services.', shows: 'The services list for project demo.' } }));
@@ -59,7 +67,7 @@ test('gate 10: an image without a manifest fails', () => {
 });
 
 test('gate 10: routes outside the allowlist, under (auth)/ or settings/, with .., or without a route file', () => {
-	const bad = (route) => ({ manifest: { entries: ['dark', 'light'].map((theme) => ({ id: 'services', route, viewport: 'desktop', theme, files: [{ name: `services-${theme}-800.webp`, width: 800, height: 500, bytes: WEBP.length }, { name: `services-${theme}-1600.webp`, width: 1600, height: 1000, bytes: WEBP.length }] })) } });
+	const bad = (route) => ({ manifest: { entries: ['dark', 'light'].map((theme) => ({ id: 'services', route, viewport: 'desktop', theme, files: [{ name: `services-${theme}-800.webp`, width: 800, height: 500, bytes: LEN }, { name: `services-${theme}-1600.webp`, width: 1600, height: 1000, bytes: LEN }] })) } });
 	for (const r of ['(auth)/setup', '(shell)/settings/security', '(shell)/services/../../x', '(shell)/other', '(auth)/login/2fa']) fails(bad(r), /not in the allowlist/);
 	// an allowlisted route whose page file is missing
 	const { root, site } = build({});
@@ -94,10 +102,22 @@ test('gate 10: files must be listed, exist, match their size and have the same d
 		rmSync(join(site, 'public', 'screens', 'services-dark-800.webp'));
 		assert.match(gateScreens(site).join(), /listed but missing/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
-	const light = (h) => ({ id: 'services', route: ROUTE, viewport: 'desktop', theme: 'light', files: [{ name: 'services-light-800.webp', width: 800, height: h, bytes: WEBP.length }] });
-	const dark = { id: 'services', route: ROUTE, viewport: 'desktop', theme: 'dark', files: [{ name: 'services-dark-800.webp', width: 800, height: 500, bytes: WEBP.length }] };
+	const light = (h) => ({ id: 'services', route: ROUTE, viewport: 'desktop', theme: 'light', files: [{ name: 'services-light-800.webp', width: 800, height: h, bytes: LEN }] });
+	const dark = { id: 'services', route: ROUTE, viewport: 'desktop', theme: 'dark', files: [{ name: 'services-dark-800.webp', width: 800, height: 500, bytes: LEN }] };
 	fails({ manifest: { entries: [dark, light(520)] } }, /same width and height/);
 	fails({ manifest: { entries: [dark] } }, /exactly one file per theme/);
+});
+
+test('gate 10: the real image size from the header must match the manifest', () => {
+	assert.deepEqual(webpSize(webpOf(800, 500)), [800, 500]);
+	assert.deepEqual(webpSize(webpOf(1600, 1000)), [1600, 1000]);
+	const e = (theme, w, h) => ({ id: 'services', route: ROUTE, viewport: 'desktop', theme, files: [{ name: `services-${theme}-800.webp`, width: w, height: h, bytes: LEN }] });
+	// the files are written from the manifest, so overwrite one with a different real size
+	const { root, site } = build({ manifest: { entries: [e('dark', 800, 500), e('light', 800, 500)] } });
+	try {
+		writeFileSync(join(site, 'public', 'screens', 'services-dark-800.webp'), webpOf(801, 500));
+		assert.match(gateScreens(site).join(), /the file is 801x500, the manifest says 800x500/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('gate 10: WebP structure (magic, size, chunks; EXIF, XMP and ICCP fail)', () => {
@@ -171,4 +191,20 @@ test('gate 10b: stages.json matches STAGE_LABELS in order and text', () => {
 	assert.match(run(list(), ts("\tpull: 'Pull the image',")).join(), /not a key of STAGE_LABELS/);
 	assert.match(run('{"not":"a list"}').join(), /list of/);
 	assert.match(run(list(), 'export const nothing = 1;').join(), /was not found/);
+});
+
+test('dist screens files: valid WebP only, plus manifest.json (also in --dist-only)', () => {
+	const d = mkdtempSync(join(tmpdir(), 'screens-dist-files-'));
+	try {
+		assert.deepEqual(gateScreenFiles(d), []);
+		mkdirSync(join(d, 'screens'));
+		writeFileSync(join(d, 'screens', 'a-dark-800.webp'), webpOf(800, 500));
+		writeFileSync(join(d, 'screens', 'manifest.json'), '{}');
+		assert.deepEqual(gateScreenFiles(d), []);
+		writeFileSync(join(d, 'screens', 'b-dark-800.webp'), riff(chunk('VP8L', 6), chunk('EXIF', 4)));
+		assert.match(gateScreenFiles(d).join(), /EXIF/);
+		rmSync(join(d, 'screens', 'b-dark-800.webp'));
+		writeFileSync(join(d, 'screens', 'notes.txt'), 'x');
+		assert.match(gateScreenFiles(d).join(), /only \.webp files/);
+	} finally { rmSync(d, { recursive: true, force: true }); }
 });
