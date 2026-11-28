@@ -17,11 +17,18 @@ export const LIMITS = {
 	cssFiles: 1,
 	cssBytes: 15 * KB,
 	homeBytes: 80 * KB,
-	homeRequests: 6,
+	homeRequests: 5, // first view, lazy screenshots not counted (Revision 3)
 	pageBytes: 150 * KB,
 	htmlBytes: 60 * KB,
 	distBytes: 5 * 1000 * KB,
 	distFiles: 500,
+	// Screenshots (gate 11, Revision 3): raw bytes, worst case per <picture>
+	homeImageBytes: 190 * KB,
+	featuresImageBytes: 700 * KB,
+	eagerBytes: 120 * KB,
+	eagerCount: 1,
+	screenTotal: 2000 * KB,
+	screenFileCaps: { 800: 50 * KB, 1600: 120 * KB, 300: 25 * KB, 600: 60 * KB },
 };
 
 const gz = (buf) => gzipSync(buf, { level: constants.Z_BEST_COMPRESSION }).length;
@@ -73,6 +80,33 @@ function pageRefs(html) {
 	return refs;
 }
 
+const SCREENS = '/screens/';
+const srcsetUrls = (v) => (v ?? '').split(',').map((c) => c.trim().split(/\s+/)[0]).filter(Boolean);
+
+/**
+ * The screenshot images of a page: one entry per <picture> (or lone <img>) that names /screens/ files.
+ * `eager` is an image without loading="lazy"; its candidates are every file the browser could pick.
+ */
+export function screenPictures(html) {
+	const out = [];
+	const blocks = [...html.matchAll(/<picture\b[\s\S]*?<\/picture>/gi)].map((m) => m[0]);
+	const rest = html.replace(/<picture\b[\s\S]*?<\/picture>/gi, '');
+	for (const b of [...blocks, ...[...rest.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0])]) {
+		const urls = [];
+		let eager = false;
+		for (const m of b.matchAll(TAG)) {
+			const name = m[1].toLowerCase();
+			if (name === 'img') {
+				eager = (attr(m[2], 'loading') ?? '').toLowerCase() !== 'lazy';
+				urls.push(attr(m[2], 'src'), ...srcsetUrls(attr(m[2], 'srcset')));
+			} else if (name === 'source') urls.push(attr(m[2], 'src'), ...srcsetUrls(attr(m[2], 'srcset')));
+		}
+		const cands = [...new Set(urls.filter((u) => u && u.startsWith(SCREENS)).map((u) => u.split('#')[0].split('?')[0]))];
+		if (cands.length > 0) out.push({ eager, cands });
+	}
+	return out;
+}
+
 /** Validate budgets.json exceptions. Returns a list of problems (empty when valid). */
 export function validateExceptions(list) {
 	if (!Array.isArray(list)) return ['"exceptions" must be an array'];
@@ -99,6 +133,19 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 	if (bytes > limits.distBytes) errs.push(`dist total ${bytes} bytes is over ${limits.distBytes}`);
 	if (all.length > limits.distFiles) errs.push(`dist has ${all.length} files, over ${limits.distFiles}`);
 
+	// every screenshot file, referenced or not: per-file caps by width, and the total
+	const shots = all.filter((f) => relative(root, f).split(sep).join('/').startsWith('screens/') && f.endsWith('.webp'));
+	let shotTotal = 0;
+	for (const f of shots) {
+		const size = statSync(f).size;
+		shotTotal += size;
+		const w = Number(/-(\d+)\.webp$/.exec(f)?.[1]);
+		const cap = limits.screenFileCaps[w];
+		if (!cap) errs.push(`screens/${relative(join(root, 'screens'), f)}: width ${w} has no cap (800, 1600, 300 or 600)`);
+		else if (size > cap) errs.push(`screens/${relative(join(root, 'screens'), f)}: ${size} bytes, over the ${cap} cap for ${w} w`);
+	}
+	if (shotTotal > limits.screenTotal) errs.push(`screenshot files total ${shotTotal} bytes, over ${limits.screenTotal}`);
+
 	const rows = [];
 	for (const file of all.filter((f) => f.endsWith('.html')).sort()) {
 		const rf = relative(root, file).split(sep).join('/');
@@ -108,7 +155,7 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 		const urls = new Map(); // site path -> kind
 		const bad = [];
 		const addUrl = (u, base, kind) => {
-			if (!sameSite(u)) return;
+			if (!sameSite(u) || u.startsWith(SCREENS)) return;
 			const clean = u.split('#')[0].split('?')[0];
 			const path = clean.startsWith('/') ? clean : posix.resolve(posix.dirname(base), clean);
 			if (!urls.has(path)) urls.set(path, kind);
@@ -127,6 +174,31 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 				addUrl(m[1] ?? m[2] ?? m[3], path, 'cssurl');
 			}
 		}
+		// gate 11: screenshots, in raw bytes, worst case per <picture>
+		const pics = screenPictures(htmlBuf.toString('utf8'));
+		const sizeOf = (u) => {
+			const f = join(root, u);
+			return existsSync(f) && statSync(f).isFile() ? statSync(f).size : null;
+		};
+		let imageWorst = 0;
+		let eagerWorst = 0;
+		let eagerCount = 0;
+		const imgFail = [];
+		for (const p of pics) {
+			const sizes = p.cands.map((u) => [u, sizeOf(u)]);
+			for (const [u, n] of sizes) if (n === null) imgFail.push(`${u} is named but missing`);
+			const worst = Math.max(0, ...sizes.map(([, n]) => n ?? 0));
+			imageWorst += worst;
+			if (p.eager) {
+				eagerCount++;
+				eagerWorst += worst;
+			}
+		}
+		if (pics.length > 0 && route !== '/' && route !== '/features/') imgFail.push('screenshots are allowed on Home and Features only');
+		if (eagerCount > limits.eagerCount) imgFail.push(`${eagerCount} eager images, at most ${limits.eagerCount}`);
+		if (eagerWorst > limits.eagerBytes) imgFail.push(`the eager image is ${eagerWorst} bytes, over ${limits.eagerBytes}`);
+		const imageCeiling = route === '/' ? limits.homeImageBytes : route === '/features/' ? limits.featuresImageBytes : 0;
+		if (pics.length > 0 && imageWorst > imageCeiling) imgFail.push(`screenshots ${imageWorst} bytes (worst case), over ${imageCeiling}`);
 		let total = html;
 		let js = scripts > 0 ? 1 : 0; // an inline or external <script> is a JS violation by itself
 		let fonts = 0;
@@ -147,7 +219,7 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 				cssBytes += size;
 			}
 		}
-		const requests = 1 + urls.size;
+		const requests = 1 + urls.size + eagerCount; // first view: lazy screenshots are not requested
 		const ex = exceptions.find((e) => e.page === route);
 		const htmlCeiling = ex ? ex.html_kb * KB : limits.htmlBytes;
 		const pageCeiling = route === '/' ? limits.homeBytes : limits.pageBytes;
@@ -160,16 +232,17 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 		if (total > pageCeiling) fail.push(`page total ${total} bytes over ${pageCeiling}`);
 		if (route === '/' && requests > limits.homeRequests) fail.push(`${requests} requests, at most ${limits.homeRequests}`);
 		for (const b of bad) fail.push(`${b} is named but missing`);
+		fail.push(...imgFail);
 		for (const f of fail) errs.push(`${route}: ${f}`);
-		rows.push({ route, html, css: cssBytes, total, requests, ok: fail.length === 0 });
+		rows.push({ route, html, css: cssBytes, total, requests, images: imageWorst, ok: fail.length === 0 });
 	}
 	return { rows, errs, dist: { files: all.length, bytes } };
 }
 
 export function table(res) {
 	const kb = (n) => (n / KB).toFixed(1);
-	const lines = ['| Page | HTML (gzip KB) | CSS (gzip KB) | Total (gzip KB) | Requests | Result |', '|---|---|---|---|---|---|'];
-	for (const r of res.rows) lines.push(`| ${r.route} | ${kb(r.html)} | ${kb(r.css)} | ${kb(r.total)} | ${r.requests} | ${r.ok ? 'ok' : 'FAIL'} |`);
+	const lines = ['| Page | HTML (gzip KB) | CSS (gzip KB) | Total (gzip KB) | Screenshots (raw KB, worst case) | First-view requests | Result |', '|---|---|---|---|---|---|---|'];
+	for (const r of res.rows) lines.push(`| ${r.route} | ${kb(r.html)} | ${kb(r.css)} | ${kb(r.total)} | ${kb(r.images)} | ${r.requests} | ${r.ok ? 'ok' : 'FAIL'} |`);
 	lines.push('', `dist: ${res.dist.files} files, ${kb(res.dist.bytes)} KB raw`);
 	return lines.join('\n');
 }
