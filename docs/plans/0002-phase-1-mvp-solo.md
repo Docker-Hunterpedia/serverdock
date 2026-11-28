@@ -1,16 +1,29 @@
 # Plan 0002 — Phase 1: MVP "Solo on one server" (phase plan + milestone 1 steps)
 
-**Status:** APPROVED (reviewer round 2, security round 4, systems round 4 conditional on update.json states — applied). Pre-M1 answers recorded 2026-11-20 (see Part D); M1 approved to start. · **Author:** planner (AI) · **Date:** 2026-11-20
+**Status:** APPROVED (reviewer round 2, security round 4, systems round 4 conditional on update.json states — applied). Pre-M1 answers recorded 2026-11-20 (see Part D); M1 approved to start. **Revision 1 (2026-11-27), the milestone reorder, needs `reviewer` approval of its text**; the maintainer approved the decisions behind it on 2026-11-27. · **Author:** planner (AI) · **Date:** 2026-11-20, revised 2026-11-27
 
 **Roadmap:** Phase 1 — MVP: "Solo on one server" (all 23 items) and the Phase 1 exit check. This plan is AI-written and not yet confirmed by the maintainer.
 
+## Revision 1 (2026-11-27): milestone reorder for an early usable version
+
+Maintainer decisions of 2026-11-27 (approved). This revision applies them throughout the plan; the "Revision 1 changes" table at the end lists every place.
+
+1. **New order:** M1, M2, M3a (in progress, PR #6), M3b, M4a, M7a, which together are the **early usable version**; then M7b, M5, M6, M4b, M8, M9.
+2. **M4 is split.** **M4a** = domains, automatic HTTPS, per-route validation, ACME, diagnostics, the panel domain (HSTS G15, TOTP re-enrol G5) and IPv6 (plan 0006). **M4b** = passkeys, everything in the old M4 passkeys bullet (library, ADR, threat-model update, tests), still in Phase 1, after M6 (new **plan 0013**, the next free number).
+3. **Early use** (from the M7a exit): only apps whose data is disposable or backed up elsewhere, until M6 adds app-data backups (confirmed 2026-11-27; originally worded "until M7b"). *Systems review (round 3) narrows what M7b lifts: M7b replaces the "copy `DATA` before each reinstall" rule, but app-data backups arrive only in M6, so the plan keeps the app-data rule until M6. The maintainer confirmed this on 2026-11-27: the app-data rule stays until M6.*
+4. **Two accepted risks** (maintainer, 2026-11-27), recorded in `docs/security.md` "Accepted risks (Phase 1)": a public panel domain with phishable password + TOTP sign-in from M4a/M7a until M4b; and no out-of-band notice of sign-ins or brute-force back-off in Phase 1. Mitigations: the panel domain is optional; the early-use guide recommends IP access over an SSH tunnel or a firewall allowlist on 443; G3 back-off; fresh 2FA for dangerous actions.
+
+**Why reorder.** Real use starts sooner: M3a + M3b + M4a + M7a is enough to install ServerDock with one command and run image-based apps on a domain with HTTPS, and real use finds problems that tests miss. **The Phase 1 exit date does not get earlier**: the work is the same, and the counted dogfood window still sits at the end.
+
+**Notes on numbering.** Plan numbers keep their old assignments (0005 M3b, 0006 M4a, 0007 M5, 0008 M6, 0009 M7a, 0010 M7b, 0011 M8, 0012 M9) so existing links stay valid; M4b gets 0013. Plan numbers no longer follow the run order; the Overview table is the run order. Milestone sections below stay in milestone-number order. In other docs written before this revision (plan 0003, ADR 0010, `docs/security.md`, `docs/features.md`), "M4" means **M4a** for domains, the panel domain, HSTS and G15, and **M4b** (plan 0013, not 0006) for passkeys.
+
 **How to read this plan**
 
-- **Part A** is the phase plan: 11 milestones, each a shippable vertical slice. Milestones M2–M9 each get their own detailed step plan (0003–0012), approved by `reviewer` before implementation starts. A line of the form "plan 00NN must …" is a binding requirement for that later plan.
+- **Part A** is the phase plan: 12 milestones, each a shippable vertical slice. Milestones M2–M9 each get their own detailed step plan (0003–0013; see the Overview for which is which), approved by `reviewer` before implementation starts. A line of the form "plan 00NN must …" is a binding requirement for that later plan.
 - **Part B** is milestone 1, written out step by step like plan 0001. Once this plan is approved, M1 can be implemented without a separate plan.
 - **Part C** maps every roadmap item to a milestone and every exit criterion to its evidence.
 - **Part D** lists the open questions for the maintainer and the decisions that need advisor input.
-- **The four "Review round N changes" tables** at the end map each review item to where it was fixed.
+- **The four "Review round N changes" tables** at the end map each review item to where it was fixed; **"Revision 1 changes"** maps the 2026-11-27 reorder.
 
 ## Goal
 
@@ -39,7 +52,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
 3. **Background-work inventory.** `docs/architecture.md` gets a "Background work" table that lists every goroutine that wakes up on a timer, with its interval and why it exists. Any PR that adds a timer adds a row, and `footprint` checks the table.
    - No fixed-interval polling below 15 s.
    - **Written exception (plan 0004 step 6, replaced in step 6b by Revision 11; `footprint` signed): Caddy's upstream-health metrics ticker (10 s).** Caddy starts one `metricsUpstreamsHealthyUpdater` goroutine per `reverse_proxy` handler, unconditionally; it is not configurable and only sets an in-memory gauge (the panel's own has run since M1). ServerDock adds **exactly one extra 10 s Caddy metrics ticker once at least one public port exists, not rebuilt on a switch** (it is torn down and recreated only by a reload, that is a port-set change; with no public port there is no app server and no app ticker). All app ports share one Caddy server and one `reverse_proxy` handler, so the count does not grow with the number of services. `TestOneTickerForAllAppRoutes` counts it.
-   - **All scheduled work (jobs due later, cron schedules, daily housekeeping) shares ONE "next due" timer in the job scheduler** (introduced in M3a, extended with cron in M6). Daily tasks are recurring jobs on it, not separate timers.
+   - **All scheduled work (jobs due later, cron schedules, daily housekeeping) shares ONE "next due" timer in the job scheduler** (introduced in M3a; the daily housekeeping job added in M7b; cron schedules added in M6). Daily tasks are recurring jobs on it, not separate timers.
 
    | What | Where | Interval | When it runs | Milestone |
    |---|---|---|---|---|
@@ -52,7 +65,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    | Caddy/certmagic maintenance (`(*certmagic.Cache).maintainAssets`) and events | embedded Caddy | 10 min renew check, 1 h OCSP check (certmagic defaults) | whenever the proxy runs, in **server and agent mode** (`caddyhttp` provisions the `tls` app); certificate expiry alerts use these, not our own timer | running since M1 (S2 and S4); confirmed by a goroutine dump in M2 step 3 |
    | BuildKit idle stop | `internal/build` | 5 min | only while the BuildKit container runs | M5 |
    | Webhook replay-cache expiry | `internal/api` | none (lazy on insert) | no timer | M5 |
-   | Daily housekeeping job (cleanup, retention pruning, update check, image digest check, scheduled state backup) | on the scheduler timer | daily | one recurring job | M6 (job), tasks added in M7b/M8 |
+   | Daily housekeeping job (update check, scheduled state backup and its local pruning; later backup retention, cleanup, metrics retention pruning, image digest check) | on the scheduler timer | daily | one recurring job | M7b (job, update check, state backup), tasks added in M6/M8 |
    | Metrics collector | `internal/agent/metrics` | 15 s | always (the first always-on periodic work) | M8 |
 
    Metrics rollups run inside the collector tick (every 40th tick), not on their own timer.
@@ -76,7 +89,10 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    - 0015 backups (M6);
    - 0016 install shape (M7a);
    - 0017 release signing (M7a);
-   - 0018 self-update handover (M7b).
+   - 0018 self-update handover (M7b);
+   - passkeys (M4b, Revision 1): the next free number when it is written (0019 if no other ADR comes first).
+
+   ADR 0011 is the footprint ceiling. Since Revision 1 the ADRs are written in run order, so 0016/0017 (M7a) and 0018 (M7b) come before 0013 (M5) and 0014/0015 (M6); the numbers stay as assigned.
 9. **Remote agents are read-only until Phase 2.**
    - Open item #3 (no per-agent identity) stays open through Phase 1, so anyone with the shared token could claim an agent id.
    - Every agent op is declared `LocalOnly` unless it is a read with no secrets. **The hub refuses to send a `LocalOnly` op to any session other than the in-process local agent** (`hub.LocalID`, reachable only through the in-memory pipe).
@@ -100,49 +116,75 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
 
 ## Overview
 
-| # | Milestone | Shippable slice | Detailed plan |
-|---|---|---|---|
-| M1 | Hardening and core plumbing | Security open items closed, CI bench fix, Phase 0 carry-over, migrations, audit log, action registry, local-only agent ops. No new user features. | **This plan, Part B** |
-| M2 | Auth, first run, SPA shell | HTTPS panel, setup token → admin + TOTP → login; `admin reset`; sessions, API tokens, REST + OpenAPI from the registry, real SvelteKit SPA | 0003 |
-| M3a | Deploy from image, safely | Jobs + scheduler, image deploys, blue-green and stop-first, health gate, automatic and one-click rollback, auto-cancel superseded, restart/redeploy, basic UI | 0004 |
-| M3b | Service configuration | Env vars and secrets, registry credentials, volumes, project networks, CPU/RAM limits, context variables, Docker version warning, Docker RC CI matrix | 0005 |
-| M4 | Domains and automatic HTTPS | Caddy config from desired state, per-route validation, ACME, TLS kept separate from app health, diagnostics, panel domain, IPv6 | 0006 |
-| M5 | Git builds and push-to-deploy | Dockerfile builds on capped BuildKit, GitHub App push-to-deploy + commit status, generic webhook, live build progress, outbound-URL policy | 0007 |
-| M6 | Compose, databases and backups | Compose (compose-go, policy-checked), one-click Postgres/MySQL/Redis, cron scheduling + daily housekeeping job, encrypted S3 backups, restore with approval | 0008 |
-| M7a | Install, lifecycle, signed releases | Install script + pre-flight, hardened systemd unit, `start/stop/status/uninstall/doctor --bundle`, signed releases, `serverdock bench`, **first VPS bench** | 0009 |
-| M7b | State backup and self-update | Encrypted state backup → self-update (trial boot + rollback) → rehearse restore → `state restore`. **Dogfooding starts once self-update lands.** | 0010 |
-| M8 | Observability and housekeeping | Metrics, live logs, log search, alerts, notifications, disk cleanup + alerts, "update available" | 0011 |
-| M9 | API, MCP, docs and Phase 1 exit | OpenAPI complete, read-only MCP, docs site, full reviews, final VPS bench, 5-minute test, dogfood report | 0012 |
+Rows are in run order (Revision 1, 2026-11-27).
 
-**Why this order.**
+| Run | # | Milestone | Shippable slice | Detailed plan |
+|---|---|---|---|---|
+| 1 | M1 | Hardening and core plumbing | Security open items closed, CI bench fix, Phase 0 carry-over, migrations, audit log, action registry, local-only agent ops. No new user features. | **This plan, Part B** |
+| 2 | M2 | Auth, first run, SPA shell | HTTPS panel, setup token → admin + TOTP → login; `admin reset`; sessions, API tokens, REST + OpenAPI from the registry, real SvelteKit SPA | 0003 |
+| 3 | M3a | Deploy from image, safely (in progress, PR #6) | Jobs + scheduler, image deploys, blue-green and stop-first, health gate, automatic and one-click rollback, auto-cancel superseded, restart/redeploy, basic UI | 0004 |
+| 4 | M3b | Service configuration | Env vars and secrets, registry credentials, volumes, project networks, CPU/RAM limits, context variables, Docker version warning, Docker RC CI matrix | 0005 |
+| 5 | M4a | Domains and automatic HTTPS | Caddy config from desired state, per-route validation, ACME, TLS kept separate from app health, diagnostics, panel domain (HSTS G15, TOTP re-enrol G5), IPv6 | 0006 |
+| 6 | M7a | Install, lifecycle, signed releases | Install script + pre-flight, **re-run upgrades in place**, hardened systemd unit, `start/stop/status/uninstall/doctor --bundle`, signed releases, `serverdock bench`, **first VPS bench**. **Exit = early usable version** (disposable or externally backed-up apps only, until M6) | 0009 |
+| 7 | M7b | State backup and self-update | Daily housekeeping job, encrypted state backup (local only until M6) → self-update (trial boot + rollback) → rehearse restore → `state restore`. Replaces the "copy `DATA` before each reinstall" rule; the app-data rule stays until M6. | 0010 |
+| 8 | M5 | Git builds and push-to-deploy | Dockerfile builds on capped BuildKit, GitHub App push-to-deploy + commit status, generic webhook, live build progress, outbound-URL policy | 0007 |
+| 9 | M6 | Compose, databases and backups | Compose (compose-go, policy-checked), one-click Postgres/MySQL/Redis, cron scheduling, encrypted S3 backups (also a state-archive target), restore with approval, **VPS bench re-run** | 0008 |
+| 10 | M4b | Passkeys | WebAuthn sign-in on the panel domain, TOTP and recovery codes as fallback, passkeys ADR, threat-model update | **0013** |
+| 11 | M8 | Observability and housekeeping | Metrics, live logs, log search, alerts, notifications, disk cleanup + alerts, "update available" | 0011 |
+| 12 | M9 | API, MCP, docs and Phase 1 exit | OpenAPI complete, read-only MCP, docs site, full reviews, final VPS bench, 5-minute test, dogfood report (counted window: last 14 days before exit) | 0012 |
+
+**Why this order (Revision 1).** The reorder gets ServerDock into real use sooner; it does not make the Phase 1 exit earlier.
 - M1–M2 are the foundations: safe exposure, a schema, the registry and audit, and auth.
-- M3a–M6 add one deploy capability at a time, in rising order of risk.
-- M4 comes before M5 because the GitHub App needs a public HTTPS panel.
-- M7a runs the first real VPS bench, so footprint surprises show up before the last two milestones. M7b gives dogfooding a safe update path.
+- M3a, M3b and M4a are the smallest set that runs a real app: image deploys with rollback, configuration and volumes, and a domain with HTTPS. An early version without HTTPS on a domain would not be usable.
+- M7a comes next so the early version is a real signed install on a real VPS, and the first VPS bench runs early. Re-running `install.sh` is the update path until M7b.
+- M7b follows at once, so the reinstall-to-update period is short and ServerDock's own state is backed up before more of it builds up. Its quiesce check is generic, so builds and backups added later are covered.
+- M5 still comes after M4a because the GitHub App needs a public HTTPS panel. M6 follows M5 because S3 uses the outbound-URL policy that M5 introduces.
+- M4b (passkeys) comes after M6: first use doesn't need it (TOTP and recovery codes cover sign-in), and it only depends on M4a's panel domain.
+- M8 adds the first always-on periodic work (the metrics collector), so it comes late and the milestones before it are measured without it. Its certificate-expiry alerts need M4a, and its backup alerts need M6.
+- The counted dogfood window needs builds with M5, M6 and M8, so it runs during M9, and the exit can't come before it ends.
 
-## Footprint allocation (cumulative S2 / S4 VmRSS targets, CI amd64)
+## Footprint allocation (cumulative S2 / S4 VmRSS targets, CI amd64; S4 re-based on M3a CI 2026-11-28)
 
 > Since [ADR 0011](../decisions/0011-footprint-ceiling.md) (2026-11-21) these allocations are **tripwire planning numbers**, not gates: CI fails only above 200 MB (S2) / 100 MB (S4). Crossing an allocation needs a written reason in the PR.
 
 Baseline from [research/05](../research/05-phase0-measurements.md): **S2 47.6 MB, S4 44.1 MB**, binary 18.8 MB gzip. Slack per rule 2: S2 +2 MB, S4 +0.5 MB.
 
-| After | S2 target | S4 target | Main new idle cost |
-|---|---|---|---|
-| M1 | ≤ 49.0 (+1.4) | ≤ 45.0 (+0.9) | TLS listener, migration runner (startup only) |
-| M2 | ≤ 53 | ≤ 45 | Real SPA (file-backed), auth, sessions |
-| M3a | ≤ 56 | ≤ 45.5 | Docker events stream, job scheduler, reconciler |
-| M3b | ≤ 58 | ≤ 46 | Secretbox in use, more state |
-| M4 | ≤ 62 | ≤ 47 | Caddy TLS/certmagic maintenance |
-| M5 | ≤ 64 | ≤ 47 | Webhook handler only; BuildKit runs only during builds |
-| M6 | ≤ 68 | ≤ 47 | compose-go init, cron, S3 client |
-| M7a | ≤ 68.5 | ≤ 47 | Lifecycle commands (no idle cost) |
-| M7b | ≤ 69 | ≤ 47 | Daily update check (on the shared timer) |
-| M8 | ≤ 74 | ≤ 48 | 15 s metrics collector, alert evaluation |
-| M9 | ≤ 75 | ≤ 48 | MCP handler (no idle cost) |
+Revision 1 (2026-11-27): rows are in the new run order. The S2 column keeps each milestone's old increment; the old M4 increment (+4) is split into M4a +3 and M4b +1, so the M9 total is unchanged at 75 MB. The S4 column is **re-based on M3a's measurement**, because the old S4 targets were passed in M2 (46.0 MB, see ADR 0011) and M3a.
 
-**S4 is the tight one: 5.9 MB of headroom.** Control-plane dependencies can raise S4 through `init()` work, even though agent mode never calls them. If S4 heads past 50 MB, see Q3.
+**Re-based on CI (2026-11-28).** The first CI bench on PR #6 (M3a, commit 5eded76, median of per-run medians) measured **S2 live watcher 54.0 MB, S4 46.5 MB**, idle CPU 0.00 %, binary 20.0 MB gzip. The S4 column below is shifted by the difference (46.5 − 47.6 = −1.1 MB); S2 is not re-based (54.0 is under its 56 target). The CI VmHWM was not recorded in the gate output used here, so the 49.8 MB figure is a cloud-container number only. The paragraph that follows is kept as the record of the provisional base.
 
-**Report-only "S2-loaded" scenario (added in M8):** 3 image services, 1 Postgres, 2 domains (internal issuer).
+**Provisional M3a base.** The M3a figures in the table (S2 about 54–55, S4 47.6, VmHWM 49.8) come from the **cloud container** bench (a temporary cgroup-v1 shim), **not from CI amd64** as this section's heading says. The CI S2/S4 medians for M3a are **not yet measured**: the bench job is skipped on draft PRs. The tripwire comparison is owned by the CI bench median (the gate metric). **The table is re-based once, on the first CI numbers from PR #6**, and the S4 targets after M3a shift by the difference.
+
+| Run | After | S2 target (increment) | S4 target (increment) | Main new idle cost |
+|---|---|---|---|---|
+| 1 | M1 | ≤ 49.0 (+1.4) — measured 47.6 | ≤ 45.0 (+0.9) — measured 44.2 | TLS listener, migration runner (startup only) |
+| 2 | M2 | ≤ 53 (+4) | ≤ 45 — measured 46.0 | Real SPA (file-backed), auth, sessions |
+| 3 | M3a | ≤ 56 (+3) — **CI 54.0** (live watcher; cloud container 54–55) | **CI 46.5** (median of per-run medians; the S4 base; cloud container 47.6, VmHWM 49.8 cloud only) | Docker events stream, job scheduler, reconciler |
+| 4 | M3b | ≤ 58 (+2) | ≤ 46.7 (+0.2) | Secretbox in use, more state |
+| 5 | M4a | ≤ 61 (+3) | ≤ 46.9 (+0.2) | ACME issuance and domain routes (certmagic maintenance already runs since M1) |
+| 6 | M7a | ≤ 61.5 (+0.5) | ≤ 46.9 (+0) | Lifecycle commands, `sd_notify` (no idle cost) |
+| 7 | M7b | ≤ 62 (+0.5) | ≤ 46.9 (+0) | Daily housekeeping job with update check and state backup (on the shared timer) |
+| 8 | M5 | ≤ 64 (+2) | ≤ 46.9 (+0) | Webhook handler only; BuildKit runs only during builds |
+| 9 | M6 | ≤ 68 (+4) | ≤ 47.4 (+0.5) | compose-go init, cron, S3 client |
+| 10 | M4b | ≤ 69 (+1) | ≤ 47.4 (+0, required) | WebAuthn library (control plane only) |
+| 11 | M8 | ≤ 74 (+5) | ≤ 48.4 (+1) | 15 s metrics collector, alert evaluation |
+| 12 | M9 | ≤ 75 (+1) | ≤ 48.4 (+0) | MCP handler (no idle cost) |
+
+Check: S2 increments after M3a are 2 + 3 + 0.5 + 0.5 + 2 + 4 + 1 + 5 + 1 = 19, and 56 + 19 = 75 (tripwire 80). S4 increments after M3a are 0.2 + 0.2 + 0.5 + 1 = 1.9, and 46.5 + 1.9 = 48.4 (tripwire 50).
+
+**Which number is compared.** The tripwires and these targets are checked against the **CI** bench gate metric: the **median of the per-run medians** of idle VmRSS (`bench/run.sh` line 24, `bench/report`). The full-run VmHWM (high-water mark) is reported as a **watch figure only**: it is not compared with the tripwire (plan 0004 Revision 17).
+
+**How a step is judged.** A milestone's footprint step is judged by its **full-run median plus an explained cause**, not by a single delta. The +0.2 MB S4 steps (M3b, M4a) are inside the full-run spread of about 0.9 MB, so one run can't show them; a target overrun is accepted when the full-run median and the cause (new code, a dependency, binary growth) explain it.
+
+**S4 headroom is the tightest constraint in Phase 1.** On the CI M3a base the S4 median is 46.5 MB, about **3.5 MB under the 50 MB tripwire** (ADR 0011; the hard ceiling is 100 MB). The planned targets leave **1.6 MB at M9** (48.4). Control-plane dependencies raise S4 through `init()` work and through mapped pages of a larger binary, even though agent mode never calls them. So:
+- every S4 increase uses up headroom that the slack rule (S4 +0.5 MB) barely covers. A milestone whose S4 median lands above its target needs the written reason and `footprint` review; one whose median crosses the 50 MB tripwire needs the ADR 0011 written reason, and a crossing without a convincing reason triggers Q3 (pull the slim agent forward);
+- the S4 VmHWM is recorded in each bench report so a rising trend is visible, but it is not a gate or a tripwire (the 49.8 MB M3a figure is a cloud-container number; the CI VmHWM is not yet recorded). **If it passes 50 MB, Q3 still triggers only on the median**;
+- M4a, M5, M7a and M7b should add close to nothing to S4: none of them adds a heavy dependency, and certmagic already runs in agent mode. If any of them shows a QUICK S4 delta above 0.5 MB, rule 4's full S4 run applies (named for M4a in its section);
+- M6 (compose-go, the S3 client) and M4b (WebAuthn library) need the full, non-QUICK S4 run of rule 4 before merge, whatever the QUICK delta; M4b must leave S4 unchanged;
+- **the planned S4 increases are M6 (+0.5: compose-go and S3 client `init()` and binary growth) and M8 (+1: the metrics collector also runs in agent mode)**. M8 also needs a full S4 run.
+- **Remote nodes with domains cost more than the empty S4 scenario** (certificates, routes, ACME state). S4 measures an agent with no domains; the cut-down loaded run in the M7a VPS bench shows the domain cost on S2, and the docs must not quote empty S4 as the cost of a remote node that serves domains.
+
+**Report-only "S2-loaded" scenario (added in M8):** 3 image services, 1 Postgres, 2 domains (internal issuer). A cut-down version (image services with 1–2 domains, internal issuer, no Postgres) runs earlier, in the M7a VPS bench.
 
 ---
 
@@ -195,7 +237,7 @@ Full step plan in **Part B**.
     - The console prints the **leaf's SHA-256 fingerprint**.
     - Onboarding tells the user to compare it with the browser's certificate details before entering the setup token.
     - Docs never tell users to install a CA.
-    - Until M4, `:80` only redirects to HTTPS.
+    - Until M4a, `:80` only redirects to HTTPS.
   - **Setup token.**
     - ≥ 128 bits from `crypto/rand`, single-use, stored hashed, compared in constant time, expires after 1 h, regenerated on restart while no admin exists.
     - Sent only in the POST body, never in a URL query.
@@ -320,7 +362,7 @@ Full step plan in **Part B**.
   - Bind mounts are admin-only.
   - Context variables `SD_FQDN`, `SD_COMMIT`, `SD_ENV`, `SD_DEPLOY_ID`.
   - Engine version stored in `meta`; a change raises "needs attention".
-- **Footprint:** S2 → ≤ 58 MB; no new timers.
+- **Footprint:** S2 → ≤ 58 MB, S4 → ≤ 46.7 MB (re-based on M3a's CI median of 46.5 MB, 2026-11-28; judged by the full-run median plus a cause, since +0.2 is inside the run spread; the S4 VmHWM is a watch figure, not a Q3 trigger); no new timers.
 - **Security:** AAD binding; sentinel tests; fuzzed path validation.
 - **Tests:**
   - a private `registry:2` with auth;
@@ -332,11 +374,13 @@ Full step plan in **Part B**.
 - **Reviewers:** `security` (required), `systems`, `footprint`, `accessibility`.
 - **Exit evidence:** RC matrix green; sentinel tests green; bench green.
 
-## M4 — Domains and automatic HTTPS
+## M4a — Domains and automatic HTTPS
+
+*Revision 1 (2026-11-27): the old M4 is split. M4a keeps plan 0006 and everything except passkeys, which moved to M4b (plan 0013, below). M4a runs right after M3b and is part of the early usable version.*
 
 - **Goal:** domains for services and the panel, automatic HTTPS, actionable diagnostics. A certificate or DNS problem never takes a running app down.
-- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6; **passkeys for the panel** (added by the maintainer 2026-11-20).
-- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/auth` (passkeys), `internal/store`, `web/`.
+- **Roadmap items:** domains with automatic HTTPS and diagnostics; TLS never takes a running app down; IPv6.
+- **Packages:** `internal/agent/proxy`, `internal/domains` (new), `internal/store`, `web/`.
 - **Key decisions:**
   - **Per-route validation, not all-or-nothing.** The generator validates each route/host. Failing routes are **left out** and get status `error` with a reason; the rest are loaded.
   - **On boot, the config is generated from the DB minus failing routes, never loaded from a stale copy on disk.**
@@ -344,16 +388,14 @@ Full step plan in **Part B**.
   - Plan 0006 starts with a spike on observing certificate state through Caddy's own events. **Certificate-expiry alerts (M8) use certmagic's maintenance and events, not a timer of ours.**
   - Diagnostics run on demand (`unknown` when undecidable).
   - IPv6: dual-stack.
-  - **Panel domain** (moved here from M2 by plan 0003): set the panel domain, issue its certificate, redirect the IP address to it once the certificate is valid, add HSTS (G15), and prompt the admin to re-enrol TOTP (G5).
-  - **Passkeys (WebAuthn), maintainer request 2026-11-20.** Passkeys need a domain (the relying-party ID can't be an IP address) and a trusted certificate (browsers turn WebAuthn off on pages with certificate errors), so they arrive here, after the panel domain works.
-    - A passkey can replace the TOTP step (password + passkey), or sign in on its own (passkey only, user verification required). Several passkeys per account, each with a name, last-used time and a revoke button in Settings › Security.
-    - The relying-party ID is the panel domain. Passkey sign-in is offered only on that origin; on the IP address the panel keeps password + TOTP.
-    - TOTP and recovery codes stay as the always-available fallback (IP access, lost device). Adding or removing a passkey needs fresh 2FA, is audited, and revokes nothing else. `admin reset` clears all passkeys.
-    - Changing the panel domain invalidates passkeys registered for the old one; the UI says so before the change.
-    - Stored: credential ID, public key, sign counter, transports, AAGUID, name, created and last-used times. No attestation requirement (`none`), so any authenticator works.
-    - Library: one maintained WebAuthn library (e.g. `go-webauthn/webauthn`), justified with a footprint measurement. Control plane only: it must not link into agent mode, and S4 must stay unchanged.
-    - New ADR (passkeys) and a `security` threat-model update: challenge single-use and expiry, origin and RP-ID checks, counter regression handling, user-verification policy, and the same back-off as login.
-- **Footprint:** S2 → ≤ 62 MB; certmagic timers measured and listed; passkey library delta measured (S2 only, S4 unchanged).
+  - **Panel domain** (moved here from M2 by plan 0003): set the panel domain, issue its certificate, redirect the IP address to it once the certificate is valid, add HSTS (G15), and prompt the admin to re-enrol TOTP (G5). Plan 0006 must note that the panel domain is also the passkey relying-party ID in M4b, so changing it later invalidates passkeys (M4b adds that warning).
+  - **Plan 0006 must also (security, Revision 1):**
+    - redirect IP → domain **only while the domain certificate is valid**; when it isn't, the IP panel answers again instead of redirecting to a broken page;
+    - offer a **console break-glass** that keeps the IP panel (no redirect), audited;
+    - show certmagic failure and expiry events in the Overview "needs attention" list **from M4a** (M8 later adds notifications for them);
+    - send HSTS **without `includeSubDomains` or `preload` by default**, so other services under the same parent domain are not forced to HTTPS by the panel.
+  - **The panel domain is optional.** Before M4b, sign-in on it is password + TOTP, which can be phished (accepted risk in `docs/security.md`, maintainer 2026-11-27); the early-use guide recommends IP access over an SSH tunnel or a firewall allowlist on 443.
+- **Footprint:** S2 → ≤ 61 MB, S4 → ≤ 46.9 MB; certmagic timers measured and listed. **If the QUICK S4 delta is above 0.5 MB, a full, non-QUICK S4 run is needed before merge (rule 4).**
 - **Security:** IDNA validation; only the panel domain routes to the control plane; changing it needs fresh 2FA.
 - **Tests:**
   - goldens;
@@ -361,10 +403,42 @@ Full step plan in **Part B**.
   - boot with a failing route;
   - Pebble: issuance, failure while HTTP stays up, reload safety;
   - IPv6;
-  - passkeys: registration and sign-in with a virtual authenticator (Playwright/CDP), wrong origin and wrong RP ID refused, replayed challenge refused, counter regression handled, passkey not offered on the IP address, TOTP fallback still works, `admin reset` clears passkeys;
-  - Playwright, with accessibility checks for the passkey screens.
+  - IP → domain redirect only while the certificate is valid (Pebble: expire it, the IP panel answers again); the console break-glass keeps the IP panel; HSTS has no `includeSubDomains` or `preload`; a certmagic failure shows in "needs attention";
+  - Playwright.
 - **Reviewers:** `security`, `systems`, `footprint`, `accessibility`.
 - **Exit evidence:** Pebble tests green; a manual real-domain check; bench green.
+
+## M4b — Passkeys
+
+*Revision 1 (2026-11-27): split out of the old M4. Detailed plan **0013**. Runs after M6 and before M8; still in Phase 1. It depends only on M4a's panel domain.*
+
+- **Goal:** the admin can sign in with a passkey on the panel domain, with TOTP and recovery codes as the always-available fallback.
+- **Roadmap items:** **passkeys for the panel** (added by the maintainer 2026-11-20).
+- **Packages:** `internal/auth` (passkeys), `internal/store`, `web/`.
+- **Key decisions:**
+  - **Passkeys (WebAuthn), maintainer request 2026-11-20.** Passkeys need a domain (the relying-party ID can't be an IP address) and a trusted certificate (browsers turn WebAuthn off on pages with certificate errors), so they arrive after the panel domain works (M4a).
+    - A passkey can replace the TOTP step (password + passkey), or sign in on its own (passkey only, user verification required). Several passkeys per account, each with a name, last-used time and a revoke button in Settings › Security.
+    - The relying-party ID is the panel domain. Passkey sign-in is offered only on that origin; on the IP address the panel keeps password + TOTP.
+    - TOTP and recovery codes stay as the always-available fallback (IP access, lost device). Adding or removing a passkey needs fresh 2FA, is audited, and revokes nothing else. `admin reset` clears all passkeys.
+    - Changing the panel domain invalidates passkeys registered for the old one; the UI says so before the change.
+    - Stored: credential ID, public key, sign counter, transports, AAGUID, name, created and last-used times. No attestation requirement (`none`), so any authenticator works.
+    - Library: one maintained WebAuthn library (e.g. `go-webauthn/webauthn`), justified with a footprint measurement. Control plane only: it must not link into agent mode, and S4 must stay unchanged.
+    - New ADR (passkeys) and a `security` threat-model update: challenge single-use and expiry, origin and RP-ID checks, counter regression handling, user-verification policy, and the same back-off as login.
+  - Plan 0003's notes for "M4 / passkeys (plan 0006)" apply to plan 0013: `admin reset` clears passkeys; a passkey-only sign-in needs its own back-off and its own "admin exists" rule; the `<unknown>` bucket rule applies to unknown credential ids.
+- **Footprint:** S2 → ≤ 69 MB; passkey library delta measured (S2 only). **S4 unchanged (≤ 48.5 MB), shown by a full, non-QUICK S4 run** (S4 headroom, see the allocation table).
+- **Security:** a new sign-in path; `security` review required.
+- **Tests:**
+  - registration and sign-in with a virtual authenticator (Playwright/CDP);
+  - wrong origin and wrong RP ID refused;
+  - replayed challenge refused;
+  - counter regression handled;
+  - passkey not offered on the IP address;
+  - TOTP fallback still works;
+  - `admin reset` clears passkeys;
+  - changing the panel domain warns first and invalidates the old passkeys;
+  - Playwright, with accessibility checks for the passkey screens.
+- **Reviewers:** `security` (required), `accessibility`, `footprint`, `systems`.
+- **Exit evidence:** virtual-authenticator tests green; a manual passkey sign-in on a real domain; full S4 run unchanged; bench green.
 
 ## M5 — Git builds and push-to-deploy
 
@@ -384,7 +458,8 @@ Full step plan in **Part B**.
   - **The gap.** BuildKit fetches git inside its own container, so our `DialContext` isn't on that path.
   - Plan 0007 must run the URL pre-check (resolve the host, apply the rule 10 block list) **inside the BuildKit container's network namespace** right before the build, then document the remaining gap: BuildKit resolves the name again, so DNS rebinding between the check and the fetch is still possible.
   - Plan 0007 must also restrict the BuildKit container's network to limit what that gap exposes.
-- **Footprint:** S2 → ≤ 64 MB at idle; peak usage during a build measured on 1 GB.
+- **Runs after M7b (Revision 1).** Self-update already exists, so plan 0007 must add **a test that a self-update defers while a build job runs** (M7b's quiesce check is generic over running jobs; this test proves builds are covered).
+- **Footprint:** S2 → ≤ 64 MB at idle, S4 ≤ 46.9 MB; peak usage during a build measured on 1 GB (repeated in the M6-exit VPS bench).
 - **Security:**
   - verify signatures before parsing;
   - repos are untrusted;
@@ -393,6 +468,7 @@ Full step plan in **Part B**.
   - no tokens in URLs;
   - no fork builds.
 - **Tests:**
+  - a self-update defers while a build runs;
   - signatures, replay, JWT, argv;
   - netpolicy (metadata IP, a redirect to loopback, DNS rebinding answered with a blocked IP);
   - over-cap build;
@@ -406,7 +482,7 @@ Full step plan in **Part B**.
 
 - **Goal:** safe Compose stacks; one-click Postgres, MySQL and Redis; scheduled encrypted S3 backups and restore with approval.
 - **Roadmap items:** deploy Compose (policy-checked); Postgres/MySQL/Redis + scheduled S3 backups + restore.
-- **Packages:** `internal/compose`, `internal/databases`, `internal/backup` (new), `internal/jobs` (cron with explicit timezone, daily housekeeping job), `internal/netpolicy` (S3), `web/`.
+- **Packages:** `internal/compose`, `internal/databases`, `internal/backup` (new), `internal/jobs` (cron with explicit timezone), `internal/statebackup` (S3 target), `internal/netpolicy` (S3), `web/`.
 - **Key decisions:**
   - **Compose → ADR 0014:** compose-go v2, our policy, our orchestrator; unsupported fields are rejected with a list. A footprint row is needed, probably with a full S4 run.
   - **Plan 0008 must require:**
@@ -429,23 +505,32 @@ Full step plan in **Part B**.
     - argv dumps → compression → chunked AES-GCM (per-backup key wrapped by the master key) → S3 multipart, with S3 endpoints checked by netpolicy;
     - `DATA/backups/` is 0700 and backup files are 0600;
     - restore: typed confirmation, fresh 2FA, a pre-restore dump.
-  - **Scheduling.** Cron schedules and **one daily housekeeping job** both run on the M3a scheduler timer; there is no second timer. Later milestones add their daily tasks to that job.
-- **Footprint:** S2 → ≤ 68 MB.
+    - a restore job cut off by a restart gets its own boot-pass rule (not the generic default): `failed (interrupted by restart)` plus `needs_attention restore_interrupted`, because the app's database may be half-restored (systems, Revision 1).
+  - **S3 client chosen on measured cost (footprint, Revision 1).** ADR 0015 (backups) reports, for each candidate S3 client, the `GODEBUG=inittrace=1` output (init time and allocations in agent mode) and the gzip binary delta, and picks the client on those numbers (a small signer on `net/http` is a valid candidate). ADR 0014 (Compose) reports the same two numbers for compose-go.
+  - **Where the upload runs.** Plan 0008 must say whether the backup upload runs on the agent (local, `LocalOnly`) or in the control plane. If it runs on the agent, the multipart buffer is bounded (part size × parts in flight, stated in MB) and shown in the footprint row.
+  - **Scheduling.** Cron schedules run on the M3a scheduler timer, next to the **daily housekeeping job that M7b added** (Revision 1 moved the job from M6 to M7b); there is no second timer. M6 adds backup retention pruning as a housekeeping task.
+  - **State archives off the box (Revision 1).** M7b writes state archives locally only. Plan 0008 must add the S3 backup target (checked by netpolicy) as a state-archive target, so scheduled archives can leave the server, and then change the UI's "local only, copy it off this server by hand" notice to show where each archive went.
+  - **Self-update during backups.** M7b's quiesce check is generic over running jobs. Plan 0008 must add **tests that a self-update defers while a backup job runs and while a restore job runs**.
+- **VPS bench re-run (required at M6 exit, Revision 1).** The M7a VPS bench runs before M5 and M6, so it doesn't measure compose-go, the S3 client or a BuildKit build. At the M6 exit, run the full `bench/run.sh` plus `serverdock bench` again, plus peak RAM during one capped build and one S3 backup, and append the results to `docs/research/06-phase1-vps-bench.md`. Per the Q6 partial answer (2026-11-22) it runs on **the same host as the M7a run: the maintainer's Hetzner test server (Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM), which is not a true 1 GB machine**; the measured container is capped at `--memory 1g --cpus 1`, and the entry says the host is larger than 1 GB, so host-level free memory and swap pressure during the build are not the 1 GB case. The true 1 GB check stays with the M9 final run. VmRSS on this host is comparable with a 1 GB host, but page-cache behaviour is not (the host has spare memory for cache), and the entry says so. Over the tripwires without a convincing reason → reopen ADR 0004/0011 before M4b.
+- **Footprint:** S2 → ≤ 68 MB, S4 → ≤ 47.4 MB (full S4 run required for compose-go and the S3 client, rule 4).
 - **Security:** Compose is untrusted (above); S3 keys go in secretbox; backups encrypted before upload; no shell.
 - **Tests:**
   - policy fixtures for every deny-list entry;
   - path-escape fixtures (`..`, absolute paths, symlinks);
   - a remote include is refused;
   - process env not interpolated;
-  - MinIO round trips;
+  - MinIO round trips, including a state archive uploaded to the S3 target;
   - a corrupted backup is refused;
+  - a self-update defers while a backup runs, and while a restore runs;
   - Playwright.
 - **Reviewers:** `security` (required), `systems`, `footprint`, `accessibility`.
-- **Exit evidence:** round trips green; policy fixtures green; footprint rows; bench green.
+- **Exit evidence:** round trips green; policy fixtures green; footprint rows; bench green; **VPS bench re-run results**.
 
 ## M7a — Install, lifecycle, signed releases
 
-- **Goal:** one command installs a verified, signed release on a fresh VPS, with honest lifecycle commands. The first real VPS bench runs here.
+*Revision 1 (2026-11-27): M7a now runs right after M4a. Its exit is the **early usable version**. It also defines "update by reinstalling", the only update path until M7b.*
+
+- **Goal:** one command installs a verified, signed release on a fresh VPS, with honest lifecycle commands; re-running it upgrades an existing install in place. The first real VPS bench runs here.
 - **Roadmap items:** install script with pre-flight; signed releases + `serverdock bench` per release; `uninstall`, `start/stop/status`, `doctor --bundle`; supported Docker range published.
 - **Packages:** `install.sh`, `cmd/serverdock`, `.github/workflows/release.yml`, `web/` (onboarding server checks).
 - **Key decisions:**
@@ -460,34 +545,76 @@ Full step plan in **Part B**.
     - The binary embeds **a key set (current + next)**. ADR 0017 documents rotation (sign with the next key, ship a new next key, retire the old one).
     - Verification uses stdlib `crypto/ecdsa`.
     - Where the key lives is Q5. **If CI signs, it does so only in a protected `release` environment** (required reviewer, tag-only trigger, never `pull_request_target`).
-  - **`install.sh` refuses to install when it can't verify the signature** (for example when `openssl` is missing), unless `--no-verify` is passed, in which case it prints a warning.
+  - **`install.sh` refuses to install when it can't verify the signature** (for example when `openssl` is missing). On a **fresh install only**, `--no-verify` overrides this with a warning. **Upgrade, repair and downgrade modes refuse `--no-verify` outright** (below).
+  - **`EXTEND_TIMEOUT_USEC` from M7a (systems, Revision 1).** Reinstalls run migrations before M7b exists, so plan 0009 already makes the server send `EXTEND_TIMEOUT_USEC` while migrations make progress and `READY=1` only after them and the health check. M7b reuses this.
   - **`doctor --bundle`:**
     - redacted;
     - excludes `DATA/keys`, `DATA/pki`, `DATA/setup-token`, `DATA/agent.token` and `DATA/backups/`;
     - reads the DB **only through `store.OpenReadOnly`**.
   - **`--debug-allow-remote` was removed in M1, and the debug listener is a 0600 unix socket.** Plan 0009 must confirm that the release binary has no TCP debug listener.
-- **VPS bench (required at M7a exit):** full `bench/run.sh` plus `serverdock bench` on a fresh 1 GB VPS, with results in `docs/research/06-phase1-vps-bench.md` (first section). Over budget → reopen ADR 0004/0008 before M7b.
-- **Footprint:** S2 → ≤ 68.5 MB.
-- **Security:** supply chain; verify-or-refuse install; dry-run uninstall.
+  - **Re-running `install.sh` upgrades in place (Revision 1).** Until M7b ships self-update, this is how an install is updated, so plan 0009 must define it:
+    - it detects an existing install (unit file, service user, `DATA`) and switches to upgrade mode, saying so before it changes anything;
+    - **verification in upgrade, repair and downgrade modes:** the new release is verified like a fresh install (signed manifest, version, arch), and **`--no-verify` is refused outright**. These modes don't need `openssl`: the **installed binary embeds the release key set** and checks the new manifest with a subcommand (for example `serverdock verify-manifest`); when `openssl` is present the script checks with it too, and both must pass;
+    - **the bytes that are hashed are the bytes that are installed:** the download goes into a root-owned `mktemp -d`, the binary is copied to a temp file in the same directory as `bin/serverdock`, that exact file is hashed and checked against the manifest, and only then renamed into place;
+    - it **refuses a version older than the installed one**. The server already refuses a DB schema newer than itself (M1 migration runner), so a plain downgrade could not start anyway. The only way back is the downgrade mode below;
+    - **repair:** re-running with **the same version** re-verifies and rewrites the binary and our own unit file, keeps `DATA` and config as below, and restarts the service;
+    - **downgrade mode, for restore-then-downgrade only:** it takes an explicit target, **`--downgrade-to X.Y.Z`**, prints that this version is older than the installed one, and **never skips signature verification**. It works **only once the copied `DATA` has been put back**, that is, when the DB schema is no newer than the target binary; otherwise it refuses. The server writes an audit row for the downgrade on its next start;
+    - it **keeps `DATA` untouched** (DB, `DATA/keys`, `DATA/pki`, `DATA/agent.token`); it never writes a setup token and never regenerates keys;
+    - it **never overwrites config**: a config file or unit drop-in the user changed stays as it is. If a new default differs, it is written next to it as `.new` and the script says so. Our own unit file may be replaced; user changes belong in drop-ins (`systemctl edit`), and the docs say so;
+    - **running jobs:** there is no quiesce check before M7b, so the service is stopped even if a job runs. Upgrade mode first reads `serverdock status` (plan 0009 makes it list running jobs). **When it shows running jobs (for example a deploy) it warns, names them, and asks**: the prompt reads `/dev/tty`, the default answer is no, and with no TTY it refuses unless `--yes` is given. If `status` fails, the state is "unknown" and it asks the same way. If the user goes on, M3a's boot pass settles any interrupted deploy: **finished if its commit happened, otherwise `failed (interrupted by restart)`**, so the app stays on its active version;
+    - it stops the service, swaps the binary, starts it, and **reports success only after `READY=1`** (`Type=notify`; `EXTEND_TIMEOUT_USEC` keeps a long migration inside the deadline). If the new version doesn't become ready, it says so, prints the journal command, and leaves the copied `DATA` recovery steps on screen. It does not roll back on its own; automatic rollback is M7b;
+    - migrations run through the M1 runner, which takes its pre-migrate backup in `DATA/backups/`;
+    - apps keep running in Docker during the reinstall; the proxy is down for a few seconds, and the script says so first.
+  - **After M7b there is one upgrade path (systems, Revision 1).** Plan 0009 writes upgrade mode so that, **once the installed binary has self-update** (it reports this through a version capability), upgrade mode:
+    - **refuses while `DATA/update.json` is not terminal** (`trial` or `rolling_back`) and prints `serverdock status`;
+    - for a newer version, hands off to `serverdock update` (or tells the user to run it) instead of swapping the binary itself.
+
+    Reinstalling stays for three cases only: **the M7a → M7b hop**, **repair**, and **restore-then-downgrade**. **The hop:** the first M7b release is installed by re-running `install.sh`, which also rewrites our unit with what M7b needs: a `Restart=` setting that also restarts after a clean exit (`Restart=always`, as above; the hop makes sure of it), so the swap-and-exit in M7b step 2 brings up the new binary; and the `TimeoutStartSec` that serves as the trial's health deadline.
+  - **Operating rules before M7b (early use).** Printed by the upgrade mode and written in the README (the docs site comes in M9), until M7b lands:
+    - only apps whose data is disposable or backed up elsewhere (this rule stays until M6);
+    - **before each reinstall, stop the service and copy `DATA` off the server, including `DATA/keys/master.key`** (without the master key, encrypted secrets in the DB can't be read). Plan 0009 ships **one exact, tested command** that streams the copy encrypted and **never stages plaintext on the server**, shown in the README and in the upgrade printout. For example, run from the user's own machine: `ssh root@server 'systemctl stop serverdock && tar -C /var/lib/serverdock -cf - .' | age -p > serverdock-data.tar.age` (with `umask 077`), or the same `tar` stream saved locally and then encrypted locally; Many VPS images disable root login over SSH, so the README also shows a `sudo` form (for example `ssh user@server 'sudo sh -c "systemctl stop serverdock && tar -C /var/lib/serverdock -cf - ."'`), and the test covers whichever form the README shows. The command stops the service on purpose, because the next step is the reinstall, which starts it again; the printout says so, and for a copy without a reinstall it ends with `systemctl start serverdock`.
+    - **what the copy holds:** besides the DB and `DATA/keys/master.key`, also `DATA/pki` (hub CA and panel keys), `DATA/agent.token`, the pre-migrate DB backups and the deploy logs. **Keep it like a password: encrypted, in a private place**, never in a repo, chat or shared drive. The master key is not rotated in Phase 1, so **every old copy stays a live secret**; destroy the old copies once M7b's encrypted state archives exist;
+    - the pre-migrate backup is on the same disk and doesn't replace this copy;
+    - recovering from a bad reinstall: stop the service, put the copied `DATA` back, and run `install.sh --downgrade-to <previous version>` (downgrade mode above);
+    - **check free disk space by hand** (`df -h`) before each reinstall and now and then; disk alerts arrive with M8;
+    - **prune old images by hand** (`docker image prune` with care for rollback images); automatic cleanup arrives with M8;
+    - prefer reaching the panel by IP over an SSH tunnel, or allowlist 443 in a firewall, over a public panel domain until M4b (accepted risks in `docs/security.md`, 2026-11-27).
+- **VPS bench (required at M7a exit):** full `bench/run.sh` plus `serverdock bench` on the maintainer's Hetzner test server (Q6 partial answer: 3.8 GiB RAM, measured container capped at 1 GiB, not a true 1 GB host), with results in `docs/research/06-phase1-vps-bench.md` (first section). VmRSS is comparable with a 1 GB host, but page-cache behaviour is not, and the entry says so. **Since Revision 1 this run comes before M5 and M6, so it doesn't measure compose-go, the S3 client or BuildKit**; those are measured by the re-run at the M6 exit. **It adds a cut-down loaded S2 run** (image services with 1–2 domains, internal issuer), report-only, so the domain cost shows before M8's full S2-loaded scenario. Over the tripwires without a convincing reason → reopen ADR 0004/0011 before M7b.
+- **Footprint:** S2 → ≤ 61.5 MB, S4 ≤ 46.9 MB.
+- **Security:** supply chain; verify-or-refuse install; upgrade, repair and downgrade never accept `--no-verify`; the installed bytes are the hashed bytes; downgrade only by explicit target after restoring `DATA`, audited; `DATA` and config never overwritten; the `DATA` copy is streamed encrypted; prompts read `/dev/tty` and default to no; dry-run uninstall.
 - **Tests:**
   - shellcheck;
   - installs on fresh Debian/Ubuntu containers and a systemd VM;
   - tampered artifact, wrong-arch manifest and older-version manifest all refused;
-  - unverifiable install refused without `--no-verify`;
+  - unverifiable fresh install refused without `--no-verify`;
+  - **`--no-verify` refused in upgrade, repair and downgrade modes, with nothing changed**, each mode tested;
+  - upgrade without `openssl` on the host verifies through the installed binary; with `openssl` present, both checks run;
+  - a binary swapped in the temp directory after download but before hashing is refused (the hashed file is the renamed file);
+  - **re-run on an existing install** (systemd VM, with an admin, one image app with a domain and a changed config file): the admin still signs in with the same TOTP; the app keeps running; `DATA/keys` and `DATA/pki` are byte-identical; the changed config is byte-identical and a `.new` file appears when a default changed; a schema change leaves a pre-migrate backup; no setup token is written;
+  - **a migration longer than `TimeoutStartSec` succeeds through a reinstall** (`EXTEND_TIMEOUT_USEC`), and `READY=1` comes only after it;
+  - re-run with an older release → refused, nothing changed; `--downgrade-to` with a newer DB schema → refused; `--downgrade-to` with restored `DATA` and a tampered artifact → refused; a successful downgrade prints the warning and leaves an audit row on next start;
+  - re-run with the same version → repair: binary and unit rewritten, `DATA` and config unchanged;
+  - re-run while a deploy job runs → warning naming the job; no TTY and no `--yes` → refused; default answer → nothing changed; after going on, the deploy is settled and the app still serves its active version; `status` failing → "unknown" and the same prompt;
+  - re-run with a new binary that never sends `READY=1` → reported as failed, not as success;
+  - the documented `DATA` copy command runs as shown and leaves no plaintext file on the server;
   - bundle redaction.
 - **Reviewers:** `security` (required), `systems`, `footprint`, `accessibility`.
-- **Exit evidence:** a signed pre-release; install on a fresh VM recorded; **VPS bench results**.
+- **Exit evidence:** a signed pre-release; install on a fresh VM recorded; **a re-run upgrade recorded**; **VPS bench results**, including the cut-down loaded run; the early-use rules published in the README and the first pre-dogfood run logged in `docs/research/07-dogfood.md`.
 
 ## M7b — State backup and self-update
 
-- **Goal:** ServerDock backs up its own state, updates itself with automatic rollback, rehearses restores, and can be restored from the console. **Dogfooding starts once self-update lands** (step 2 below).
+*Revision 1 (2026-11-27): M7b now runs right after M7a and before M5, M6 and M8. It adds the daily housekeeping job itself (moved here from M6), writes state archives locally only (S3 arrives in M6), and its update quiesce check covers any running job other than the update itself. Self-update no longer starts the counted dogfood window (Part C).*
+
+- **Goal:** ServerDock backs up its own state, updates itself with automatic rollback, rehearses restores, and can be restored from the console. From here, early installs update through self-update instead of reinstalling (after the one M7a → M7b reinstall hop, see M7a). **M7b replaces the "copy `DATA` before each reinstall" rule**: plan 0010 replaces that advice with "copy the encrypted state archive off the server" and tells users to **destroy their earlier raw `DATA` copies** (they hold the unrotated master key). **The app-data rule (disposable or backed up elsewhere) stays until M6**, which adds app-data backups.
 - **Roadmap items:** self-update with candidate + rollback; ServerDock state backup + rehearse restore.
-- **Packages:** `internal/statebackup`, `internal/update` (new), `internal/store`, `cmd/serverdock` (`state restore`), `web/` (Updates, Settings).
+- **Packages:** `internal/statebackup`, `internal/update` (new), `internal/jobs` (daily housekeeping job), `internal/store`, `cmd/serverdock` (`state restore`), `web/` (Updates, Settings).
 - **Order:**
-  1. state backup;
-  2. self-update (**dogfooding starts**);
-  3. rehearse restore;
-  4. `state restore`.
+  1. daily housekeeping job (one recurring job on the M3a scheduler timer, rule 3; its first tasks are the update check and the scheduled state backup);
+  2. state backup;
+  3. self-update (pre-dogfood runs switch from reinstalling to self-update);
+  4. rehearse restore;
+  5. `state restore`.
+- **Daily housekeeping job (moved from M6).** One recurring job with a list of tasks; each task can be turned off on its own; a task failure is recorded on the job and doesn't stop the other tasks. M6 adds backup retention, M8 adds cleanup, metrics retention pruning and the image digest check. Cron schedules stay in M6.
 - **State backup archives.**
   - Contents: online `VACUUM INTO` + `DATA/keys` + `DATA/pki` + **the audit head hash and row count**.
   - **Always encrypted, in a way that lets the server encrypt without knowing the passphrase:**
@@ -495,7 +622,10 @@ Full step plan in **Part B**.
     2. Each archive uses an ephemeral X25519 key and ECDH with the stored public key (`crypto/ecdh`), then HKDF (`crypto/hkdf`) into chunked AES-256-GCM. All of this is stdlib.
     3. The archive header stores the argon2 parameters, the salt and the ephemeral public key.
     4. Restore needs the passphrase.
-  - Because of this, **scheduled daily** archives (a task of the M6 housekeeping job, when a target is configured) run unattended.
+    5. **Restore caps the argon2id parameters it accepts from an archive header** (memory at most 256 MiB, with bounds on time and parallelism; plan 0010 sets the exact caps): the header is read before the archive is authenticated, so a crafted header must not make restore allocate gigabytes.
+  - **Passphrase strength.** Setting the passphrase enforces a minimum length (plan 0010 sets it, for example 12 characters) and warns on weak or common passphrases.
+  - Because of this, **scheduled daily** archives (a task of the housekeeping job above, once a passphrase is set) run unattended.
+  - **Local only until M6 (Revision 1).** M7b has no remote target: netpolicy arrives in M5 and S3 in M6. Archives go to `DATA/backups/state/` (0700, files 0600), written as `.tmp`, fsynced, renamed, then verified. **The verification can only run during the write, while the per-archive key (from the ephemeral ECDH) is still in memory**: the server keeps only the public key, so it can't decrypt an archive later. Plan 0010 verifies by reading the written file back and checking every AEAD chunk with that in-memory key before discarding it. The housekeeping task keeps the newest 7 and **deletes older ones only after the new archive is fully written and verified**; a partial `.tmp` never counts as one of the 7 (leftover `.tmp` files are wiped on boot, M1). Free-space check first. **The UI (Settings › Backups and the Overview "needs attention" list) says that archives are stored only on this server and must be copied off it by hand**, and shows the time of the newest archive. It never calls a local-only archive "backed up off-site". **With no passphrase set, the needs-attention item says that no state backup exists. It also fires when the newest archive is older than about 48 h** (the daily task failed or was turned off). Plan 0008 adds S3 as a target.
   - Free-space check first; files 0600.
   - **This is separate from the local rollback snapshot.** Before an update, the old process also takes an online `VACUUM INTO` **snapshot** into `DATA/backups/` (0600, same trust as the live DB, not encrypted). Rollback uses it without a passphrase.
 - **Self-update → ADR 0018 (A3 closed: option b, restart).** SO_REUSEPORT overlap is ruled out: the data-dir flock, the SQLite single writer and the in-process Caddy can't run twice. Apps keep running in Docker; the proxy is down for a few seconds during the restart, and the UI says so beforehand.
@@ -511,9 +641,15 @@ Full step plan in **Part B**.
     - The `from` binary, on finding `rolled_back`, writes the rollback audit row (step 7).
     - In every other case a binary **ignores the file**. When the phase is terminal (`done`, or `rolled_back` after step 7), the binary that finds it archives it once to `DATA/backups/update-<utc>.json`. A non-terminal file that isn't addressed to the running binary is shown as "stale update" in `status` and never acted on.
 
+  **The update job and the boot pass (systems, Revision 1).**
+  - The update is itself a job (rule 5). Its outcome comes from `update.json`: `done` → `succeeded`; `rolled_back` → `failed ("rolled back")`, linked to the step 7 audit row.
+  - **Boot-pass default rule:** any job left `running` by an older `boot_id` whose kind has no specific rule (M3a has one for deploys) is marked `failed (interrupted by restart)`. The update job is the exception: it takes its outcome from `update.json` as above.
+  - **Settle before archiving:** the update job's outcome is written before `update.json` is archived, so a crash in between never falls into the default rule. The candidate settles it after writing `done` and before starting the worker; the old binary settles it in step 7, on the job row from the restored snapshot. If the file is already archived, the boot pass finds the outcome in `DATA/backups/update-<utc>.json` by `started_at`. Test (plan 0010): a kill between archiving and settling still gives `succeeded` or `failed ("rolled back")`.
+
   1. **Old process — quiesce.**
      - **Pause the scheduler first**, so no new job can start.
-     - Then check that no deploy, build, backup or restore job is running. If one is, resume the scheduler and **defer** the update.
+     - Then wait until **no job other than this update is running under the current `boot_id`**. The check excludes the update's own job id and jobs left over from older boots (the boot pass settles those); it is otherwise a generic check on job state, not a list of job types. Recurring jobs that are scheduled but not running don't count. A running housekeeping job counts like any other, since a state archive may be mid-write. This way builds (M5) and backups and restores (M6), which arrive after M7b, are covered without changing M7b; plans 0007 and 0008 each add a test that proves it.
+     - **The wait is bounded** (for example 10 minutes). If the jobs finish in time, the update proceeds. Otherwise the scheduler resumes and the update job ends in a terminal **`deferred`** state whose message names the blocking job (kind, target, id). The Overview "needs attention" list shows **"update deferred since T, blocked by <job>"** until an update succeeds.
   2. **Old process — verify and prepare.**
      - Verify the signed manifest. **Refuse downgrades**; the only exception is rolling back to the local `.prev`.
      - **Run `bin/serverdock.new version --self-check`.** It must exit 0 and report the expected version and arch, which proves the new binary loads and initialises on this host.
@@ -560,7 +696,7 @@ Full step plan in **Part B**.
   - Uses the snapshot restore order (step 6). Afterwards it appends one `system` audit row to the **restored** DB with the archive's head hash and row count.
   - Network restore (UI/REST) is **not offered in Phase 1**. If it is added later, it needs fresh 2FA, an authentic archive, and an existing admin.
   - The console path is allowed on a fresh install because it is the disaster-recovery path and needs root on the host.
-- **Footprint:** S2 → ≤ 69 MB; no new timer (housekeeping tasks only).
+- **Footprint:** S2 → ≤ 62 MB, S4 ≤ 46.9 MB; no new timer (the housekeeping job runs on the shared scheduler timer).
 - **Security:**
   - signature checked before any swap;
   - downgrade refusal;
@@ -582,7 +718,19 @@ Full step plan in **Part B**.
   - too little free space → the update is refused before the snapshot;
   - the rollback snapshot is deleted after `done`;
   - the scheduler is paused before the job check (a job queued during the check doesn't start);
-  - an update deferred while a deploy job runs;
+  - a job that finishes within the wait bound → the update proceeds;
+  - an update deferred while a deploy job runs past the bound, and while a job of a test-only kind runs (proves the check is generic); the job ends `deferred`, the message names the blocking job, and "needs attention" shows "update deferred since T, blocked by <job>";
+  - an update deferred while the housekeeping job runs (a state archive mid-write); a recurring job that is only scheduled does not defer it;
+  - **an update does not defer on its own job** (with no other job running, it proceeds);
+  - **an orphaned `running` job of a test-only kind from an older boot doesn't block an update after a restart**; the boot pass marks it `failed (interrupted by restart)`;
+  - the update job shows `succeeded` after `done`, and `failed (rolled back)` after a rollback, linked to the rollback audit row;
+  - restore refuses an archive header whose argon2id memory, time or parallelism is over the caps, before allocating;
+  - a passphrase below the minimum is refused, and a weak one warns;
+  - the "newest archive older than about 48 h" item appears when the daily task is turned off;
+  - the housekeeping job: one recurring job on the shared timer (no new timer in a goroutine dump); turning off the update check works; a failing task doesn't stop the others;
+  - local state archives: the newest 7 are kept; a kill while writing the 8th leaves the previous 7 intact and the `.tmp` is not counted; an archive that fails verification deletes nothing; the "copy it off this server" notice shows while only local archives exist; with no passphrase set, "no state backup exists" is shown;
+  - an install upgraded from M7a by reinstalling, then updated by self-update, keeps its data. **The first M7b self-update test uses a fixture DB taken from a real M7a install upgraded by reinstall** (added to `internal/store/testdata/`);
+  - **with the M7b binary installed, `install.sh` upgrade mode is refused while `update.json` is in `trial` and while it is in `rolling_back`** (prints `serverdock status`), and for a newer version hands off to `serverdock update`;
   - a scheduled archive written without the passphrase can be restored with it, and not with a wrong one;
   - `state restore` refuses an archive with a newer schema and appends its audit row;
   - tampered, downgrade and wrong-arch manifests refused;
@@ -592,7 +740,7 @@ Full step plan in **Part B**.
   - a wrong passphrase is refused;
   - Playwright.
 - **Reviewers:** `security` (required), `systems` (required), `footprint`, `accessibility`.
-- **Exit evidence:** recordings of the failed-update rollback (with a migration) and of a restore; dogfood log started.
+- **Exit evidence:** recordings of the failed-update rollback (with a migration) and of a restore; the pre-dogfood log shows the first self-update. (The counted dogfood window starts later; see Part C.)
 
 ## M8 — Observability and housekeeping
 
@@ -602,10 +750,11 @@ Full step plan in **Part B**.
 - **Key decisions:**
   - **Metrics:** collector every 15 s. **Two tiers: 15 s for 24 h, 10 min for 30 d.** Rollups happen inside the collector tick. This simplifies the four tiers in `docs/architecture.md`, and plan 0011 updates that doc. Retention pruning is a housekeeping task.
   - Plan 0011 must measure disk writes per day and idle CPU.
-  - **Alerts:** on the collector tick, on Docker events, on backup job outcomes, and on certmagic events for certificate expiry (no separate daily check).
-  - **Cleanup, the image digest check and retention pruning** are tasks of the daily housekeeping job, with a dry-run preview for cleanup.
+  - **Alerts:** on the collector tick, on Docker events, on backup job outcomes (M6), and on certmagic events for certificate expiry (M4a; no separate daily check). Both milestones run before M8 in the Revision 1 order.
+  - **Cleanup, the image digest check and retention pruning** are tasks of the daily housekeeping job (added in M7b), with a dry-run preview for cleanup. Cleanup replaces the hand pruning of the M7a operating rules.
   - **Notifications:** SMTP with STARTTLS required, signed webhooks, Telegram. Targets are checked with netpolicy.
-- **Footprint:** S2 → ≤ 74 MB, < 1% CPU with 10 services; the S2-loaded scenario is added here.
+- **Footprint:** S2 → ≤ 74 MB, S4 → ≤ 48.4 MB (the collector also runs in agent mode; this leaves 1.6 MB under the 50 MB tripwire on the median, so an overrun past the slack crosses it and needs the ADR 0011 written reason, or Q3 applies; VmHWM reported as a watch figure). **Plan 0011 caps the collector's buffers** (samples held in memory before a write, per-container series; the bound stated in MB) **and requires a full, non-QUICK S4 run before merge**; < 1% CPU with 10 services; the S2-loaded scenario is added here.
+- **Dogfood clock (Revision 1).** The first build that includes M5, M6 and M8 is the earliest start of the counted dogfood window (Part C).
 - **Security:** RE2 only, with a length cap; notification secrets in secretbox; live-log WebSockets use the M2 authz.
 - **Tests:**
   - cgroup fixtures for both drivers;
@@ -627,8 +776,9 @@ Full step plan in **Part B**.
 - **Key decisions:**
   - MCP over Streamable HTTP at `/mcp`. Tools are the `read`, non-sensitive actions. Output is redacted, marked untrusted, and audited with the `mcp` actor kind.
   - The library is chosen in plan 0012 with a footprint row.
-  - Docs hosting is Q6.
-- **Footprint:** S2 → ≤ 75 MB.
+  - Docs hosting is Q6 (the docs part).
+  - The counted dogfood window (last 14 consecutive days before exit) runs during M9; M9 can't close before it ends (Part C).
+- **Footprint:** S2 → ≤ 75 MB, S4 ≤ 48.4 MB.
 - **Security:**
   - the route matrix includes `/mcp` and asserts that no HTTP or MCP path produces a `system` actor;
   - redaction sentinels on every tool's output;
@@ -1147,8 +1297,8 @@ Panics are recovered and recorded as an `error` outcome.
 | 4 | Deploy from image, Dockerfile (git), and Compose (policy-checked) | M3a (image), M5 (Dockerfile), M6 (Compose) |
 | 5 | GitHub push-to-deploy + generic webhook, commit status | M5 |
 | 6 | Blue-green, health gate, automatic rollback, one-click rollback from snapshots; auto-cancel superseded | M3a |
-| 7 | Domains with automatic HTTPS and actionable diagnostics; TLS never takes a running app down | M4 |
-| 7a | Passkeys for the panel (WebAuthn), with TOTP and recovery codes as fallback | M4 |
+| 7 | Domains with automatic HTTPS and actionable diagnostics; TLS never takes a running app down | M4a |
+| 7a | Passkeys for the panel (WebAuthn), with TOTP and recovery codes as fallback | M4b |
 | 8 | Env vars & secrets (encrypted, audited reveal) | M2 (secretbox), M3b |
 | 9 | Postgres / MySQL / Redis + scheduled S3 backups + restore | M6 |
 | 10 | Metrics, live logs, log search, basic alerts; email/webhook/Telegram | M8 |
@@ -1158,13 +1308,13 @@ Panics are recovered and recorded as an `error` outcome.
 | 14 | Per-app CPU/RAM limits; stop-first; connection draining | M3a (stop-first, draining), M3b (limits) |
 | 15 | Logs of last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables | M3a (deploy logs, pull progress, restart, redeploy), M3b (context vars), M5 (build progress) |
 | 16 | "Update available" notice for app images | M8 |
-| 17 | IPv6; Docker API negotiation + supported range + Docker RC in CI | M1 (negotiation), M3b (RC matrix, version warning), M4 (IPv6), M7a (range published, pre-flight) |
+| 17 | IPv6; Docker API negotiation + supported range + Docker RC in CI | M1 (negotiation), M3b (RC matrix, version warning), M4a (IPv6), M7a (range published, pre-flight) |
 | 18 | Token expiry; `uninstall`, `start/stop/status`, `doctor --bundle` | M2 (token expiry), M7a |
 | 19 | Docs site + first-deploy guide; in-UI docs links and empty-state hints | every UI milestone, M9 |
-| 20 | Self-update with candidate + rollback; state backup + rehearse restore | M7b |
+| 20 | Self-update with candidate + rollback; state backup + rehearse restore | M7a (update by reinstalling, until M7b), M7b, M6 (S3 target for state archives) |
 | 21 | REST API (OpenAPI) | M2 (skeleton), each milestone, M9 (complete) |
 | 22 | Read-only MCP with scoped `read` tokens and redaction | M9 |
-| 23 | Accessible, phone-usable UI | M2–M8, M9 (full audit) |
+| 23 | Accessible, phone-usable UI | every UI milestone (M2–M8, including M4a and M4b), M9 (full audit) |
 
 - **Security open items:** #1, #2, #4, #5, #6 → **M1**. #3 → Phase 2, mitigated in Phase 1 by rule 9 (M1 step 5). #7 (bench socket) → ongoing.
 - **Phase 0 leftovers:** CI and bench boxes → M1 step 2; threat-model review → M2 entry gate; docs confirmation → before M3a.
@@ -1173,12 +1323,12 @@ Panics are recovered and recorded as an `error` outcome.
 
 | Exit criterion | Evidence | When |
 |---|---|---|
-| Full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0) | **First run at the M7a exit**: unmodified `bench/run.sh` (3 runs, 2 min warm-up, 5 min idle) plus `serverdock bench` on the systemd install, in `docs/research/06-phase1-vps-bench.md` with provider, plan, kernel and Docker version. **Final run at M9** on the release candidate, appended to the same file. Over budget at either point → reopen ADR 0004/0008. | M7a + M9 |
+| Full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0) | **First run at the M7a exit**: unmodified `bench/run.sh` (3 runs, 2 min warm-up, 5 min idle) plus `serverdock bench` on the systemd install, in `docs/research/06-phase1-vps-bench.md` with provider, plan, kernel and Docker version. The M7a run is on the maintainer's Hetzner test server (3.8 GiB RAM, measured container capped at 1 GiB; Q6 partial answer), so it is not a true 1 GB host. It comes before M5 and M6, so **a re-run at the M6 exit, on the same host and terms,** adds compose-go, the S3 client and peak RAM during a capped build and an S3 backup. **Final run at M9, on a true 1 GB VPS** unless the maintainer decides otherwise, on the release candidate, appended to the same file. Over the tripwires without a convincing reason at any point → reopen ADR 0004/0011. | M7a + M6 + M9 |
 | Fresh 1 GB VPS → first git app on HTTPS in < 5 min | Timed log from `curl … \| sh` to the first HTTPS 200 from the app domain (`bench/first-deploy-timer.sh`, human steps by the maintainer), median of 3 fresh VPSs, plus a screen recording; in research/06. | M9 |
 | Idle ≤ 80 MB / < 1% CPU published | Phase 1 release notes, the README and the docs site, linked to the tag's CI bench and the VPS results. | M9 |
 | Security review passed | Full-surface `security` review with no open high or critical findings, in the M9 PR and summarised in `docs/security.md`. | M9 (+ per milestone, + the M2 entry review) |
 | Accessibility review passed | `accessibility` audit of every screen (WCAG 2.2 AA, 390 px, 44 px, keyboard, screen reader) plus green Playwright + axe runs. | M9 (+ per milestone) |
-| Dogfooded for 2 weeks | `docs/research/07-dogfood.md`: ≥ 14 days starting when M7b self-update lands; apps, server, every deploy/update/incident and its fix; bench snapshots; confirmed by the maintainer. | M7b → M9 |
+| Dogfooded for 2 weeks | `docs/research/07-dogfood.md` (Revision 1 clock): **the counted window is the last 14 consecutive days before the Phase 1 exit**, on builds that include M5, M6 and M8, and every update inside the window goes through self-update, with **at least one self-update inside the window**. A reinstall, a hand-swapped binary or a `state restore` inside the window restarts the 14 days. An automatic rollback inside the window is logged as an incident and does not restart the clock. The file lists the apps, the server, every deploy, update and incident with its fix, and bench snapshots, and is confirmed by the maintainer. Use before the window (from the M7a exit on) is logged in the same file under **"Pre-dogfood runs"** and doesn't count; until M6 those runs are limited to apps whose data is disposable or backed up elsewhere. | Pre-dogfood runs from M7a; counted window after M8, ending at the exit (M9) |
 
 ---
 
@@ -1195,14 +1345,17 @@ Panics are recovered and recorded as an `error` outcome.
    - (a) **Recommended:** HTTPS on the IP with a self-signed panel leaf (not the hub CA); the leaf fingerprint is printed on the console for the user to compare.
    - (b) Require a panel domain at install.
    - (c) Plain HTTP during setup (not recommended).
-3. **Q3 — S4 headroom** *(before the first heavy dependency, M3a/M6; advisor A1)*. If S4 goes over 50 MB: pull the slim agent forward (recommended), or accept a temporary gate exception?
-4. **Q4 — Install shape** *(before M7a)*. Recommended: systemd, a dedicated user in the docker group, `CAP_NET_BIND_SERVICE`, the binary in `/var/lib/serverdock/bin/`, a hardened unit. Alternatives: root, or a container.
-5. **Q5 — Release signing key** *(before M7a)*. **Not a plain repository Actions secret.**
+3. **Q3 — S4 headroom** *(advisor A1; Revision 1: **due at the first S4 tripwire crossing on the gate metric** (the CI median of per-run medians), or before M6 at the latest, since M6 and M8 are the planned S4 increases. On the CI M3a base (2026-11-28) the median is 46.5 MB, about 3.5 MB of headroom; VmHWM is a watch figure and doesn't trigger Q3)*. If the S4 median goes over 50 MB: pull the slim agent forward (recommended), or accept the crossing with an ADR 0011 written reason? (Since ADR 0011 the 50 MB number is a tripwire, not a gate.)
+4. **Q4 — Install shape** *(**due before M7a**, which since Revision 1 starts right after M4a, so earlier than first planned; it also covers the reinstall-upgrade behaviour)*. Recommended: systemd, a dedicated user in the docker group, `CAP_NET_BIND_SERVICE`, the binary in `/var/lib/serverdock/bin/`, a hardened unit. Alternatives: root, or a container.
+5. **Q5 — Release signing key** *(**due before M7a**, now right after M4a; the early usable version is the first signed release)*. **Not a plain repository Actions secret.**
    - (a) **Recommended for Phase 1:** a hardware key held by the maintainer, signing each release manifest locally.
    - (b) CI signing **only** in a protected `release` environment (required reviewer, tag-only trigger), with the key in a cloud KMS or an environment-scoped secret.
 
    Either way, the binary embeds the current and next public keys.
-6. **Q6 — Dogfood, VPS and docs hosting** *(before M7a, because the first VPS bench is its exit)*. Which of our apps, which 1 GB VPS provider, and which subdomain for the docs site? **Partial answer (maintainer, 2026-11-22): the M7a VPS bench runs on the maintainer's test server (Hetzner, Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM).** It is not a 1 GB machine: the bench already caps the measured container at `--memory 1g --cpus 1`, and the research/06 entry must say the host is larger than 1 GB (so host-level free memory and swap pressure are not the 1 GB case). A true 1 GB VPS stays required for the M9 final run unless the maintainer decides otherwise. Dogfood apps and docs subdomain: still open.
+6. **Q6 — Dogfood, VPS and docs hosting.**
+   - **Partial answer (maintainer, 2026-11-22): the M7a VPS bench runs on the maintainer's test server (Hetzner, Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM).** It is not a 1 GB machine: the bench already caps the measured container at `--memory 1g --cpus 1`, and the research/06 entry must say the host is larger than 1 GB (so host-level free memory and swap pressure are not the 1 GB case). The M6-exit re-run (Revision 1) uses the same host on the same terms. A true 1 GB VPS stays required for the M9 final run unless the maintainer decides otherwise.
+   - *(Still open, **due before M7a**, which since Revision 1 starts right after M4a, because the first pre-dogfood run is part of its exit.)* Which of our apps? Until M7b, the apps must be ones whose data is disposable or backed up elsewhere; say which apps join later.
+   - *(Still open, due before M9.)* Which true 1 GB VPS provider for the M9 final run, and which subdomain for the docs site?
 7. **Q7 — Minimum Docker version** *(before M1 step 4)*.
    - Engine 25 / API 1.44 excludes Debian 12's `docker.io` (20.10).
    - **Recommendation:** require 25+. Pre-flight explains why and offers (after asking) to install from Docker's official repository.
@@ -1224,7 +1377,14 @@ Panics are recovered and recorded as an `error` outcome.
 - **M1 scope:** accepted, including goleak as a test-only dependency, removing `--debug-allow-remote`, the debug unix socket and CODEOWNERS. Start M1.
 - **Q2 (2026-11-20):** HTTPS on the server IP with a self-signed panel certificate whose fingerprint is compared against the console. The user can add a panel domain afterwards; once it has a real certificate, the IP address redirects to it.
 - **Q8 (2026-11-20):** no. API tokens can't run destructive, sensitive or SessionOnly actions, and can never manage tokens, auth settings or users.
-- Q3–Q6 are still open and will be asked before the milestone that needs each one.
+- Q3–Q6 are still open and will be asked before the milestone that needs each one. (Revision 1: Q4, Q5 and the apps-and-VPS part of Q6 are now due before M7a, which follows M4a; Q3 is due at the first S4 tripwire crossing on the CI median, or before M6 at the latest.)
+
+## Maintainer decisions (2026-11-27)
+
+- **Milestone order** (Revision 1): M1, M2, M3a, M3b, M4a, M7a (early usable version), then M7b, M5, M6, M4b, M8, M9. The order is a Phase 1 planning choice and expires at the Phase 1 exit, so it has no ADR.
+- **M4 split** into M4a (domains, HTTPS, panel domain, IPv6) and M4b (passkeys, plan 0013), both in Phase 1.
+- **Early use and the dogfood clock:** only disposable or externally backed-up apps until M6 (maintainer confirmed 2026-11-27, after the round 3 systems review; originally M7b); the counted window is the last 14 consecutive days before exit, on builds with M5, M6 and M8, updated only through self-update; earlier use is a logged pre-dogfood run. 
+- **Accepted risks:** a public panel domain with phishable password + TOTP sign-in from M4a/M7a until M4b, and no out-of-band notice of sign-ins or brute-force back-off in Phase 1. Recorded in `docs/security.md` "Accepted risks (Phase 1)".
 
 ## Must be settled before M1 starts (settled 2026-11-20)
 
@@ -1326,3 +1486,35 @@ Some round 2 entries were changed again in round 3: the expand-only rule, the `O
 | opt | `doctor --bundle` exclusions | M7a (`DATA/backups/` and `DATA/agent.token` added) |
 | opt | Executor marker only via the handle | Part B Actors (`inv.InvokeAs(actor, …)`, not an option field) |
 | opt | Debug socket in a 0700 directory | Part B Debug listener |
+
+# Revision 1 changes (2026-11-27): milestone reorder
+
+| # | Change | Where |
+|---|---|---|
+| 1 | New run order; reason (first real use sooner, exit not earlier) | "Revision 1" section at the top; Overview (run column); "Why this order (Revision 1)" |
+| 2 | M4 split into M4a (plan 0006) and M4b (plan 0013) | M4a and M4b sections; Overview; rule 8 (passkeys ADR in M4b); Part C rows 7, 7a, 17; "How to read" (12 milestones, plans 0003–0013) |
+| 3 | Early usable version at the M7a exit; early-use data rule until M7b | Overview; M7a (operating rules); M7b goal; Part C dogfood row |
+| 4 | Re-running `install.sh` upgrades in place, keeps `DATA`, never overwrites config | M7a key decisions, security, tests, exit evidence; Part C row 20 |
+| 5 | Pre-M7b operating rules (stop, copy `DATA` incl. `DATA/keys/master.key` off the box, prune images by hand) | M7a; M8 (cleanup replaces hand pruning) |
+| 6 | Daily housekeeping job moved from M6 to M7b; cron stays in M6 | Rule 3 text and table; M6 packages and scheduling; M7b order and housekeeping bullet; M8 |
+| 7 | State archives local only until M6; UI says to copy them off by hand; local pruning | M7b "State backup archives"; M6 (S3 as a state-archive target); Part C row 20 |
+| 8 | Update quiesce check is generic over running jobs; plans 0007/0008 test deferral during a build, backup and restore | M7b step 1 and tests; M5 and M6 tests |
+| 9 | VPS bench: M7a run no longer covers compose-go, S3, BuildKit; re-run at the M6 exit | M7a; M6; Part C exit table (M7a + M6 + M9) |
+| 10 | Footprint table in run order; S2 total unchanged (75); S4 re-based on M3a's 47.6 MB, S4 headroom called out as the tightest constraint | Footprint allocation section; per-milestone footprint lines (M3b, M4a, M4b, M5, M6, M7a, M7b, M8, M9) |
+| 11 | Dogfood clock redefined; pre-dogfood runs | Revision 1 section; M7a and M7b exit evidence; M8; M9; Part C exit table |
+| 12 | Questions now due earlier | Part D Q3, Q4, Q5, Q6; maintainer answers note; "Maintainer decisions (2026-11-27)" |
+| 13 | Cross-references to the old order | M2 (`:80` until M4a); M4a (panel domain is the later RP ID); M8 (alerts rely on M4a and M6, both earlier); M5 (still after M4a for the GitHub App); `docs/architecture.md` (passkeys: M4b, plan 0013) |
+| R1 | Reviewer REVISE: rebased on M3a (Rule 3 Caddy-ticker exception, ADR renumbering 0012–0018, Q6 partial answer kept) | Rule 3; rule 8 (passkeys ADR = next free number); Q6; M6 re-run and M7a bench on the Hetzner test server, not a true 1 GB host; Part C bench row |
+| R2 | S4 metric is the median of per-run medians; VmHWM is a watch figure | Footprint allocation (M3a row, "Which number is compared", headroom 2.4 MB at M3a and 0.5 MB at M9 on the provisional base; 3.5 MB and 1.6 MB after the CI re-base, row R14); M3b; M8; Q3 |
+| R3 | Update quiesce excludes its own job; housekeeping defers it; message names the blocker | M7b step 1 and tests |
+| R4 | NITs: downgrade flag rules and same-version repair; `master.key` copy kept like a password; archive pruning only after a verified write, `.tmp` not counted, "no state backup" with no passphrase; reinstall warns on running jobs | M7a key decisions and tests; M7b "State backup archives" and tests |
+| R5 | Maintainer decision 2026-11-27: two accepted risks (public panel domain with phishable sign-in until M4b; no out-of-band sign-in or back-off notice in Phase 1) | Revision 1 section item 4; `docs/security.md` "Accepted risks (Phase 1)"; M4a (panel domain optional); M7a operating rules (SSH tunnel or firewall allowlist); Part D decisions |
+| R6 | Footprint (blocking): M3a base is cloud-container, not CI; CI median owns the tripwire; re-base once on PR #6's first CI numbers | Footprint allocation ("Provisional M3a base", M3a row, headroom text); M3b; Q3 |
+| R7 | Footprint NITs: step judged by full-run median plus cause; S3 client chosen on `inittrace` and gzip delta, upload location and multipart bound; cut-down loaded S2 run at M7a; remote nodes with domains cost more than empty S4; VmHWM likely past 50 from M3b; M8 collector buffer caps and full S4 run; M4a full S4 run past 0.5 MB QUICK; page cache not comparable on the bench host; argon2id caps on restore; M6 and M8 are both planned S4 increases | Footprint allocation; M4a; M6; M7a VPS bench; M7b state backup archives; M8 |
+| R8 | Systems B1: boot-pass default rule, update job outcome from `update.json`, quiesce counts only current-boot jobs | M7b "The update job and the boot pass", step 1, tests |
+| R9 | Systems B2: one upgrade path after M7b; upgrade mode refuses during `trial`/`rolling_back`; the M7a → M7b hop rewrites the unit | M7a "After M7b there is one upgrade path"; M7b tests |
+| R10 | Systems B3: `EXTEND_TIMEOUT_USEC` from M7a | M7a key decisions and tests |
+| R11 | Systems should-fix and NITs: M7b replaces the `DATA`-copy rule, app-data rule stays until M6 (maintainer confirmed 2026-11-27); bounded wait and terminal `deferred` state; boot-pass wording; dogfood clock details; 48 h archive age alert; `df -h` rule; reinstall-upgraded fixture DB | Revision 1 item 3; Overview; M7a; M7b; Part C dogfood row; Part D decisions; `docs/roadmap.md` |
+| R12 | Security B1/B2 and N1–N7: `--no-verify` refused in upgrade, repair and downgrade; verification through the installed binary; one encrypted streaming `DATA` copy command and what the copy holds; raw copies replaced and destroyed after M7b; `/dev/tty` prompt; hashed bytes are renamed bytes; `--downgrade-to` with audit row; "update deferred" in needs attention; plan 0006 redirect, break-glass, certmagic events, HSTS defaults; passphrase strength | M7a; M7b; M4a |
+| R13 | Reviewer NITs: verification only during the write; M6 and M8 both planned S4 increases; Q3 "before M6 at the latest" in the answers note; downgrade and repair bullets moved into upgrade mode | M7b archives; Footprint allocation; Part D; M7a |
+| R14 | S4 column re-based on the first CI bench of M3a (PR #6, 2026-11-28: S2 54.0, S4 46.5 MB); headroom 3.5 MB at M3a, 1.6 MB at M9 | Footprint allocation (heading, re-base note, table, check line, headroom); per-milestone footprint lines; Q3 |

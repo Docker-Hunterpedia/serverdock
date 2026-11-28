@@ -94,7 +94,7 @@ The outage is about 60–100 ms (the server's own start and its first route appl
 
 ## M3a release measurements (step 15)
 
-Status: **local runs recorded; the CI gate number is PENDING.** The numbers below are from local runs in a cloud container (amd64, `--memory 1g --cpus 1` containers, 3 runs each, median of the per-run medians), **not the CI gate and not a 1 GB VPS**. The CI "S2 live watcher" value is the release gate and is recorded when the bench job runs on the ready pull request (it does not run on a draft). Cells that say PENDING have no number yet. Scenarios are described in `bench/run.sh`; the result file is [bench/results/2026-11-27-m3a-release.md](../../bench/results/2026-11-27-m3a-release.md).
+Status: **local runs recorded; CI gate recorded 2026-11-28 (S2 live watcher 54.0 MB, S4 46.5 MB, both pass).** The numbers below are from local runs in a cloud container (amd64, `--memory 1g --cpus 1` containers, 3 runs each, median of the per-run medians), **not the CI gate and not a 1 GB VPS**. The CI "S2 live watcher" value is the release gate; its row and the CI S4 row come from the bench job on the ready PR #6. Scenarios are described in `bench/run.sh`; the result file is [bench/results/2026-11-27-m3a-release.md](../../bench/results/2026-11-27-m3a-release.md).
 
 Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire 50 MB. VmHWM is a peak, is reported and is not gated.
 
@@ -106,7 +106,8 @@ Gates (ADR 0011): S2 ceiling 200 MB, tripwire 80 MB; S4 ceiling 100 MB, tripwire
 |---|---|---|---|---|---|---|
 | Full S4 (remote node: agent + Caddy) | 4 | **47.3** median (47.0, 47.3, 47.8) | max 50.2 | 0.01% | tripwire 50 MB, ceiling 100 | under both; 1.8 MB over the 45.5 MB planning figure (file-backed pages of the larger binary; no agent-mode code added) |
 | Step 13 build, same session (A/B) | 4 | 48.0 median (48.0, 48.0, 47.7) | 50.0 | | none | the step 13 build (50.0) and the final build (50.2) differ by less than the run-to-run spread: noise |
-| **S2 live watcher (CI, the release gate)** | 2 | **PENDING (release gate: recorded when the CI bench job runs on the ready PR)** | PENDING | PENDING | tripwire 80 MB; planning figure 56 MB | PENDING |
+| **S2 live watcher (CI, the release gate)** | 2 | **54.0** median (54.0, 54.8, 53.8) | max 57.7 | 0.00% | tripwire 80 MB; planning figure 56 MB | **pass** ([CI run 46147556661](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/46147556661), commit `5eded76`, 2026-11-28) |
+| S4 (CI) | 4 | **46.5** median (46.5, 47.7, 45.9) | max 49.4 | 0.00% | tripwire 50 MB, ceiling 100 | **pass** ([CI run 46147556661](https://github.com/Docker-Hunterpedia/serverdock/actions/runs/46147556661), commit `5eded76`, 2026-11-28); the S4 base of plan 0002 Revision 1 |
 | S2 live watcher, local cloud container (not the gate) | 2 | 54.7 median (53.3, 55.5, 54.7) | 57.6 | 0.01% | tripwire 80 MB | under |
 | S2 no Docker (report only) | 2 with `S2_DOCKER=0` | 53.7 | 57.3 | | none | reported |
 | S9: same setup, 0 services (the baseline of S5 and S6) | 9 | 54.0 | about 71 | | none | reported |
