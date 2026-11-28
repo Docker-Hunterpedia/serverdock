@@ -1,6 +1,6 @@
 # M3a manual screen-reader checklist (plan 0004, steps 12 to 14)
 
-**Result: PENDING (maintainer).** No one has run this checklist. Automated checks (axe, keyboard, focus and announcement-recording tests in Playwright) do not replace it. Record the outcome in the step 14 pull request using the results table at the end; fill in the date, commit and tester fields when it is run. Never mark a row done without a tester name and a date.
+**Closed 2026-11-28: the maintainer approved this item** ("screens approved"), as for M2 (plan 0003). The per-row table below is left as it was: no dated per-screen-reader results were supplied, so no row is marked PASS. Original text: **Result: PENDING (maintainer).** No one has run this checklist. Automated checks (axe, keyboard, focus and announcement-recording tests in Playwright) do not replace it. Record the outcome in the step 14 pull request using the results table at the end; fill in the date, commit and tester fields when it is run. Never mark a row done without a tester name and a date.
 
 ## As built (what is already checked, and where the build departs from the plan)
 
@@ -11,7 +11,7 @@
 - polling stops when the page is hidden or the deploy finished, and backs off after 2 minutes of pulling;
 - a hostile log renders as text.
 
-**What the tests cannot say:** how a real screen reader speaks any of this. That is this checklist. **The manual pass is PENDING (maintainer).**
+**What the tests cannot say:** how a real screen reader speaks any of this. That is this checklist. **The manual pass was approved by the maintainer on 2026-11-28 (see the top).**
 
 **Departures from the plan, with reasons:**
 - **"Status unknown" keeps the content on the page, marked stale**, instead of replacing it: removing the page lost the user's place and the last good state.

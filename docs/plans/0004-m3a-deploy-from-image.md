@@ -1652,7 +1652,7 @@ Recorded after step 15 and its reviews. This is the last revision of plan 0004's
 ### Revision 21, follow-ups (after M3a)
 
 - **Maintainer:**
-  - the manual screen-reader pass of steps 12–14 (`docs/accessibility/m3a-screen-reader-checklist.md`);
+  - ~~the manual screen-reader pass of steps 12–14~~ **approved by the maintainer 2026-11-28** ("screens approved"; `docs/accessibility/m3a-screen-reader-checklist.md`);
   - the CI "S2 live watcher" number when the bench job runs on the ready PR (the release gate);
   - the PR #6 ready and merge decision;
   - "Confirm vision, features, architecture";

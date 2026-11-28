@@ -54,7 +54,7 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [x] REST API (OpenAPI) — built in M2: `POST /api/v1/actions/{name}` over the action registry, with a generated OpenAPI 3.1 document ([`docs/api/openapi.json`](api/openapi.json), `make openapi`; `TestOpenAPIGolden`, `TestRESTActionPolicyMatrix` in `internal/api/rest_test.go`)
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
 - [x] Accessible, phone-usable UI baseline — built in M2 and checked by axe (zero violations in eight Playwright projects: desktop, 390 px, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit; `web/e2e/`), covering the shell, setup, sign-in, Overview and Settings › Security. **Ticked 2026-11-22: the maintainer approved the manual screen-reader item for steps 12 and 13** (recorded in plan 0003) (checklists in [plan 0003](plans/0003-m2-auth-first-run-spa.md#step-12-manual-screen-reader-pass-checklist-for-the-maintainer))
-- [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar) — M3a screens: axe green in eight projects, manual screen-reader pass PENDING (maintainer; [checklist](accessibility/m3a-screen-reader-checklist.md))
+- [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar) — M3a screens: axe green in eight projects, manual screen-reader pass approved by the maintainer 2026-11-28 ([checklist](accessibility/m3a-screen-reader-checklist.md))
 
 **Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 
