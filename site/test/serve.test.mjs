@@ -49,3 +49,23 @@ test('a missing 404.html gives a plain-text 404, and a detach line removes a hea
 		cleanup(d);
 	}
 });
+
+test('SERVE_NO_UPGRADE=1 drops only upgrade-insecure-requests; without it the CSP is sent as written', async () => {
+	const d = goodDist();
+	const csp = "default-src 'none'; script-src 'none'; upgrade-insecure-requests";
+	const srv = createSiteServer(d).listen(0, '127.0.0.1');
+	await new Promise((r) => srv.once('listening', r));
+	const url = `http://127.0.0.1:${srv.address().port}/about/`;
+	const before = process.env.SERVE_NO_UPGRADE;
+	try {
+		delete process.env.SERVE_NO_UPGRADE;
+		assert.equal((await fetch(url)).headers.get('content-security-policy'), csp);
+		process.env.SERVE_NO_UPGRADE = '1';
+		assert.equal((await fetch(url)).headers.get('content-security-policy'), "default-src 'none'; script-src 'none'");
+	} finally {
+		if (before === undefined) delete process.env.SERVE_NO_UPGRADE;
+		else process.env.SERVE_NO_UPGRADE = before;
+		srv.close();
+		cleanup(d);
+	}
+});

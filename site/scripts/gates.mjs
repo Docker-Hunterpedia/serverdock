@@ -130,6 +130,7 @@ export function gateHeaders(dist) {
 			if (!isNone(directive(c[0], 'script-src'))) errs.push("_headers CSP: script-src must be exactly 'none'");
 			if (!isNone(directive(c[0], 'default-src'))) errs.push("_headers CSP: default-src must be exactly 'none'");
 			errs.push(...overrides(c[0], '_headers CSP'));
+			if (!c[0].split(';').some((d) => d.trim().toLowerCase() === 'upgrade-insecure-requests')) errs.push('_headers CSP: upgrade-insecure-requests is missing');
 		}
 	}
 	for (const r of rules) {
