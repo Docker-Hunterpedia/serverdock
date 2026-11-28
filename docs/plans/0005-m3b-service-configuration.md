@@ -1,6 +1,6 @@
 # Plan 0005 — Phase 1 M3b: service configuration
 
-**Status:** APPROVED (2026-11-28), Revision 1 plus round-2 fixes. `reviewer`, `security` (required), `systems` (required, including the network-join decision, [Revision 1](#revision-1-review-fixes) item B1) and `footprint` approve. The maintainer accepted every recommended answer and the R3 trade-off ([answers](#questions-for-the-maintainer)). Entry gate still open: PR #6 (M3a) merged and plan 0002 Revision 1 (PR #7, with the S4 re-base) merged before step 1.
+**Status:** APPROVED (2026-11-28), Revision 1 plus round-2 fixes. `reviewer`, `security` (required), `systems` (required, including the network-join decision, [Revision 1](#revision-1-review-fixes) item B1) and `footprint` approve. The maintainer accepted every recommended answer and the R3 trade-off ([answers](#questions-for-the-maintainer)). Entry gate met (2026-11-28): PR #6 (M3a) merged as `206f189`, and plan 0002 Revision 1 with the S4 re-base and the recorded CI bench (PR #7) merged as `8ad0a06`.
 
 **Author:** planner (AI) · **Date:** 2026-11-28
 
