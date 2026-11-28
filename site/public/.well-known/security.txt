@@ -1,0 +1,5 @@
+Contact: https://github.com/Docker-Hunterpedia/serverdock/security/advisories/new
+Expires: 2027-10-15T00:00:00.000Z
+Canonical: https://serverdock.oday-bakkour.com/.well-known/security.txt
+Policy: https://github.com/Docker-Hunterpedia/serverdock/blob/main/SECURITY.md
+Preferred-Languages: en

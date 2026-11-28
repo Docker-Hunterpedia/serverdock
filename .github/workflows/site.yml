@@ -1,0 +1,75 @@
+# The public website (plan 0014). Build only: no secrets, and not a required check
+# (a path-filtered required check that is skipped would block merges). A broken site
+# on main only stops the deploy, and the last good version stays live.
+name: site
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "SECURITY.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/site.yml"
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "SECURITY.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# PR runs are superseded and cancelled. Runs on main (push and dispatch) share one
+# group and never cancel each other: one runs, at most one waits, so the newest
+# commit is always the last to finish.
+concurrency:
+  group: site-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ASTRO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the last-changed dates come from git history
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: site/.nvmrc
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: npm audit
+        run: npm audit --audit-level=high
+      - name: npm audit (deploy lockfile)
+        working-directory: site/deploy
+        run: npm audit --audit-level=high
+      - name: astro check
+        run: npm run check
+      - name: unit tests (gates, page weight, local server)
+        run: npm test
+      - name: production build
+        run: npm run build
+      - name: build gates 1-7
+        run: node scripts/gates.mjs dist
+      - name: page weight and dist total (gates 8-9)
+        run: node scripts/page-weight.mjs dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-dist
+          path: site/dist
+          include-hidden-files: true # .well-known/ is a hidden directory
+          retention-days: 7
+          if-no-files-found: error

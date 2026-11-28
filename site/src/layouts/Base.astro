@@ -1,0 +1,46 @@
+---
+import '../styles/base.css';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { SITE } from '../config';
+
+interface Props {
+	title: string;
+	description: string;
+	/** Path with leading and trailing slash, e.g. "/features/". */
+	path: string;
+	noindex?: boolean;
+}
+const { title, description, path, noindex = false } = Astro.props;
+const fullTitle = `${title} · ServerDock`;
+const canonical = SITE + path;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{fullTitle}</title>
+		<meta name="description" content={description} />
+		{noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)" />
+		<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+		<meta property="og:title" content={fullTitle} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:type" content="website" />
+		<meta property="og:image" content={`${SITE}/og.png`} />
+		<meta property="og:image:alt" content="ServerDock: anyone can build a server manager, we sweat the details." />
+		<meta name="twitter:card" content="summary_large_image" />
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to main content</a>
+		<Header />
+		<main id="main" tabindex="-1">
+			<slot />
+		</main>
+		<Footer />
+	</body>
+</html>

@@ -1,4 +1,4 @@
-# Weekly, grouped update PRs for pinned Action SHAs and Go modules
+# Weekly, grouped update PRs for pinned Action SHAs, Go modules and npm packages
 # (docs/security.md gap G14). Security updates still arrive immediately.
 version: 2
 updates:
@@ -22,4 +22,18 @@ updates:
       interval: weekly
     groups:
       web:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    groups:
+      site:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /site/deploy
+    schedule:
+      interval: weekly
+    groups:
+      site-deploy:
         patterns: ["*"]

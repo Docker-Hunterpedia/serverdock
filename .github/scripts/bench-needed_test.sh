@@ -166,6 +166,45 @@ for name in 'cmd/ü.go' 'bench/a"b' "bench/tab${tab}x" "cmd/nl${nl}x" 'cmd/ü' g
 	git reset -q --hard "$C"
 done
 
+# The public website (site/, plan 0014) is excluded from the bench. Each case commits on
+# top of $C and compares against $C, so the Go change in A never decides the result.
+put() { mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" >"$1"; }
+site_commit() { git add -A && git commit -qm "site case" && git rev-parse HEAD; }
+site_case() { # name want reason
+	X=$(site_commit)
+	run "$1" "$2" "$3" EVENT=pull_request ACTION=opened BASE="$C" SHA="$X"
+	git reset -q --hard "$C"
+}
+put site/src/pages/index.astro 'x'
+site_case "site only -> skip" false "docs-only against"
+put site/x.go 'package x'
+site_case "site/x.go -> bench" true "bench-relevant"
+put site/a.txt a; put web/b.txt b
+site_case "site + web -> bench" true "bench-relevant"
+put site/a.txt a; put .github/workflows/site.yml 'x: 1'
+site_case "site + .github/workflows/site.yml -> bench" true "bench-relevant"
+put site/a.txt a; put .github/workflows/ci.yml 'x: 1'
+site_case "site + .github/workflows/ci.yml -> bench" true "bench-relevant"
+put sitex/a 'x'
+site_case "sitex/a -> bench" true "bench-relevant"
+put web/site/a 'x'
+site_case "web/site/a -> bench" true "bench-relevant"
+# a symlink under site/ is a path under site/ (git does not follow it)
+mkdir -p site && ln -s ../cmd/main.go site/link
+site_case "symlink under site/ -> site only" false "docs-only against"
+# a rename out of a bench-relevant path into site/ still shows the deleted path
+I=$(commit internal/x 'x')
+mkdir -p site && git mv internal/x site/x
+X=$(site_commit)
+run "rename internal/x -> site/x -> bench" true "bench-relevant" EVENT=pull_request ACTION=opened BASE="$I" SHA="$X"
+git reset -q --hard "$C"
+# a site-only increment after a passing gate reuses it
+put site/a.txt a
+X=$(site_commit)
+echo "ci.yml success" >"$GATE_DIR/$C"
+sync "site-only increment, gate ok -> reuse" false "reused bench-gate result from $C" "$C" "$X"
+git reset -q --hard "$C"
+
 # a missing before
 MISSING=1111111111111111111111111111111111111111
 run "missing before -> full diff" true "bench-relevant" EVENT=pull_request ACTION=synchronize BEFORE="$MISSING" AFTER="$C" BASE="$BASE" SHA="$C"

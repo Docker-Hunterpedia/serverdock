@@ -277,7 +277,9 @@ jobs:
 
   # Decide whether the (slow) bench needs to run (.github/scripts/bench-needed.sh):
   # only when Go code, module files, bench/web files, workflows or CI scripts
-  # changed. A docs-only increment reuses a passing bench-gate of this workflow.
+  # changed. Docs-only and site/-only (the public website) changes skip it. A
+  # docs-only increment reuses a passing bench-gate of this workflow. The same
+  # decision gates the integration job. .github/workflows/site.yml still counts.
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -310,8 +312,8 @@ jobs:
   # Docker integration tests (-tags integration): the real Docker on the runner
   # and a local registry:2 on loopback, with the test app image built from
   # internal/agent/dockerapi/testdata/app and pushed to it. Runs when `changes`
-  # says code changed (the same decision as the bench), so a docs-only PR skips
-  # it; a skipped job is not a failure. Not needed by the bench jobs.
+  # says code changed (the same decision as the bench), so a docs-only or
+  # site/-only PR skips it; a skipped job is not a failure. Not needed by the bench jobs.
   integration:
     needs: [changes]
     if: needs.changes.outputs.bench == 'true'
