@@ -7,3 +7,5 @@ web/.svelte-kit
 site/node_modules
 site/dist
 site/.astro
+site/dist-test
+site/e2e/.results

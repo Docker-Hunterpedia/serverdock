@@ -16,6 +16,11 @@ const TYPES = {
 	'.png': 'image/png', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml',
 };
 
+// WebKit upgrades http://127.0.0.1 to https because of upgrade-insecure-requests (Chromium exempts
+// loopback), and this server is plain http. SERVE_NO_UPGRADE=1 drops that one directive from the
+// CSP it sends; every other directive stays as in _headers. Tests only: never set in production.
+const dropUpgrade = (v) => v.split(';').map((d) => d.trim()).filter((d) => d !== '' && d.toLowerCase() !== 'upgrade-insecure-requests').join('; ');
+
 const matches = (pattern, path) => (pattern.endsWith('*') ? path.startsWith(pattern.slice(0, -1)) : path === pattern);
 
 export function createSiteServer(dist) {
@@ -42,7 +47,7 @@ export function createSiteServer(dist) {
 			for (const [k, v] of r.headers) {
 				if (k === '!') {
 					for (const h of Object.keys(headers)) if (h.toLowerCase() === v.toLowerCase()) delete headers[h];
-				} else headers[k] = v;
+				} else headers[k] = process.env.SERVE_NO_UPGRADE === '1' && /^content-security-policy$/i.test(k) ? dropUpgrade(v) : v;
 			}
 		}
 		const body = existsSync(file) ? readFileSync(file) : 'Not found\n';
