@@ -261,7 +261,7 @@ func TestCredentialChangeDeniesAQueuedUserJob(t *testing.T) {
 			r.a.mustInv(actor, "auth.totp_reenroll_confirm", fmt.Sprintf(`{"enrollment_id":%q,"code":%q}`, begin.EnrollmentID, TOTPCode(seed, TOTPCounter(r.a.clk.Now()))))
 		},
 		"admin reset": func(r *jobRig) {
-			if _, err := r.a.s.AdminReset(ctx); err != nil {
+			if _, err := r.a.s.AdminReset(ctx, false); err != nil {
 				r.a.t.Fatal(err)
 			}
 		},

@@ -237,12 +237,12 @@ func TestSnapshotRoundTripAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := ParseSnapshot(string(raw))
-	if err != nil || got.ImageRef != "nginx:1" || got.V != 1 {
+	if err != nil || got.ImageRef != "nginx:1" || got.V != SnapshotVersion {
 		t.Fatalf("%+v %v", got, err)
 	}
 	for name, mod := range map[string]func(map[string]any){
 		"unknown key":    func(m map[string]any) { m["extra"] = 1 },
-		"version":        func(m map[string]any) { m["v"] = 2 },
+		"version":        func(m map[string]any) { m["v"] = 3 },
 		"bad ref":        func(m map[string]any) { m["image_ref"] = "A B" },
 		"bad strategy":   func(m map[string]any) { m["strategy"] = "yolo" },
 		"drain too low":  func(m map[string]any) { m["drain_s"] = 1 },

@@ -10,8 +10,9 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 )
 
-// SnapshotVersion is the schema version of deploys.snapshot_json.
-const SnapshotVersion = 1
+// SnapshotVersion is the schema version ParseSnapshot returns and Marshal writes.
+// Version 1 (M3a) is still read, as version 2 with nothing set.
+const SnapshotVersion = 2
 
 // SnapHealth is the health check as a deploy snapshot records it.
 type SnapHealth struct {
@@ -21,9 +22,19 @@ type SnapHealth struct {
 	Passes   int    `json:"passes"`
 }
 
+// SnapMount is one mount as a snapshot records it. For a volume, Source is the
+// short volume name; for a bind, the host path as saved.
+type SnapMount struct {
+	Kind     string `json:"kind"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
 // Snapshot is the immutable record of what one deploy runs (data model, schema
-// version 1): the image reference, the container port, the health check, the
-// strategy and the timings. The public port is NOT in it: it is a service setting,
+// version 2): the image reference, the container port, the health check, the
+// effective strategy and the timings, and (new in 2) the env version, mounts and
+// limits, frozen at enqueue. The public port is NOT in it: it is a service setting,
 // so a rollback never moves the address users reach the app on. ImageID and
 // RepoDigest are set for a redeploy or rollback (the pinned image of the source
 // deploy); a plain deploy leaves them empty and resolves them at the pull stage.
@@ -37,6 +48,35 @@ type Snapshot struct {
 	StopGraceS    int        `json:"stop_grace_s"`
 	ImageID       string     `json:"image_id,omitempty"`
 	RepoDigest    string     `json:"repo_digest,omitempty"`
+
+	// Version 2. A v1 snapshot has none of these set.
+
+	// EnvVersion and EnvVersionID name the service's env version the deploy runs
+	// with; both are zero for a deploy with no variables.
+	EnvVersion   int   `json:"env_version,omitempty"`
+	EnvVersionID int64 `json:"env_version_id,omitempty"`
+	// StrategyForced: the service's setting was blue_green, but a writable mount
+	// makes Strategy stop_first.
+	StrategyForced  bool        `json:"strategy_forced,omitempty"`
+	Mounts          []SnapMount `json:"mounts,omitempty"`
+	MemoryMB        int         `json:"memory_mb,omitempty"`
+	CPUsMilli       int         `json:"cpus_milli,omitempty"`
+	NoNewPrivileges bool        `json:"no_new_privileges,omitempty"`
+}
+
+// HasWritableMount reports whether any recorded mount is writable.
+func (s Snapshot) HasWritableMount() bool {
+	for _, m := range s.Mounts {
+		if !m.ReadOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func (s Snapshot) hasV2Fields() bool {
+	return s.EnvVersion != 0 || s.EnvVersionID != 0 || s.StrategyForced || len(s.Mounts) != 0 ||
+		s.MemoryMB != 0 || s.CPUsMilli != 0 || s.NoNewPrivileges
 }
 
 // Settings are the values that decide the job's timeout.
@@ -44,19 +84,24 @@ func (s Snapshot) Settings() jobs.Settings {
 	return jobs.Settings{Strategy: s.Strategy, HealthTimeoutS: s.Health.TimeoutS, DrainS: s.DrainS, StopGraceS: s.StopGraceS}
 }
 
-// Marshal encodes the snapshot.
+// Marshal encodes the snapshot. It writes only the current version: a snapshot
+// read as v1 is written as v2.
 func (s Snapshot) Marshal() (json.RawMessage, error) {
-	if s.V == 0 {
-		s.V = SnapshotVersion
-	}
+	s.V = SnapshotVersion
 	return json.Marshal(s)
 }
 
 // Validate checks every field of a snapshot read from the database or about to be
 // written: a row the runner cannot trust fails the deploy before anything runs.
 func (s Snapshot) Validate() error {
-	if s.V != SnapshotVersion {
+	if s.V != 1 && s.V != SnapshotVersion {
 		return fmt.Errorf("snapshot version %d is not supported", s.V)
+	}
+	if s.V == 1 && s.hasV2Fields() {
+		return errors.New("a version 1 snapshot cannot carry env, mounts or limits")
+	}
+	if err := s.validateV2(); err != nil {
+		return err
 	}
 	if _, err := policy.ParseRef(s.ImageRef); err != nil {
 		return fmt.Errorf("image_ref: %w", err)
@@ -117,8 +162,57 @@ func (s Snapshot) Validate() error {
 	return nil
 }
 
+func (s Snapshot) validateV2() error {
+	if (s.EnvVersion == 0) != (s.EnvVersionID == 0) || s.EnvVersion < 0 || s.EnvVersionID < 0 {
+		return errors.New("env_version and env_version_id are both set or both absent")
+	}
+	if len(s.Mounts) > policy.MaxMounts {
+		return fmt.Errorf("at most %d mounts", policy.MaxMounts)
+	}
+	targets := map[string]bool{}
+	for i, m := range s.Mounts {
+		var err error
+		switch m.Kind {
+		case policy.MountVolume:
+			err = policy.ValidateVolumeName(m.Source)
+		case policy.MountBind:
+			err = policy.ValidateBindSourceShape(m.Source)
+		default:
+			err = errors.New("kind must be volume or bind")
+		}
+		if err != nil {
+			return fmt.Errorf("mounts[%d]: %w", i, err)
+		}
+		if err := policy.ValidateMountTarget(m.Target); err != nil {
+			return fmt.Errorf("mounts[%d].target: %w", i, err)
+		}
+		if targets[m.Target] {
+			return fmt.Errorf("mounts[%d]: the target %s is used twice", i, m.Target)
+		}
+		targets[m.Target] = true
+	}
+	if s.HasWritableMount() && s.Strategy != jobs.StrategyStopFirst {
+		return errors.New("a writable mount needs the stop_first strategy")
+	}
+	if s.StrategyForced && (s.Strategy != jobs.StrategyStopFirst || !s.HasWritableMount()) {
+		return errors.New("strategy_forced needs stop_first and a writable mount")
+	}
+	if s.MemoryMB != 0 {
+		if err := policy.ValidateMemoryMB(s.MemoryMB); err != nil {
+			return err
+		}
+	}
+	if s.CPUsMilli != 0 {
+		if err := policy.ValidateCPUsMilli(s.CPUsMilli); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ParseSnapshot decodes and validates a snapshot (strict: unknown and duplicate
-// keys are refused).
+// keys are refused). A version 1 snapshot is returned as version 2 with nothing
+// new set.
 func ParseSnapshot(raw string) (Snapshot, error) {
 	var s Snapshot
 	if err := agent.DecodeArgs(json.RawMessage(raw), &s); err != nil {
@@ -127,6 +221,7 @@ func ParseSnapshot(raw string) (Snapshot, error) {
 	if err := s.Validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("the deploy's snapshot is not valid: %w", err)
 	}
+	s.V = SnapshotVersion
 	return s, nil
 }
 

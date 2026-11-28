@@ -293,3 +293,45 @@ func TestLeftoverTempKeyRemoved(t *testing.T) {
 		t.Fatal("leftover temp key not removed")
 	}
 }
+
+func TestCheckKeyStatesAndLostKeyMessages(t *testing.T) {
+	none := func() (bool, error) { return false, nil }
+	d := dataDir(t)
+	m := &fakeMeta{}
+	if st, err := CheckKey(ctx0, d, m); err != nil || st != KeyMissing {
+		t.Fatalf("no key: %v %v", st, err)
+	}
+	if _, _, err := LoadOrCreate(ctx0, d, m, none); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := CheckKey(ctx0, d, m); err != nil || st != KeyOK {
+		t.Fatalf("own key: %v %v", st, err)
+	}
+	if st, _ := CheckKey(ctx0, d, &fakeMeta{}); st != KeyOK {
+		t.Errorf("a key with no recorded id: %v", st)
+	}
+	if st, _ := CheckKey(ctx0, d, &fakeMeta{id: "deadbeef", set: true}); st != KeyWrong {
+		t.Errorf("a different recorded id: %v", st)
+	}
+	before, _ := os.ReadFile(KeyPath(d))
+	os.WriteFile(KeyPath(d), before[:5], 0o600)
+	if st, _ := CheckKey(ctx0, d, m); st != KeyUnusable {
+		t.Errorf("a damaged key: %v", st)
+	}
+	os.WriteFile(KeyPath(d), before, 0o600)
+	// Every lost-or-wrong-key refusal names the way out, including the app-secrets flag.
+	_, _, err := LoadOrCreate(ctx0, d, &fakeMeta{id: "deadbeef", set: true}, none)
+	os.Remove(KeyPath(d))
+	_, _, err2 := LoadOrCreate(ctx0, d, m, none)
+	_, _, err3 := LoadOrCreate(ctx0, dataDir(t), nil, func() (bool, error) { return true, nil })
+	for i, e := range []error{err, err2, err3} {
+		if e == nil || !strings.Contains(e.Error(), "restore the key from a backup") && !strings.Contains(e.Error(), "Restore the key from a backup") ||
+			!strings.Contains(e.Error(), "--forget-app-secrets") || !strings.Contains(e.Error(), "serverdock admin reset") {
+			t.Errorf("message %d: %v", i, e)
+		}
+	}
+	// AppColumns are part of Columns, and Columns still has the admin ones.
+	if len(Columns()) != len(AdminColumns())+len(AppColumns()) || len(AppColumns()) != 2 {
+		t.Errorf("%v", Columns())
+	}
+}
