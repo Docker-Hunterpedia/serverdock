@@ -218,6 +218,34 @@ async function assertNoLeaks(page: Page, secrets: Secrets, what: string, clip: {
 
 // ---- encoding (no dependency: the libwebp encoder inside Chromium, through a canvas) --------
 
+/** Chunks a committed screenshot may contain (gate 10 checks the same list). ICCP, EXIF and XMP are dropped. */
+const KEEP_CHUNKS = ['VP8 ', 'VP8L', 'VP8X', 'ALPH'];
+
+/**
+ * Chromium's canvas encoder adds an sRGB ICCP chunk. Metadata has no place in a public file, and sRGB is the
+ * default anyway, so the RIFF container is rewritten without ICCP, EXIF and XMP (and the VP8X flags for them cleared).
+ */
+export function stripWebpMetadata(buf: Buffer): Buffer {
+	if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') throw new Error('not a WebP file');
+	const kept: Buffer[] = [];
+	for (let at = 12; at < buf.length; ) {
+		const id = buf.toString('latin1', at, at + 4);
+		const size = buf.readUInt32LE(at + 4);
+		const end = at + 8 + size + (size % 2);
+		if (KEEP_CHUNKS.includes(id)) {
+			const chunk = Buffer.from(buf.subarray(at, end));
+			if (id === 'VP8X') chunk[8] &= ~(0x20 | 0x08 | 0x04); // ICC, EXIF, XMP flags
+			kept.push(chunk);
+		}
+		at = end;
+	}
+	const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), ...kept]);
+	const head = Buffer.alloc(8);
+	head.write('RIFF', 0, 'latin1');
+	head.writeUInt32LE(body.length, 4);
+	return Buffer.concat([head, body]);
+}
+
 type Encoded = { width: number; height: number; bytes: number; quality: number; data: Buffer };
 
 async function encodeAll(page: Page, png: Buffer, clip: { width: number; height: number }, widths: number[]): Promise<Encoded[]> {
@@ -249,7 +277,7 @@ async function encodeAll(page: Page, png: Buffer, clip: { width: number; height:
 					},
 					{ b64png: png.toString('base64'), w, h, q }
 				);
-				const data = Buffer.from(b64, 'base64');
+				const data = stripWebpMetadata(Buffer.from(b64, 'base64'));
 				if (data.length <= CAPS[w]) done = { width: w, height: h, bytes: data.length, quality: q, data };
 			}
 			if (!done) throw new Error(`no WebP quality of at least 0.4 fits ${CAPS[w]} bytes at ${w} px: raise the cap with a written reason instead of making the text unreadable`);
@@ -467,6 +495,22 @@ test.describe('leak check', () => {
 		await assertNoLeaks(page, secrets, 'clean page', box);
 		await page.setContent('<main><p style="margin-top:900px">planted-runtime-value-123</p></main>');
 		await assertNoLeaks(page, secrets, 'text below the clip is not in the image', box);
+	});
+	test('stripWebpMetadata drops ICCP, EXIF and XMP and keeps the image chunks', () => {
+		const chunk = (id: string, body: number[]) => Buffer.concat([Buffer.from(id, 'latin1'), Buffer.from(new Uint32Array([body.length]).buffer), Buffer.from(body), Buffer.from(body.length % 2 ? [0] : [])]);
+		const vp8x = chunk('VP8X', [0x2c, 0, 0, 0, 1, 0, 0, 1, 0, 0]); // ICC + EXIF + XMP flags (0x20 | 0x08 | 0x04) and the alpha flag 0x10
+		const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), vp8x, chunk('ICCP', [1, 2, 3]), chunk('VP8L', [47, 0, 0, 0, 0]), chunk('EXIF', [9, 9]), chunk('XMP ', [8])]);
+		const riff = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from(new Uint32Array([body.length]).buffer), body]);
+		const out = stripWebpMetadata(riff);
+		const ids: string[] = [];
+		for (let at = 12; at < out.length; ) {
+			ids.push(out.toString('latin1', at, at + 4));
+			const size = out.readUInt32LE(at + 4);
+			at += 8 + size + (size % 2);
+		}
+		expect(ids).toEqual(['VP8X', 'VP8L']);
+		expect(out.readUInt32LE(4) + 8).toBe(out.length);
+		expect(out[20] & (0x20 | 0x08 | 0x04)).toBe(0);
 	});
 	test('the output directory refuses site/public/screens', () => {
 		const before = process.env.SCREENS_OUT;
