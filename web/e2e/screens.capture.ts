@@ -82,7 +82,7 @@ const SERVICES = {
 			image_ref: `${DEMO.registry}/worker:0.9.2`,
 			container_port: null,
 			health: { kind: 'running', timeout_s: 60, passes: 3 },
-			needs_attention: 'previous_version_down',
+			state: 'unknown',
 			active_deploy: 2,
 			last_deploy: { number: 2, kind: 'deploy', status: 'succeeded', created_at: iso(2900), finished_at: iso(2898), image_ref: `${DEMO.registry}/worker:0.9.2` }
 		})
@@ -314,6 +314,8 @@ async function capture(page: Page, server: TestServer, secrets: Secrets, view: V
 	const main = page.locator('main');
 	await expect(main).toBeVisible();
 	if (prepare) await prepare();
+	// no focus ring from the last field we filled; the dialog keeps its own focus
+	if ((await page.getByRole('dialog').count()) === 0) await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 	await page.evaluate(() => window.scrollTo(0, 0));
 	if (view.scrollTo) {
 		await page.getByRole('heading', { name: view.scrollTo, exact: true }).first().evaluate((h) => h.scrollIntoView({ block: 'start' }));
