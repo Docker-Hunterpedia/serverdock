@@ -8,5 +8,4 @@ export default defineConfig({
 	build: { inlineStylesheets: 'never', format: 'directory' },
 	image: { service: passthroughImageService() },
 	devToolbar: { enabled: false },
-	telemetry: false,
 });
