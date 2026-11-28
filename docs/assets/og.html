@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ServerDock social preview</title>
+<!-- Source for docs/assets/og.png (1280x640). Render: see docs/assets/README.md -->
+<style>
+  :root {
+    --bg: #0b0f14;
+    --bg2: #111821;
+    --line: #1f2a36;
+    --text: #e8eef5;
+    --muted: #8b9bb0;
+    --accent: #3ddc97;
+    --accent2: #5ab0ff;
+    --warn: #f5b74a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; }
+  body {
+    background:
+      radial-gradient(900px 500px at 85% 20%, rgba(90,176,255,0.10), transparent 60%),
+      radial-gradient(700px 420px at 10% 100%, rgba(61,220,151,0.08), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "SF Pro Display", "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+    overflow: hidden;
+    position: relative;
+  }
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.35;
+    mask-image: linear-gradient(90deg, transparent 0%, #000 55%, #000 100%);
+  }
+  .wrap { position: relative; display: grid; grid-template-columns: 1fr 470px; gap: 48px; padding: 64px 72px; height: 100%; }
+  .brand { display: flex; align-items: center; gap: 14px; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+  .logo { width: 40px; height: 40px; }
+  h1 { margin-top: 44px; font-size: 60px; line-height: 1.04; font-weight: 800; letter-spacing: -0.03em; }
+  h1 .dim { color: var(--muted); font-weight: 700; }
+  h1 .hl { color: var(--accent); }
+  p.sub { margin-top: 26px; font-size: 24px; line-height: 1.4; color: var(--muted); max-width: 640px; }
+  .chips { margin-top: 34px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: rgba(17,24,33,0.85); border-radius: 999px; padding: 9px 16px; font-size: 18px; color: var(--text); }
+  .chip b { color: var(--accent); font-weight: 700; }
+
+  .card { align-self: center; background: rgba(17,24,33,0.92); border: 1px solid var(--line); border-radius: 18px; padding: 26px 28px; box-shadow: 0 30px 80px rgba(0,0,0,0.45); }
+  .card-h { display: flex; justify-content: space-between; align-items: baseline; }
+  .card-h .t { font-size: 20px; font-weight: 700; }
+  .card-h .s { font-size: 15px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .stages { margin-top: 20px; display: grid; gap: 10px; }
+  .st { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 12px; font-size: 18px; }
+  .dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; color: var(--bg); background: var(--accent); }
+  .st .v { color: var(--muted); font-size: 15px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .ok { margin-top: 18px; padding: 12px 14px; border-radius: 10px; background: rgba(61,220,151,0.10); border: 1px solid rgba(61,220,151,0.35); color: var(--accent); font-size: 17px; font-weight: 600; }
+  .mem { margin-top: 22px; }
+  .mem-h { display: flex; justify-content: space-between; font-size: 15px; color: var(--muted); }
+  .mem-h b { color: var(--text); }
+  .bar { margin-top: 8px; height: 12px; border-radius: 6px; background: #1a2430; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 5.4%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 6px; }
+  .foot { position: absolute; left: 72px; bottom: 34px; font-size: 16px; color: var(--muted); }
+  .foot b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="wrap">
+    <div>
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <rect x="1" y="1" width="38" height="38" rx="10" fill="#111821" stroke="#3ddc97" stroke-width="2"/>
+          <rect x="9" y="11" width="22" height="5" rx="2" fill="#3ddc97"/>
+          <rect x="9" y="18" width="22" height="5" rx="2" fill="#5ab0ff"/>
+          <rect x="9" y="25" width="14" height="5" rx="2" fill="#8b9bb0"/>
+        </svg>
+        ServerDock
+      </div>
+      <h1><span class="dim">Anyone can build a server manager.</span><br>We sweat <span class="hl">the details.</span></h1>
+      <p class="sub">A self-hosted PaaS that fits on a 1 GB VPS beside your apps, tells you the truth, and never drops a request during a deploy.</p>
+      <div class="chips">
+        <span class="chip"><b>54 MB</b> idle</span>
+        <span class="chip"><b>0.00%</b> idle CPU</span>
+        <span class="chip">one Go binary</span>
+        <span class="chip">AGPL-3.0</span>
+      </div>
+    </div>
+    <div class="card" aria-hidden="true">
+      <div class="card-h"><span class="t">Deploy #42 · api</span><span class="s">blue-green</span></div>
+      <div class="stages">
+        <div class="st"><span class="dot">✓</span><span>Pull image</span><span class="v">digest pinned</span></div>
+        <div class="st"><span class="dot">✓</span><span>Start new version</span><span class="v">static IP</span></div>
+        <div class="st"><span class="dot">✓</span><span>Health gate</span><span class="v">200 OK ×3</span></div>
+        <div class="st"><span class="dot">✓</span><span>Switch traffic</span><span class="v">0 reloads</span></div>
+        <div class="st"><span class="dot">✓</span><span>Drain &amp; stop old</span><span class="v">kept log</span></div>
+      </div>
+      <div class="ok">Live · 0 dropped requests · rollback ready</div>
+      <div class="mem">
+        <div class="mem-h"><span>ServerDock on this server</span><span><b>54 MB</b> of 1 GB</span></div>
+        <div class="bar"><i></i></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">Built with AI agents, <b>led by a human</b>: planned, reviewed, measured.</div>
+</body>
+</html>
