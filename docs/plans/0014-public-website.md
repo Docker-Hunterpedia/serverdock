@@ -1144,3 +1144,11 @@ All four reviewers approved Revision 3 (`94a0493`). These NITs from their approv
 - `.screen-full` is hidden in print.
 - The full-size link says it opens the image file.
 - The Home stage list comes from `site/src/data/stages.json`, gated against `STAGE_LABELS` in `web/src/lib/services.ts`, which the gate reads as text.
+
+## Step 6 inventory and maintainer decisions (2026-11-28)
+
+- **Inventory (read-only, via the Cloudflare API).** The `oday-bakkour.com` zone is in the account that also serves other live Pages sites (two marketing sites and a set of admin redirects; all Git-connected or Direct Upload, none with storage bindings). `serverdock.oday-bakkour.com` has no DNS record yet. Zone settings: Bot Fight Mode off, JavaScript detections on, Rocket Loader off, Email Obfuscation on.
+- **Account (Q3): the maintainer chose the same account as the zone**, knowing that a Pages:Edit token can deploy to and change those other Pages projects. Recorded as an accepted risk. The required controls from section 5 all apply: the deploy job as specified (isolated wrangler lockfile, step-scoped token, `permissions: {}`), a 90-day token expiry, the `production` environment limited to `main` with no tag rules, and the `main` ruleset assumption verified at step 6. A required reviewer on the environment is recommended.
+- **JavaScript detections (Q5): the maintainer chose to leave it on** for the zone. Its injected script is blocked by the site's CSP; the launch check records the resulting console message as a known, harmless exception rather than failing. Email Obfuscation is turned off for the ServerDock hostname only by the Configuration Rule.
+- **Token handling.** The maintainer creates the API token and stores it as the GitHub secret by hand; the assistant creates the Pages project, the custom domain, DNS and the Configuration Rule through the API, and writes the deploy job.
+
