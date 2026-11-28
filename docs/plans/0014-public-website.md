@@ -742,4 +742,6 @@ Measured and decided while building step 1. AI-written; the maintainer has not c
   - gate 6 uses an empty allowlist until step 3, and fails closed if `src/docs.config.ts` exists;
   - gate 5 fails on any `styleguide/` directory;
   - `src/node-shim.d.ts` declares the few Node APIs `og.png.ts` uses, so `@types/node` is not a dependency.
+- **`telemetry: false`** was removed from `astro.config.mjs`: it is not a valid Astro config key. `ASTRO_TELEMETRY_DISABLED=1` in the npm scripts and in `site.yml` turns telemetry off.
+- **`_headers`** also sets `Cross-Origin-Resource-Policy: same-origin` and `X-Frame-Options: DENY`, added at security's request in round 1, so the plan's section 3.5 and the file agree.
 - **Review round 1 changes.** Gate 1 also catches attributes after `/` or a quote, a stray quote hiding a `<script>`, `javascript:` URLs and meta refresh. Gate 2 parses `_headers` and requires one `/*` CSP with `script-src` and `default-src` exactly `'none'`. Gate 3 also checks `Contact`, a single RFC 3339 `Expires`, and an 11-month maximum. Gate 6 covers nested and flat HTML. Budget exceptions are validated and a bad `budgets.json` exits 2.
