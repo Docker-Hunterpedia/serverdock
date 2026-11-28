@@ -151,3 +151,73 @@ test('verifyGrowth recomputes the last entry from git history', () => {
 		assert.match(r.message, /says 99 bytes.*added 12/);
 	} finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+const DIR = 'site/public/screens/';
+const growthOf = (...bytes) => JSON.stringify({ growth: bytes.map((b, i) => ({ captured_at: `2026-11-${10 + i}T00:00:00Z`, bytes_added: b })) });
+
+test('verifyGrowth: a no-ff merge is checked against its first parent', () => {
+	const d = repo();
+	try {
+		put(d, DIR + 'a-dark-800.webp', 'x'.repeat(10));
+		put(d, DIR + 'manifest.json', growthOf(10));
+		commit(d, 'first set');
+		const main = sh(d, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+		sh(d, 'checkout', '-q', '-b', 'pr');
+		put(d, DIR + 'a-dark-800.webp', 'y'.repeat(14));
+		put(d, DIR + 'manifest.json', growthOf(10, 14));
+		commit(d, 'refresh');
+		sh(d, 'checkout', '-q', main);
+		sh(d, 'merge', '--no-ff', '-q', '-m', 'merge pr', 'pr');
+		assert.equal(verifyGrowth(d).ok, true);
+		assert.match(verifyGrowth(d).message, /matches: 14/);
+	} finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('verifyGrowth: a conflict-resolved merge manifest warns instead of failing', () => {
+	const d = repo();
+	try {
+		put(d, DIR + 'a-dark-800.webp', 'x'.repeat(10));
+		put(d, DIR + 'manifest.json', growthOf(10));
+		commit(d, 'first set');
+		const main = sh(d, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+		sh(d, 'checkout', '-q', '-b', 'pr');
+		put(d, DIR + 'a-dark-800.webp', 'p'.repeat(11));
+		put(d, DIR + 'manifest.json', growthOf(10, 11));
+		commit(d, 'pr refresh 1');
+		put(d, DIR + 'a-dark-800.webp', 'q'.repeat(12));
+		put(d, DIR + 'manifest.json', growthOf(10, 11, 12));
+		commit(d, 'pr refresh 2');
+		sh(d, 'checkout', '-q', main);
+		put(d, DIR + 'a-dark-800.webp', 'm'.repeat(13));
+		put(d, DIR + 'manifest.json', growthOf(10, 13));
+		commit(d, 'main refresh');
+		try { sh(d, 'merge', '--no-ff', '-q', '-m', 'merge pr', 'pr'); } catch { /* conflict, as expected */ }
+		put(d, DIR + 'a-dark-800.webp', 'q'.repeat(12));
+		put(d, DIR + 'manifest.json', growthOf(10, 13, 11, 12)); // hand-resolved: four entries, two more than the first parent
+		sh(d, 'add', '-A');
+		sh(d, 'commit', '-qm', 'merge pr (resolved by hand)');
+		const r = verifyGrowth(d);
+		assert.equal(r.ok, true, r.message);
+		assert.equal(r.warning, true);
+		assert.match(r.message, /cannot verify/);
+	} finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('verifyGrowth: two refresh commits in one PR (fast-forward) verify the last one', () => {
+	const d = repo();
+	try {
+		put(d, DIR + 'a-dark-800.webp', 'x'.repeat(10));
+		put(d, DIR + 'manifest.json', growthOf(10));
+		commit(d, 'first set');
+		put(d, DIR + 'a-dark-800.webp', 'y'.repeat(15));
+		put(d, DIR + 'manifest.json', growthOf(10, 15));
+		commit(d, 'refresh 1');
+		put(d, DIR + 'b-dark-800.webp', 'z'.repeat(20));
+		put(d, DIR + 'manifest.json', growthOf(10, 15, 20));
+		commit(d, 'refresh 2');
+		assert.equal(verifyGrowth(d).ok, true);
+		put(d, DIR + 'manifest.json', growthOf(10, 15, 21)); // a wrong number is still caught
+		commit(d, 'wrong');
+		assert.equal(verifyGrowth(d).ok, false);
+	} finally { rmSync(d, { recursive: true, force: true }); }
+});

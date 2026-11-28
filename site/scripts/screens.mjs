@@ -31,7 +31,9 @@ export const INPUTS = [
 	'web/static',
 	'docs/api/openapi.json',
 ];
-export const MAX_REGEN_BYTES = 2_000_000; // one regeneration
+// One regeneration. In practice this cannot trigger: the 24 files at their per-file caps come to 1.87 MB, so the
+// effective limit is the 50 MB a year below (about 27 full regenerations).
+export const MAX_REGEN_BYTES = 2_000_000;
 export const MAX_YEAR_BYTES = 50_000_000; // the sum of `growth` over 365 days
 const DAY = 86400000;
 
@@ -108,23 +110,52 @@ export function finish({ raw, committed, out, hash, env = {}, main = false, now 
 	return { stale: !hashMatches, hashMatches, changed, removed, bytesAdded, refresh, problems, warnings, manifest };
 }
 
-/** The last growth entry must equal the bytes the last commit that touched the manifest added or changed. */
-export function verifyGrowth(repo = '.', manifestPath = 'site/public/screens/manifest.json') {
-	const m = readManifest(resolve(repo, manifestPath));
-	if (!m || m.growth.length === 0) return { ok: true, message: 'no growth entries to verify' };
-	const commit = git(['log', '-1', '--format=%H', '--', manifestPath], repo).trim();
-	if (!commit) return { ok: false, message: 'the manifest is not in git history' };
-	const dir = manifestPath.replace(/manifest\.json$/, '');
+const readAt = (repo, rev, path) => {
+	try {
+		return JSON.parse(git(['show', `${rev}:${path}`], repo));
+	} catch {
+		return null;
+	}
+};
+
+/** Bytes of the .webp files added or changed between `from` and `commit` under `dir` (`from` null: the root commit). */
+function addedBytes(repo, from, commit, dir) {
+	const args = from ? ['diff-tree', '-r', '--no-commit-id', from, commit, '--', dir] : ['diff-tree', '-r', '--no-commit-id', '--root', commit, '--', dir];
 	let added = 0;
-	const raw = git(['diff-tree', '-r', '--no-commit-id', '--root', commit, '--', dir], repo);
-	for (const line of raw.split('\n').filter(Boolean)) {
+	for (const line of git(args, repo).split('\n').filter(Boolean)) {
 		const [meta, path] = line.split('\t');
 		const [, , , newBlob, status] = meta.split(' ');
 		if (!path.endsWith('.webp') || status === 'D') continue;
 		added += Number(git(['cat-file', '-s', newBlob], repo).trim());
 	}
+	return added;
+}
+
+/**
+ * The last growth entry must equal the bytes the last commit that touched the manifest added or changed. For a
+ * merge commit the comparison is against the parent whose growth list is one entry shorter; if no parent fits (a
+ * hand-resolved manifest, or a merge of several refreshes) the result is a warning, never a failure. A merge whose numbers
+ * differ also only warns; an ordinary commit that differs fails.
+ */
+export function verifyGrowth(repo = '.', manifestPath = 'site/public/screens/manifest.json') {
+	const m = readManifest(resolve(repo, manifestPath));
+	if (!m || m.growth.length === 0) return { ok: true, message: 'no growth entries to verify' };
+	const commit = git(['log', '-1', '--first-parent', '--format=%H', '--', manifestPath], repo).trim();
+	if (!commit) return { ok: false, message: 'the manifest is not in git history' };
+	const dir = manifestPath.replace(/manifest\.json$/, '');
+	const parents = git(['rev-list', '--parents', '-n', '1', commit], repo).trim().split(' ').slice(1);
 	const last = m.growth[m.growth.length - 1].bytes_added;
-	return last === added ? { ok: true, message: `last growth entry matches: ${added} bytes` } : { ok: false, message: `the last growth entry says ${last} bytes, commit ${commit.slice(0, 8)} added ${added}` };
+	let from = null;
+	if (parents.length === 1) from = parents[0];
+	else if (parents.length > 1) {
+		from = parents.find((p) => (readAt(repo, p, manifestPath)?.growth?.length ?? 0) === m.growth.length - 1) ?? undefined;
+		if (from === undefined) return { ok: true, warning: true, message: `cannot verify the last growth entry: ${commit.slice(0, 8)} is a merge and no parent has one growth entry fewer` };
+	}
+	const added = addedBytes(repo, from, commit, dir);
+	if (last === added) return { ok: true, message: `last growth entry matches: ${added} bytes` };
+	const text = `the last growth entry says ${last} bytes, commit ${commit.slice(0, 8)} added ${added}`;
+	// a merge can legitimately differ (a hand-resolved manifest): warn there, fail only on an ordinary commit
+	return parents.length > 1 ? { ok: true, warning: true, message: `cannot verify the last growth entry of a merge: ${text}` } : { ok: false, message: text };
 }
 
 function arg(args, name) {
@@ -174,7 +205,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
 		process.exit(r.problems.length || (r.stale && !args.includes('--allow-stale')) || r.changed.length ? 1 : 0);
 	} else if (cmd === 'verify-growth') {
 		const r = verifyGrowth(repoRoot, args[0] ?? 'site/public/screens/manifest.json');
-		summary(`### Screenshot growth\n\n${r.message}`);
+		summary(`### Screenshot growth\n\n${r.warning ? 'WARNING: ' : ''}${r.message}`);
 		process.exit(r.ok ? 0 : 1);
 	} else {
 		console.error('usage: screens.mjs hash | state | finish | verify-growth');
