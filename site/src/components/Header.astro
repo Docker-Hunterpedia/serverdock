@@ -1,0 +1,25 @@
+---
+import { MAIN_NAV } from '../nav';
+import { REPO } from '../config';
+import Logo from './Logo.astro';
+---
+
+<header class="site-header">
+	<a class="brand" href="/"><Logo />ServerDock</a>
+	<a class="pill" href="/roadmap/#status">Pre-release · Phase 1<span class="sr-only">. See project status</span></a>
+	<nav class="nav-wide" aria-label="Main">
+		<ul>
+			{MAIN_NAV.map((i) => <li><a href={i.href}>{i.label}</a></li>)}
+			<li><a href={REPO}>GitHub<span class="sr-only"> (on GitHub)</span></a></li>
+		</ul>
+	</nav>
+	<details class="nav-narrow">
+		<summary>Menu</summary>
+		<nav aria-label="Main menu">
+			<ul>
+				{MAIN_NAV.map((i) => <li><a href={i.href}>{i.label}</a></li>)}
+				<li><a href={REPO}>GitHub<span class="sr-only"> (on GitHub)</span></a></li>
+			</ul>
+		</nav>
+	</details>
+</header>

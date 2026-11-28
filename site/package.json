@@ -1,0 +1,22 @@
+{
+  "name": "serverdock-site",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "ServerDock's public website. A static Astro site with no client JavaScript; Node is needed to build it only.",
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev --host 127.0.0.1",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "check": "ASTRO_TELEMETRY_DISABLED=1 astro check",
+    "gates": "node scripts/gates.mjs dist",
+    "weight": "node scripts/page-weight.mjs dist",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "astro": "7.4.13"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.12",
+    "typescript": "6.0.3"
+  }
+}
