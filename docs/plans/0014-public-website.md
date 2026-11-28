@@ -745,3 +745,19 @@ Measured and decided while building step 1. AI-written; the maintainer has not c
 - **`telemetry: false`** was removed from `astro.config.mjs`: it is not a valid Astro config key. `ASTRO_TELEMETRY_DISABLED=1` in the npm scripts and in `site.yml` turns telemetry off.
 - **`_headers`** also sets `Cross-Origin-Resource-Policy: same-origin` and `X-Frame-Options: DENY`, added at security's request in round 1, so the plan's section 3.5 and the file agree.
 - **Review round 1 changes.** Gate 1 also catches attributes after `/` or a quote, a stray quote hiding a `<script>`, `javascript:` URLs and meta refresh. Gate 2 parses `_headers` and requires one `/*` CSP with `script-src` and `default-src` exactly `'none'`. Gate 3 also checks `Contact`, a single RFC 3339 `Expires`, and an 11-month maximum. Gate 6 covers nested and flat HTML. Budget exceptions are validated and a bad `budgets.json` exits 2.
+
+## Step 2 record (implementer, 2026-11-28)
+
+AI-written; the maintainer has not confirmed it.
+
+- **Built:** `tokens.css` (both themes, explicit `--prism-*`), `global.css`, `components.css`, the components (chip, card, callout, evidence link, deploy stages, meter, table region, docs nav, "On this page"), the docs layout slot (sidebar before `main`), `/styleguide/` (built only when `SITE_STYLEGUIDE=1`), the placeholder `base.css` removed, and `docs/accessibility/site-launch-checklist.md`.
+- **Dependencies:** `@playwright/test` 1.65.1 and `@axe-core/playwright` 4.14.0, the exact versions `web/` pins on `main`.
+- **Production CSS:** one file, 11 KB raw and 3.2 KB gzip (ceiling 15 KB). Every page is 4.5 KB gzip over 3 requests.
+- **Tests:** `npm test` has 45 unit tests, including the contrast ratios from `tokens.css` (text at least 4.5:1, borders, focus ring and meter at least 3:1, both themes, all Prism tokens), the og.html token match, and a build-twice test of the styleguide switch. `npm run e2e` runs 736 tests (254 skipped by design: each check runs only in the projects it applies to) in 11 projects, against the test build served by `scripts/serve.mjs`.
+- **Measured time, local (Apple silicon, browsers already installed):** `astro check`, unit tests, both builds, gates, page weight and Playwright in about 40 s in total (Playwright about 35 s). The CI job time is measured on the first `site.yml` run of the step 2 PR and recorded here: PENDING.
+- **Deviations and findings:**
+  - WebKit upgrades `http://127.0.0.1` to https because of `upgrade-insecure-requests` (Chromium exempts loopback). `serve.mjs` drops that one directive when `SERVE_NO_UPGRADE=1`, which only the Playwright config sets. Every other directive is as shipped.
+  - Playwright's WebKit does not Tab to links, so the skip-link and focus-ring tests skip WebKit; the other checks and axe run there. Real Safari keyboard behaviour is on the manual checklist.
+  - axe reports the "✓" glyph in the stage dots as a colour-contrast "incomplete" (`nonBmp`). The tick is now generated content on an empty `aria-hidden` span, and its colours are covered by the contrast unit test.
+  - `<aside>` for callouts fails axe `landmark-unique` when there are two; callouts are plain `div`s with a text label.
+  - The e2e files are not type-checked: `@types/node` is not a dependency, and Playwright transpiles TypeScript without checking it.
