@@ -226,3 +226,8 @@ test('gate 11: screenshots on any page other than Home and Features fail; Featur
 test('gate 11: a missing screenshot file is named', () => {
 	assert.ok(run({ 'index.html': page(pic('a', { eager: true }), css) }).errs.some((e) => /is named but missing/.test(e)));
 });
+
+test('gate 11: a screenshot named in CSS url() fails', () => {
+	const r = run({ 'index.html': page('', css), '_astro/a.css': 'a{background:url(/screens/a-dark-800.webp)}', ...files(shot('a-dark-800', 1000)) });
+	assert.ok(r.errs.some((e) => /named in CSS url\(\)/.test(e)), r.errs.join());
+});

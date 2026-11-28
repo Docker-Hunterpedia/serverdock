@@ -166,12 +166,15 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 			addUrl(r.url, '/' + rf, r.kind);
 		}
 		// url() inside linked CSS
+		let cssScreens = false;
 		for (const [path, kind] of [...urls]) {
 			if (kind !== 'css') continue;
 			const f = join(root, path);
 			if (!existsSync(f)) continue;
 			for (const m of readFileSync(f, 'utf8').matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)/gi)) {
-				addUrl(m[1] ?? m[2] ?? m[3], path, 'cssurl');
+				const u = m[1] ?? m[2] ?? m[3];
+				if (u.includes(SCREENS)) cssScreens = true;
+				addUrl(u, path, 'cssurl');
 			}
 		}
 		// gate 11: screenshots, in raw bytes, worst case per <picture>
@@ -233,6 +236,7 @@ export function measure(dist, exceptions = [], limits = LIMITS) {
 		if (route === '/' && requests > limits.homeRequests) fail.push(`${requests} requests, at most ${limits.homeRequests}`);
 		for (const b of bad) fail.push(`${b} is named but missing`);
 		fail.push(...imgFail);
+		if (cssScreens) fail.push('a screenshot is named in CSS url(): screenshots belong in <picture> markup, where gate 11 can weigh them');
 		for (const f of fail) errs.push(`${route}: ${f}`);
 		rows.push({ route, html, css: cssBytes, total, requests, images: imageWorst, ok: fail.length === 0 });
 	}
