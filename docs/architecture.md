@@ -246,7 +246,7 @@ internal/build/           railpack/buildkit, builder selection
 web/                      ++ SvelteKit SPA (Svelte 5, static adapter, SPA fallback). `go build -tags spa` embeds `web/build` (embed_spa.go); without the tag `web/dist/index.html` is the placeholder (embed_placeholder.go). Node is needed only to build it (`make web`, `make dev`, CI). `e2e/` holds the Playwright + axe suite, `src/lib/api-types.ts` is generated from `docs/api/openapi.json`
 bench/                    * Dockerfile (builds with `-tags spa` and asserts `ui=spa`), run.sh, measure.sh, results/; ++ after-login.sh and idle-memory.sh (report-only M2 checks)
 templates/                one-click app catalog + CI tests
-.github/workflows/        * ci.yml; + site.yml (website build; not a required check); + .github/scripts/ (bench trigger), CODEOWNERS, dependabot.yml
+.github/workflows/        * ci.yml (+ `screens-hash`/`screens-capture`: freshness of the website's screenshots, a warning at first); + site.yml (website build; not a required check); + .github/scripts/ (bench trigger), CODEOWNERS, dependabot.yml
 site/                     + the public website (plan 0014): a static Astro site with no client JS, built from `docs/*.md` and deployed to Cloudflare Pages. Not embedded in the binary and not benched; `site/deploy/` holds the deploy CLI with its own lockfile
 docs/                     vision, features, architecture, roadmap, research, plans, decisions, api/openapi.json (generated golden)
 ```

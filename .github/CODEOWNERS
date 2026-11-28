@@ -14,3 +14,9 @@
 /site/package.json @Docker-Hunterpedia
 /site/package-lock.json @Docker-Hunterpedia
 /site/astro.config.mjs @Docker-Hunterpedia
+
+# Screenshots of the real dashboard (plan 0014, Revision 3): the capture spec, the committed images
+# with their manifest (growth entries), and the alt text and captions.
+/web/e2e/screens.capture.ts @Docker-Hunterpedia
+/site/public/screens/ @Docker-Hunterpedia
+/site/src/data/screens.json @Docker-Hunterpedia
