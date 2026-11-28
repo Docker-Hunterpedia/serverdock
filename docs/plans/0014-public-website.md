@@ -727,3 +727,19 @@ Accessibility and footprint approved revision 1. The reviewer and security asked
   - the pill's name starts with its visible text, using appended hidden text instead of `aria-label`;
   - the Prism tokens are listed explicitly in `tokens.css` before step 2 closes.
 - **WebKit:** if it moves to `main`, the deploy needs it, so a WebKit failure blocks the deploy.
+
+## Step 1 record (implementer, 2026-11-28)
+
+Measured and decided while building step 1. AI-written; the maintainer has not confirmed it.
+
+- **Dependency counts.** `npm ls --all | wc -l` is 558 lines for `site/` and 160 for `site/deploy/`. Lockfiles: 185,581 bytes (`site/`) and 69,060 bytes (`site/deploy/`).
+- **`sharp`.** It is installed, because Astro lists it as a dependency. `npm ci --ignore-scripts` skips its install script, and it never runs (passthrough image service). The build works under `--ignore-scripts`.
+- **Units.** 1 KB is 1000 bytes in `page-weight.mjs`, like the `web/` size check.
+- **`site/deploy/`** is kept in step 1 (the plan said step 6 for the job itself) so its Dependabot entry resolves.
+- **Footer.** The footer text ("AGPL-3.0. No tracking…", "Built with AI agents…") sits outside `<nav aria-label="Footer">`, which holds only the links. This is better than the plan's wording.
+- **Deviations the reviewers accepted:**
+  - placeholder pages for Features, Benchmarks, Roadmap, Docs, Security and Contributing, so gate 7 can pass; steps 3 to 5 replace them;
+  - gate 6 uses an empty allowlist until step 3, and fails closed if `src/docs.config.ts` exists;
+  - gate 5 fails on any `styleguide/` directory;
+  - `src/node-shim.d.ts` declares the few Node APIs `og.png.ts` uses, so `@types/node` is not a dependency.
+- **Review round 1 changes.** Gate 1 also catches attributes after `/` or a quote, a stray quote hiding a `<script>`, `javascript:` URLs and meta refresh. Gate 2 parses `_headers` and requires one `/*` CSP with `script-src` and `default-src` exactly `'none'`. Gate 3 also checks `Contact`, a single RFC 3339 `Expires`, and an 11-month maximum. Gate 6 covers nested and flat HTML. Budget exceptions are validated and a bad `budgets.json` exits 2.
