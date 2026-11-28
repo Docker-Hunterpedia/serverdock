@@ -1,0 +1,47 @@
+---
+// A real screenshot of the ServerDock web UI with demo data (plan 0014, Revision 3).
+// Dark is the <img> default; light is the <source>, with the same logic as the site CSS. No JS.
+import { DEMO_SENTENCE, type ScreenData } from '../lib/screens';
+
+interface Props {
+	screen: ScreenData;
+	/** Only the hero image is eager (fetchpriority high); every other image is lazy. */
+	eager?: boolean;
+}
+const { screen, eager = false } = Astro.props;
+const phone = screen.viewport === 'phone';
+const sizes = phone ? '300px' : '(min-width: 60rem) 50rem, 100vw';
+const srcset = (files: typeof screen.dark) => files.map((f) => `${screen.base}${f.name} ${f.width}w`).join(', ');
+const first = screen.dark[0];
+const full = (files: typeof screen.dark) => files[files.length - 1];
+const when = new Date(screen.capturedAt);
+const date = when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+const day = screen.capturedAt.slice(0, 10);
+---
+
+<figure class={`screen${phone ? ' screen--phone' : ''}`}>
+	<div class="screen-head"><span class="badge" aria-hidden="true">Demo data</span></div>
+	<picture>
+		<source media="print, (prefers-color-scheme: light)" type="image/webp" srcset={srcset(screen.light)} sizes={sizes} />
+		<img
+			src={`${screen.base}${first.name}`}
+			srcset={srcset(screen.dark)}
+			sizes={sizes}
+			width={first.width}
+			height={first.height}
+			alt={screen.alt}
+			decoding="async"
+			loading={eager ? undefined : 'lazy'}
+			fetchpriority={eager ? 'high' : undefined}
+		/>
+	</picture>
+	<figcaption>{screen.shows} Captured <time datetime={day}>{date}</time>. {DEMO_SENTENCE}</figcaption>
+	{
+		!phone && (
+			<p class="screen-full">
+				<a class="only-dark" href={`${screen.base}${full(screen.dark).name}`}>Open the full-size image file<span class="sr-only">: {screen.shows.replace(/\.$/, '')}, dark theme (WebP)</span></a>
+				<a class="only-light" href={`${screen.base}${full(screen.light).name}`}>Open the full-size image file<span class="sr-only">: {screen.shows.replace(/\.$/, '')}, light theme (WebP)</span></a>
+			</p>
+		)
+	}
+</figure>

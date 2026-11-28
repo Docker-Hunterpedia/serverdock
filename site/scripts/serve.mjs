@@ -13,7 +13,7 @@ export { parseHeaders };
 
 const TYPES = {
 	'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
-	'.png': 'image/png', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml',
+	'.png': 'image/png', '.webp': 'image/webp', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml',
 };
 
 // WebKit upgrades http://127.0.0.1 to https because of upgrade-insecure-requests (Chromium exempts

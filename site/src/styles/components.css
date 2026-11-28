@@ -182,3 +182,33 @@ pre code { overflow-wrap: normal; }
 	details > nav { animation: nav-in 0.15s ease-out; }
 	@keyframes nav-in { from { opacity: 0; } to { opacity: 1; } }
 }
+
+/* Screenshot figure (Revision 3): a real dashboard image with a "Demo data" badge outside the crop */
+.screen { margin: 1rem 0; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--card); overflow: hidden; }
+.screen--phone { max-width: 300px; }
+.screen-head { display: flex; justify-content: flex-end; padding: 0.4rem 0.6rem; background: var(--bg2); border-block-end: 1px solid var(--border); }
+.badge { border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.6rem; background: var(--card); color: var(--text); font-size: 0.8rem; font-weight: 700; }
+.screen picture { display: block; }
+.screen img { display: block; width: 100%; max-width: 100%; height: auto; }
+.screen figcaption { padding: 0.6rem 0.75rem; color: var(--text); background: var(--card); font-size: 0.9rem; border-block-start: 1px solid var(--border); }
+.screen-full { margin: 0; padding: 0 0.75rem 0.5rem; background: var(--card); }
+.screen-full a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.screen-full .only-light { display: none; }
+@media print, (prefers-color-scheme: light) {
+	.screen-full .only-dark { display: none; }
+	.screen-full .only-light { display: inline-flex; }
+}
+@media (forced-colors: active) {
+	.screen, .screen-head, .badge { border: 1px solid CanvasText; }
+}
+@media print {
+	.screen-full { display: none; }
+	.screen { break-inside: avoid; }
+}
+
+/* Print: backgrounds are dropped unless asked for, so the tick and the meter keep a border and exact colour */
+.stages .dot, .meter .fill { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+@media print {
+	.stages .dot { border: 1px solid CanvasText; }
+	.meter .fill { stroke: CanvasText; stroke-width: 1; }
+}
