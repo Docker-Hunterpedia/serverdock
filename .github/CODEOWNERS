@@ -1,3 +1,10 @@
 # CI, scripts and repo settings files need the maintainer's review
 # (plan 0002 M1 step 1; "Require review from Code Owners" is a branch-protection setting).
 /.github/ @Docker-Hunterpedia
+
+# The public website's security-relevant files (plan 0014): headers and CSP, the
+# build gates, the docs allowlist, and the deploy CLI with its lockfile.
+/site/public/_headers @Docker-Hunterpedia
+/site/scripts/gates.mjs @Docker-Hunterpedia
+/site/src/docs.config.ts @Docker-Hunterpedia
+/site/deploy/ @Docker-Hunterpedia

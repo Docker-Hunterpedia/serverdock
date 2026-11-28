@@ -16,6 +16,11 @@ node_modules/
 web/build/
 web/.svelte-kit/
 
+# Website (site/)
+/site/dist/
+/site/.astro/
+/site/node_modules/
+
 # Local env and secrets
 .env
 .env.*

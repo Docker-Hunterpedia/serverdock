@@ -4,3 +4,6 @@ bench/results
 node_modules
 web/node_modules
 web/.svelte-kit
+site/node_modules
+site/dist
+site/.astro
