@@ -143,7 +143,7 @@ Rows are in run order (Revision 1, 2026-11-27).
 - M8 adds the first always-on periodic work (the metrics collector), so it comes late and the milestones before it are measured without it. Its certificate-expiry alerts need M4a, and its backup alerts need M6.
 - The counted dogfood window needs builds with M5, M6 and M8, so it runs during M9, and the exit can't come before it ends.
 
-## Footprint allocation (cumulative S2 / S4 VmRSS targets; cloud-container base until the CI re-base)
+## Footprint allocation (cumulative S2 / S4 VmRSS targets, CI amd64; S4 re-based on M3a CI 2026-11-28)
 
 > Since [ADR 0011](../decisions/0011-footprint-ceiling.md) (2026-11-21) these allocations are **tripwire planning numbers**, not gates: CI fails only above 200 MB (S2) / 100 MB (S4). Crossing an allocation needs a written reason in the PR.
 
@@ -151,32 +151,34 @@ Baseline from [research/05](../research/05-phase0-measurements.md): **S2 47.6 MB
 
 Revision 1 (2026-11-27): rows are in the new run order. The S2 column keeps each milestone's old increment; the old M4 increment (+4) is split into M4a +3 and M4b +1, so the M9 total is unchanged at 75 MB. The S4 column is **re-based on M3a's measurement**, because the old S4 targets were passed in M2 (46.0 MB, see ADR 0011) and M3a.
 
+**Re-based on CI (2026-11-28).** The first CI bench on PR #6 (M3a, commit 5eded76, median of per-run medians) measured **S2 live watcher 54.0 MB, S4 46.5 MB**, idle CPU 0.00 %, binary 20.0 MB gzip. The S4 column below is shifted by the difference (46.5 − 47.6 = −1.1 MB); S2 is not re-based (54.0 is under its 56 target). The CI VmHWM was not recorded in the gate output used here, so the 49.8 MB figure is a cloud-container number only. The paragraph that follows is kept as the record of the provisional base.
+
 **Provisional M3a base.** The M3a figures in the table (S2 about 54–55, S4 47.6, VmHWM 49.8) come from the **cloud container** bench (a temporary cgroup-v1 shim), **not from CI amd64** as this section's heading says. The CI S2/S4 medians for M3a are **not yet measured**: the bench job is skipped on draft PRs. The tripwire comparison is owned by the CI bench median (the gate metric). **The table is re-based once, on the first CI numbers from PR #6**, and the S4 targets after M3a shift by the difference.
 
 | Run | After | S2 target (increment) | S4 target (increment) | Main new idle cost |
 |---|---|---|---|---|
 | 1 | M1 | ≤ 49.0 (+1.4) — measured 47.6 | ≤ 45.0 (+0.9) — measured 44.2 | TLS listener, migration runner (startup only) |
 | 2 | M2 | ≤ 53 (+4) | ≤ 45 — measured 46.0 | Real SPA (file-backed), auth, sessions |
-| 3 | M3a | ≤ 56 (+3) — about 54–55 (cloud container, full run, live watcher; CI not yet measured) | **47.6 (cloud container, full run, median of per-run medians)**, the provisional S4 base until the first CI run on PR #6; VmHWM 49.8 (watch figure only) | Docker events stream, job scheduler, reconciler |
-| 4 | M3b | ≤ 58 (+2) | ≤ 47.8 (+0.2) | Secretbox in use, more state |
-| 5 | M4a | ≤ 61 (+3) | ≤ 48.0 (+0.2) | ACME issuance and domain routes (certmagic maintenance already runs since M1) |
-| 6 | M7a | ≤ 61.5 (+0.5) | ≤ 48.0 (+0) | Lifecycle commands, `sd_notify` (no idle cost) |
-| 7 | M7b | ≤ 62 (+0.5) | ≤ 48.0 (+0) | Daily housekeeping job with update check and state backup (on the shared timer) |
-| 8 | M5 | ≤ 64 (+2) | ≤ 48.0 (+0) | Webhook handler only; BuildKit runs only during builds |
-| 9 | M6 | ≤ 68 (+4) | ≤ 48.5 (+0.5) | compose-go init, cron, S3 client |
-| 10 | M4b | ≤ 69 (+1) | ≤ 48.5 (+0, required) | WebAuthn library (control plane only) |
-| 11 | M8 | ≤ 74 (+5) | ≤ 49.5 (+1) | 15 s metrics collector, alert evaluation |
-| 12 | M9 | ≤ 75 (+1) | ≤ 49.5 (+0) | MCP handler (no idle cost) |
+| 3 | M3a | ≤ 56 (+3) — **CI 54.0** (live watcher; cloud container 54–55) | **CI 46.5** (median of per-run medians; the S4 base; cloud container 47.6, VmHWM 49.8 cloud only) | Docker events stream, job scheduler, reconciler |
+| 4 | M3b | ≤ 58 (+2) | ≤ 46.7 (+0.2) | Secretbox in use, more state |
+| 5 | M4a | ≤ 61 (+3) | ≤ 46.9 (+0.2) | ACME issuance and domain routes (certmagic maintenance already runs since M1) |
+| 6 | M7a | ≤ 61.5 (+0.5) | ≤ 46.9 (+0) | Lifecycle commands, `sd_notify` (no idle cost) |
+| 7 | M7b | ≤ 62 (+0.5) | ≤ 46.9 (+0) | Daily housekeeping job with update check and state backup (on the shared timer) |
+| 8 | M5 | ≤ 64 (+2) | ≤ 46.9 (+0) | Webhook handler only; BuildKit runs only during builds |
+| 9 | M6 | ≤ 68 (+4) | ≤ 47.4 (+0.5) | compose-go init, cron, S3 client |
+| 10 | M4b | ≤ 69 (+1) | ≤ 47.4 (+0, required) | WebAuthn library (control plane only) |
+| 11 | M8 | ≤ 74 (+5) | ≤ 48.4 (+1) | 15 s metrics collector, alert evaluation |
+| 12 | M9 | ≤ 75 (+1) | ≤ 48.4 (+0) | MCP handler (no idle cost) |
 
-Check: S2 increments after M3a are 2 + 3 + 0.5 + 0.5 + 2 + 4 + 1 + 5 + 1 = 19, and 56 + 19 = 75 (tripwire 80). S4 increments after M3a are 0.2 + 0.2 + 0.5 + 1 = 1.9, and 47.6 + 1.9 = 49.5 (tripwire 50).
+Check: S2 increments after M3a are 2 + 3 + 0.5 + 0.5 + 2 + 4 + 1 + 5 + 1 = 19, and 56 + 19 = 75 (tripwire 80). S4 increments after M3a are 0.2 + 0.2 + 0.5 + 1 = 1.9, and 46.5 + 1.9 = 48.4 (tripwire 50).
 
 **Which number is compared.** The tripwires and these targets are checked against the **CI** bench gate metric: the **median of the per-run medians** of idle VmRSS (`bench/run.sh` line 24, `bench/report`). The full-run VmHWM (high-water mark) is reported as a **watch figure only**: it is not compared with the tripwire (plan 0004 Revision 17).
 
 **How a step is judged.** A milestone's footprint step is judged by its **full-run median plus an explained cause**, not by a single delta. The +0.2 MB S4 steps (M3b, M4a) are inside the full-run spread of about 0.9 MB, so one run can't show them; a target overrun is accepted when the full-run median and the cause (new code, a dependency, binary growth) explain it.
 
-**S4 headroom is the tightest constraint in Phase 1.** On the provisional M3a base the S4 median is 47.6 MB, about **2.4 MB under the 50 MB tripwire** (ADR 0011; the hard ceiling is 100 MB). The planned targets leave **0.5 MB at M9** (49.5). Control-plane dependencies raise S4 through `init()` work and through mapped pages of a larger binary, even though agent mode never calls them. So:
+**S4 headroom is the tightest constraint in Phase 1.** On the CI M3a base the S4 median is 46.5 MB, about **3.5 MB under the 50 MB tripwire** (ADR 0011; the hard ceiling is 100 MB). The planned targets leave **1.6 MB at M9** (48.4). Control-plane dependencies raise S4 through `init()` work and through mapped pages of a larger binary, even though agent mode never calls them. So:
 - every S4 increase uses up headroom that the slack rule (S4 +0.5 MB) barely covers. A milestone whose S4 median lands above its target needs the written reason and `footprint` review; one whose median crosses the 50 MB tripwire needs the ADR 0011 written reason, and a crossing without a convincing reason triggers Q3 (pull the slim agent forward);
-- the S4 VmHWM (49.8 MB at M3a) is recorded in each bench report so a rising trend is visible, but it is not a gate or a tripwire. **It will likely pass 50 MB from M3b on; Q3 triggers only on the median**;
+- the S4 VmHWM is recorded in each bench report so a rising trend is visible, but it is not a gate or a tripwire (the 49.8 MB M3a figure is a cloud-container number; the CI VmHWM is not yet recorded). **If it passes 50 MB, Q3 still triggers only on the median**;
 - M4a, M5, M7a and M7b should add close to nothing to S4: none of them adds a heavy dependency, and certmagic already runs in agent mode. If any of them shows a QUICK S4 delta above 0.5 MB, rule 4's full S4 run applies (named for M4a in its section);
 - M6 (compose-go, the S3 client) and M4b (WebAuthn library) need the full, non-QUICK S4 run of rule 4 before merge, whatever the QUICK delta; M4b must leave S4 unchanged;
 - **the planned S4 increases are M6 (+0.5: compose-go and S3 client `init()` and binary growth) and M8 (+1: the metrics collector also runs in agent mode)**. M8 also needs a full S4 run.
@@ -360,7 +362,7 @@ Full step plan in **Part B**.
   - Bind mounts are admin-only.
   - Context variables `SD_FQDN`, `SD_COMMIT`, `SD_ENV`, `SD_DEPLOY_ID`.
   - Engine version stored in `meta`; a change raises "needs attention".
-- **Footprint:** S2 → ≤ 58 MB, S4 → ≤ 47.8 MB (Revision 1 re-base on M3a's provisional 47.6 MB median, re-based again on PR #6's first CI numbers; judged by the full-run median plus a cause, since +0.2 is inside the run spread; the S4 VmHWM will likely pass 50 MB here, which is a watch figure, not a Q3 trigger); no new timers.
+- **Footprint:** S2 → ≤ 58 MB, S4 → ≤ 46.7 MB (re-based on M3a's CI median of 46.5 MB, 2026-11-28; judged by the full-run median plus a cause, since +0.2 is inside the run spread; the S4 VmHWM is a watch figure, not a Q3 trigger); no new timers.
 - **Security:** AAD binding; sentinel tests; fuzzed path validation.
 - **Tests:**
   - a private `registry:2` with auth;
@@ -393,7 +395,7 @@ Full step plan in **Part B**.
     - show certmagic failure and expiry events in the Overview "needs attention" list **from M4a** (M8 later adds notifications for them);
     - send HSTS **without `includeSubDomains` or `preload` by default**, so other services under the same parent domain are not forced to HTTPS by the panel.
   - **The panel domain is optional.** Before M4b, sign-in on it is password + TOTP, which can be phished (accepted risk in `docs/security.md`, maintainer 2026-11-27); the early-use guide recommends IP access over an SSH tunnel or a firewall allowlist on 443.
-- **Footprint:** S2 → ≤ 61 MB, S4 → ≤ 48.0 MB; certmagic timers measured and listed. **If the QUICK S4 delta is above 0.5 MB, a full, non-QUICK S4 run is needed before merge (rule 4).**
+- **Footprint:** S2 → ≤ 61 MB, S4 → ≤ 46.9 MB; certmagic timers measured and listed. **If the QUICK S4 delta is above 0.5 MB, a full, non-QUICK S4 run is needed before merge (rule 4).**
 - **Security:** IDNA validation; only the panel domain routes to the control plane; changing it needs fresh 2FA.
 - **Tests:**
   - goldens;
@@ -457,7 +459,7 @@ Full step plan in **Part B**.
   - Plan 0007 must run the URL pre-check (resolve the host, apply the rule 10 block list) **inside the BuildKit container's network namespace** right before the build, then document the remaining gap: BuildKit resolves the name again, so DNS rebinding between the check and the fetch is still possible.
   - Plan 0007 must also restrict the BuildKit container's network to limit what that gap exposes.
 - **Runs after M7b (Revision 1).** Self-update already exists, so plan 0007 must add **a test that a self-update defers while a build job runs** (M7b's quiesce check is generic over running jobs; this test proves builds are covered).
-- **Footprint:** S2 → ≤ 64 MB at idle, S4 ≤ 48.0 MB; peak usage during a build measured on 1 GB (repeated in the M6-exit VPS bench).
+- **Footprint:** S2 → ≤ 64 MB at idle, S4 ≤ 46.9 MB; peak usage during a build measured on 1 GB (repeated in the M6-exit VPS bench).
 - **Security:**
   - verify signatures before parsing;
   - repos are untrusted;
@@ -510,7 +512,7 @@ Full step plan in **Part B**.
   - **State archives off the box (Revision 1).** M7b writes state archives locally only. Plan 0008 must add the S3 backup target (checked by netpolicy) as a state-archive target, so scheduled archives can leave the server, and then change the UI's "local only, copy it off this server by hand" notice to show where each archive went.
   - **Self-update during backups.** M7b's quiesce check is generic over running jobs. Plan 0008 must add **tests that a self-update defers while a backup job runs and while a restore job runs**.
 - **VPS bench re-run (required at M6 exit, Revision 1).** The M7a VPS bench runs before M5 and M6, so it doesn't measure compose-go, the S3 client or a BuildKit build. At the M6 exit, run the full `bench/run.sh` plus `serverdock bench` again, plus peak RAM during one capped build and one S3 backup, and append the results to `docs/research/06-phase1-vps-bench.md`. Per the Q6 partial answer (2026-11-22) it runs on **the same host as the M7a run: the maintainer's Hetzner test server (Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM), which is not a true 1 GB machine**; the measured container is capped at `--memory 1g --cpus 1`, and the entry says the host is larger than 1 GB, so host-level free memory and swap pressure during the build are not the 1 GB case. The true 1 GB check stays with the M9 final run. VmRSS on this host is comparable with a 1 GB host, but page-cache behaviour is not (the host has spare memory for cache), and the entry says so. Over the tripwires without a convincing reason → reopen ADR 0004/0011 before M4b.
-- **Footprint:** S2 → ≤ 68 MB, S4 → ≤ 48.5 MB (full S4 run required for compose-go and the S3 client, rule 4).
+- **Footprint:** S2 → ≤ 68 MB, S4 → ≤ 47.4 MB (full S4 run required for compose-go and the S3 client, rule 4).
 - **Security:** Compose is untrusted (above); S3 keys go in secretbox; backups encrypted before upload; no shell.
 - **Tests:**
   - policy fixtures for every deny-list entry;
@@ -578,7 +580,7 @@ Full step plan in **Part B**.
     - **prune old images by hand** (`docker image prune` with care for rollback images); automatic cleanup arrives with M8;
     - prefer reaching the panel by IP over an SSH tunnel, or allowlist 443 in a firewall, over a public panel domain until M4b (accepted risks in `docs/security.md`, 2026-11-27).
 - **VPS bench (required at M7a exit):** full `bench/run.sh` plus `serverdock bench` on the maintainer's Hetzner test server (Q6 partial answer: 3.8 GiB RAM, measured container capped at 1 GiB, not a true 1 GB host), with results in `docs/research/06-phase1-vps-bench.md` (first section). VmRSS is comparable with a 1 GB host, but page-cache behaviour is not, and the entry says so. **Since Revision 1 this run comes before M5 and M6, so it doesn't measure compose-go, the S3 client or BuildKit**; those are measured by the re-run at the M6 exit. **It adds a cut-down loaded S2 run** (image services with 1–2 domains, internal issuer), report-only, so the domain cost shows before M8's full S2-loaded scenario. Over the tripwires without a convincing reason → reopen ADR 0004/0011 before M7b.
-- **Footprint:** S2 → ≤ 61.5 MB, S4 ≤ 48.0 MB.
+- **Footprint:** S2 → ≤ 61.5 MB, S4 ≤ 46.9 MB.
 - **Security:** supply chain; verify-or-refuse install; upgrade, repair and downgrade never accept `--no-verify`; the installed bytes are the hashed bytes; downgrade only by explicit target after restoring `DATA`, audited; `DATA` and config never overwritten; the `DATA` copy is streamed encrypted; prompts read `/dev/tty` and default to no; dry-run uninstall.
 - **Tests:**
   - shellcheck;
@@ -694,7 +696,7 @@ Full step plan in **Part B**.
   - Uses the snapshot restore order (step 6). Afterwards it appends one `system` audit row to the **restored** DB with the archive's head hash and row count.
   - Network restore (UI/REST) is **not offered in Phase 1**. If it is added later, it needs fresh 2FA, an authentic archive, and an existing admin.
   - The console path is allowed on a fresh install because it is the disaster-recovery path and needs root on the host.
-- **Footprint:** S2 → ≤ 62 MB, S4 ≤ 48.0 MB; no new timer (the housekeeping job runs on the shared scheduler timer).
+- **Footprint:** S2 → ≤ 62 MB, S4 ≤ 46.9 MB; no new timer (the housekeeping job runs on the shared scheduler timer).
 - **Security:**
   - signature checked before any swap;
   - downgrade refusal;
@@ -751,7 +753,7 @@ Full step plan in **Part B**.
   - **Alerts:** on the collector tick, on Docker events, on backup job outcomes (M6), and on certmagic events for certificate expiry (M4a; no separate daily check). Both milestones run before M8 in the Revision 1 order.
   - **Cleanup, the image digest check and retention pruning** are tasks of the daily housekeeping job (added in M7b), with a dry-run preview for cleanup. Cleanup replaces the hand pruning of the M7a operating rules.
   - **Notifications:** SMTP with STARTTLS required, signed webhooks, Telegram. Targets are checked with netpolicy.
-- **Footprint:** S2 → ≤ 74 MB, S4 → ≤ 49.5 MB (the collector also runs in agent mode; this leaves 0.5 MB under the 50 MB tripwire on the median, so an overrun past the slack crosses it and needs the ADR 0011 written reason, or Q3 applies; VmHWM reported as a watch figure). **Plan 0011 caps the collector's buffers** (samples held in memory before a write, per-container series; the bound stated in MB) **and requires a full, non-QUICK S4 run before merge**; < 1% CPU with 10 services; the S2-loaded scenario is added here.
+- **Footprint:** S2 → ≤ 74 MB, S4 → ≤ 48.4 MB (the collector also runs in agent mode; this leaves 1.6 MB under the 50 MB tripwire on the median, so an overrun past the slack crosses it and needs the ADR 0011 written reason, or Q3 applies; VmHWM reported as a watch figure). **Plan 0011 caps the collector's buffers** (samples held in memory before a write, per-container series; the bound stated in MB) **and requires a full, non-QUICK S4 run before merge**; < 1% CPU with 10 services; the S2-loaded scenario is added here.
 - **Dogfood clock (Revision 1).** The first build that includes M5, M6 and M8 is the earliest start of the counted dogfood window (Part C).
 - **Security:** RE2 only, with a length cap; notification secrets in secretbox; live-log WebSockets use the M2 authz.
 - **Tests:**
@@ -776,7 +778,7 @@ Full step plan in **Part B**.
   - The library is chosen in plan 0012 with a footprint row.
   - Docs hosting is Q6 (the docs part).
   - The counted dogfood window (last 14 consecutive days before exit) runs during M9; M9 can't close before it ends (Part C).
-- **Footprint:** S2 → ≤ 75 MB, S4 ≤ 49.5 MB.
+- **Footprint:** S2 → ≤ 75 MB, S4 ≤ 48.4 MB.
 - **Security:**
   - the route matrix includes `/mcp` and asserts that no HTTP or MCP path produces a `system` actor;
   - redaction sentinels on every tool's output;
@@ -1343,7 +1345,7 @@ Panics are recovered and recorded as an `error` outcome.
    - (a) **Recommended:** HTTPS on the IP with a self-signed panel leaf (not the hub CA); the leaf fingerprint is printed on the console for the user to compare.
    - (b) Require a panel domain at install.
    - (c) Plain HTTP during setup (not recommended).
-3. **Q3 — S4 headroom** *(advisor A1; Revision 1: **due at the first S4 tripwire crossing on the gate metric** (the CI median of per-run medians), or before M6 at the latest, since M6 and M8 are the planned S4 increases. On the provisional cloud-container M3a base the median is 47.6 MB, about 2.4 MB of headroom, re-checked on PR #6's first CI numbers; the 49.8 MB VmHWM is a watch figure, will likely pass 50 MB from M3b, and doesn't trigger Q3)*. If the S4 median goes over 50 MB: pull the slim agent forward (recommended), or accept the crossing with an ADR 0011 written reason? (Since ADR 0011 the 50 MB number is a tripwire, not a gate.)
+3. **Q3 — S4 headroom** *(advisor A1; Revision 1: **due at the first S4 tripwire crossing on the gate metric** (the CI median of per-run medians), or before M6 at the latest, since M6 and M8 are the planned S4 increases. On the CI M3a base (2026-11-28) the median is 46.5 MB, about 3.5 MB of headroom; VmHWM is a watch figure and doesn't trigger Q3)*. If the S4 median goes over 50 MB: pull the slim agent forward (recommended), or accept the crossing with an ADR 0011 written reason? (Since ADR 0011 the 50 MB number is a tripwire, not a gate.)
 4. **Q4 — Install shape** *(**due before M7a**, which since Revision 1 starts right after M4a, so earlier than first planned; it also covers the reinstall-upgrade behaviour)*. Recommended: systemd, a dedicated user in the docker group, `CAP_NET_BIND_SERVICE`, the binary in `/var/lib/serverdock/bin/`, a hardened unit. Alternatives: root, or a container.
 5. **Q5 — Release signing key** *(**due before M7a**, now right after M4a; the early usable version is the first signed release)*. **Not a plain repository Actions secret.**
    - (a) **Recommended for Phase 1:** a hardware key held by the maintainer, signing each release manifest locally.
@@ -1503,7 +1505,7 @@ Some round 2 entries were changed again in round 3: the expand-only rule, the `O
 | 12 | Questions now due earlier | Part D Q3, Q4, Q5, Q6; maintainer answers note; "Maintainer decisions (2026-11-27)" |
 | 13 | Cross-references to the old order | M2 (`:80` until M4a); M4a (panel domain is the later RP ID); M8 (alerts rely on M4a and M6, both earlier); M5 (still after M4a for the GitHub App); `docs/architecture.md` (passkeys: M4b, plan 0013) |
 | R1 | Reviewer REVISE: rebased on M3a (Rule 3 Caddy-ticker exception, ADR renumbering 0012–0018, Q6 partial answer kept) | Rule 3; rule 8 (passkeys ADR = next free number); Q6; M6 re-run and M7a bench on the Hetzner test server, not a true 1 GB host; Part C bench row |
-| R2 | S4 metric is the median of per-run medians; VmHWM is a watch figure | Footprint allocation (M3a row, "Which number is compared", headroom 2.4 MB at M3a and 0.5 MB at M9); M3b; M8; Q3 |
+| R2 | S4 metric is the median of per-run medians; VmHWM is a watch figure | Footprint allocation (M3a row, "Which number is compared", headroom 2.4 MB at M3a and 0.5 MB at M9 on the provisional base; 3.5 MB and 1.6 MB after the CI re-base, row R14); M3b; M8; Q3 |
 | R3 | Update quiesce excludes its own job; housekeeping defers it; message names the blocker | M7b step 1 and tests |
 | R4 | NITs: downgrade flag rules and same-version repair; `master.key` copy kept like a password; archive pruning only after a verified write, `.tmp` not counted, "no state backup" with no passphrase; reinstall warns on running jobs | M7a key decisions and tests; M7b "State backup archives" and tests |
 | R5 | Maintainer decision 2026-11-27: two accepted risks (public panel domain with phishable sign-in until M4b; no out-of-band sign-in or back-off notice in Phase 1) | Revision 1 section item 4; `docs/security.md` "Accepted risks (Phase 1)"; M4a (panel domain optional); M7a operating rules (SSH tunnel or firewall allowlist); Part D decisions |
@@ -1515,3 +1517,4 @@ Some round 2 entries were changed again in round 3: the expand-only rule, the `O
 | R11 | Systems should-fix and NITs: M7b replaces the `DATA`-copy rule, app-data rule stays until M6 (maintainer confirmed 2026-11-27); bounded wait and terminal `deferred` state; boot-pass wording; dogfood clock details; 48 h archive age alert; `df -h` rule; reinstall-upgraded fixture DB | Revision 1 item 3; Overview; M7a; M7b; Part C dogfood row; Part D decisions; `docs/roadmap.md` |
 | R12 | Security B1/B2 and N1–N7: `--no-verify` refused in upgrade, repair and downgrade; verification through the installed binary; one encrypted streaming `DATA` copy command and what the copy holds; raw copies replaced and destroyed after M7b; `/dev/tty` prompt; hashed bytes are renamed bytes; `--downgrade-to` with audit row; "update deferred" in needs attention; plan 0006 redirect, break-glass, certmagic events, HSTS defaults; passphrase strength | M7a; M7b; M4a |
 | R13 | Reviewer NITs: verification only during the write; M6 and M8 both planned S4 increases; Q3 "before M6 at the latest" in the answers note; downgrade and repair bullets moved into upgrade mode | M7b archives; Footprint allocation; Part D; M7a |
+| R14 | S4 column re-based on the first CI bench of M3a (PR #6, 2026-11-28: S2 54.0, S4 46.5 MB); headroom 3.5 MB at M3a, 1.6 MB at M9 | Footprint allocation (heading, re-base note, table, check line, headroom); per-milestone footprint lines; Q3 |
