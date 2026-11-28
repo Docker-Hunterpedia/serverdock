@@ -1,6 +1,6 @@
 # Plan 0014: Public website (serverdock.oday-bakkour.com)
 
-**Status:** revision 2 APPROVED (2026-11-28) by `reviewer`, `security`, `accessibility` and `footprint`. **Revision 3** (real dashboard screenshots, a new maintainer requirement of 2026-11-28) is waiting for review by all four; steps 1 and 2 are not affected by it. The maintainer accepted the recommended answers (Q1–Q4, Q6–Q8); Q5 (Bot Fight Mode) is decided at step 6. · **Author:** planner (AI). The maintainer has not confirmed this plan, except where the [maintainer answers](#10-maintainer-answers-2026-11-28) are recorded. · **Date:** 2026-11-28
+**Status:** revision 3 approved 2026-11-28 by reviewer, security, accessibility and footprint (`94a0493`). Their approval NITs are folded in; see "Revision 3, approval NITs". The maintainer accepted the recommended answers (Q1–Q4, Q6–Q8); Q5 (Bot Fight Mode) is decided at step 6. · **Author:** planner (AI). The maintainer has not confirmed this plan, except where the [maintainer answers](#10-maintainer-answers-2026-11-28) are recorded. · **Date:** 2026-11-28
 
 **Roadmap:** this is not a product milestone. It serves the README's "Open" and "Honest" promises and gives the project reach before the early usable version. It changes nothing in the binary, the agent or the web UI.
 
@@ -320,7 +320,7 @@ The benchmark source check and the link rewriter fail inside `astro build` itsel
   5. Playwright + axe, with `~/.cache/ms-playwright` cached.
   6. `upload-artifact` of the production `site/dist`, with **`include-hidden-files: true`** (for `.well-known/`), kept for 7 days.
 
-  **Job time ceiling: 10 minutes.** Step 2 measures the job time and records it in this plan. If it is over the ceiling, the footprint reviewer decides at step 2 what moves (section 7). `timeout-minutes: 15`.
+  **Job time ceiling: 10 minutes.** Step 2 measures the job time and records it in this plan. If it is over the ceiling, the footprint reviewer decides at step 2 what moves (section 7). `timeout-minutes: 10`, matching the 4 min 13 s measured in step 2.
 - **Job `deploy`** (security B1–B3, reviewer 5/6).
   - **Conditions.**
     - `needs: build`.
@@ -373,10 +373,10 @@ The benchmark source check and the link rewriter fail inside `astro build` itsel
   | Webfonts | 0 bytes |
   | CSS | one file, at most 15 KB |
   | Home, non-image (HTML + CSS + favicon) | at most 80 KB *(unchanged)* |
-  | Home, images | *(Revision 3)* at most **190 KB** worst case; exactly 1 eager image (≤ 120 KB), the rest `loading="lazy"` |
+  | Home, images | *(Revision 3)* at most **190 KB** worst case; **one eager image per page** (≤ 120 KB), the rest `loading="lazy"` |
   | Home, requests on first view | *(Revision 3)* at most **5** (lazy images not counted) |
   | Features, non-image | at most 80 KB |
-  | Features, images | *(Revision 3)* at most 700 KB worst case (6 screenshots); the same rule of one eager image (≤ 120 KB), the rest lazy |
+  | Features, images | *(Revision 3)* at most 700 KB worst case (6 screenshots); the same rule: **one eager image per page** (≤ 120 KB), the rest lazy |
   | One screenshot file | *(Revision 3)* desktop: 1x ≤ 50 KB, 2x ≤ 120 KB; phone: 1x ≤ 25 KB, 2x ≤ 60 KB |
   | Screenshot files, total in `dist` | *(Revision 3)* at most 2 MB raw (24 files) |
   | Any other page | at most 150 KB total; no screenshots |
@@ -385,7 +385,7 @@ The benchmark source check and the link rewriter fail inside `astro build` itsel
 
   Step 6 confirms the current Cloudflare Pages Direct Upload limits (file count and per-file size); our ceiling is far below them.
 
-  **Image metric (Revision 3).** Images are counted in **raw bytes**, because WebP is already compressed and gzip saves nothing. For each `<picture>`, "worst case" means the largest single candidate the browser could fetch: the 2x file of whichever theme is heavier. Browsers fetch one source per `<picture>`, never both themes. Home shows two screenshots: the `deploy-live` hero and the `phone-deploy` view. Its worst-case first view is about 200 KB (80 KB non-image plus one 120 KB eager image). Its full scroll is about 180 KB of images (120 + 60), under a ceiling of 190 KB for images and 270 KB in total. That is honestly more than the 80 KB of revision 2, and the footprint reviewer must sign it off.
+  **Image metric (Revision 3).** Images are counted in **raw bytes**, because WebP is already compressed and gzip saves nothing. For each `<picture>`, "worst case" means the largest single candidate the browser could fetch: the 2x file of whichever theme is heavier. Browsers fetch one source per `<picture>`, never both themes. Home shows two screenshots: the `deploy-live` hero and the `phone-deploy` view. Its worst-case first view is about **125 KB**: the 4.5 KB of non-image bytes measured in step 2 plus one 120 KB eager image. The 80 KB non-image figure is the ceiling, not the measured value. Its full scroll is about 180 KB of images (120 + 60), under a ceiling of 190 KB for images and 270 KB in total. That is honestly more than the 80 KB of revision 2, and the footprint reviewer must sign it off.
 
   **Gate 11 (`page-weight.mjs`, Revision 3 review fix):**
   - **Worst case per `<picture>`.** For each `<picture>`, the worst case is the 2x file of the heavier theme. The script does **not** add up every `srcset` and `<source>` candidate.
@@ -808,7 +808,7 @@ Stage names are the on-screen labels from `STAGE_LABELS` in `web/src/lib/service
 
 | id | Route | Demo state | Viewports | Used on | Page text that carries the claim |
 |---|---|---|---|---|---|
-| `deploy-live` | `(shell)/services/[project]/[name]/deploys/[number]` | blue-green deploy #7 of `api`: "Pull the image" and "Start the new version" done, "Health check" running, live log below | desktop | Home hero, Features | Home: a visible ordered list next to the hero (after the h1 and sub line) of the blue-green stages, in the order the product runs them. The list is taken from `STAGE_LABELS`/`stageRows('blue_green', …)` at step 4, not typed by hand. Plus one sentence: traffic switches only after the health check passes. Features: the "Blue-green deploys" sentence |
+| `deploy-live` | `(shell)/services/[project]/[name]/deploys/[number]` | blue-green deploy #7 of `api`: "Pull the image" and "Start the new version" done, "Health check" running, live log below | desktop | Home hero, Features | Home: a visible ordered list next to the hero (after the h1 and sub line) of the blue-green stages, in the order the product runs them. The site build does not import `web/`. The list lives in `site/src/data/stages.json`, and a gate (in `gates.mjs`, `node:` built-ins only) fails unless each label exactly matches its key in `STAGE_LABELS` in `web/src/lib/services.ts` (read as text) and the order is the blue-green order. Plus one sentence: traffic switches only after the health check passes. Features: the "Blue-green deploys" sentence |
 | `services` | `(shell)/services` | three services: running, deploying, needs attention | desktop | Features | Features: "Every service shows its true state, including unknown" |
 | `service-detail` | `(shell)/services/[project]/[name]/(service)` | live deploy and history, with a rolled-back deploy | desktop | Features | Features: "Deploy history with one-click rollback" |
 | `rollback-dialog` | same route, with the existing `ConfirmDialog` open | dialog with the confirm button "Roll back to #5" | desktop | Features | Features: "Rollback asks for confirmation and names the target deploy" |
@@ -847,14 +847,16 @@ Reviewer checklist item: every figure has the sentence in this column on the sam
     - `inputs_hash` (40 hex);
     - `captured_at` (RFC 3339);
     - `run_id` (digits);
-    - `runner_image` and `chromium` (version strings);
+    - `runner_image` and `chromium`, each matching `^[A-Za-z0-9._ -]{1,64}$`;
     - `growth`: a list of `{captured_at, bytes_added}` entries, one per regeneration.
   - Each entry:
     - `id`, matching `^[a-z0-9-]+$`;
     - `route` (no `..`, and it must be in the allowlist);
-    - `viewport` and `theme`;
+    - `viewport`, one of `desktop` or `phone`;
+    - `theme`, one of `dark` or `light`;
     - `files`: names matching `^<id>-(dark|light)-\d+\.webp$`, with `width`/`height`/`bytes`.
   - There is no commit field.
+  - The `growth` entries are protected by gate 10's strict schema and by CODEOWNERS on `/site/public/screens/`. Any change to them needs the code owner's review. The `main` slow path also recomputes them.
   - The site build reads the committed files and the manifest only. **It never builds Go or the web UI.**
 - **Only the CI artifact may be committed.** Local captures differ in fonts and rendering (for example on macOS). `make screens` is for previewing only.
   - The rule is in CONTRIBUTING.
@@ -876,8 +878,15 @@ Reviewer checklist item: every figure has the sentence in this column on the sam
     | Go code behind the seeded views | **no** | too broad. A behaviour change that keeps the schema is caught by the slow-path byte comparison on `main` (below) |
 
   - **When the job runs.** On every `ci.yml` run, as a first step that takes seconds. A pathspec diff is not used, so site-only refresh PRs are checked too.
-  - **Fast path.** If the hash matches the manifest, the job passes.
-  - **Slow path** (hash differs, and on every push to `main`, which also checks that the self-reported hash is honest). The job:
+  - **The job is split** so the fast path never waits on the `web` job:
+    - **`screens-hash`** has no `needs`. It computes the hash and compares it with the manifest. Its output is `stale` or `fresh`, plus `verify` (below).
+    - **`screens-capture`** has `needs: [screens-hash, web]` and runs only when `stale` or `verify` is true. Only this job downloads `web-build`.
+  - **Fast path.** If the hash matches the manifest and `verify` is false, `screens-hash` passes and `screens-capture` is skipped.
+  - **Slow path.** Two cases trigger it:
+    - the hash differs; or
+    - `verify`: a push to `main` where the `changes` job reports bench-relevant files, or where `site/public/screens/` or `docs/api/openapi.json` changed.
+
+    The nightly `ci.yml` schedule also runs it as a backstop, so a Go-only change that alters a view is caught within a day. Step 3b records the real slow-path time and the number of `main` pushes per week. The job:
     1. downloads the same-run `web-build` artifact;
     2. builds the binary like `e2e-ui` does;
     3. runs the capture;
@@ -885,24 +894,26 @@ Reviewer checklist item: every figure has the sentence in this column on the sam
 
     Then:
     - **identical files** are left out of the result;
-    - **changed files and the new manifest** (with a `growth` entry of their `bytes_added`) go into the `site-screens` artifact;
+    - **changed files and the new manifest** go into the `site-screens` artifact. The manifest's `growth` entry gets the `bytes_added` the job **computes itself** from the changed files. On `main`, the job also recomputes the committed manifest's last `growth` entry and reports a mismatch, so it never trusts the manifest's number;
     - the job **reports** "screens are stale: run the refresh procedure";
-    - on a push to `main` where the hash matches but the bytes differ, it reports "screens differ with an unchanged hash: an input is missing from the hash, or rendering is not deterministic".
+    - on a push to `main` where the hash matches but the bytes differ, it reports "screens differ with an unchanged hash: an input is missing from the hash, or rendering is not deterministic". During the warning week this is a warning. **After the warning week it fails the job.**
     - Same bytes for unchanged inputs holds only on the same runner image and Chromium version. Both are recorded in the manifest, and a change in either is reported as the cause.
-  - **Growth check.** The job fails when one regeneration's `bytes_added` exceeds 2 MB, or when the sum of `growth` over the last 365 days exceeds 50 MB. In that case the maintainer switches the policy to "regenerate at milestone close". This replaces the 3-month manual review. Because `site.yml` and `changes` use `fetch-depth: 0`, history growth also costs checkout time; step 3b records the checkout time.
+  - **Growth check.** The job fails when one regeneration's `bytes_added` exceeds 2 MB, or when the sum of `growth` over the last 365 days exceeds 50 MB. In that case the maintainer switches the policy to "regenerate at milestone close".
+    - The 2 MB cap cannot trigger in practice: 24 files at their caps come to 1.87 MB. **The effective limit is 50 MB a year, about 27 full regenerations.**
+    - The expected rate counts UI PRs **and Dependabot `web` refreshes**, since a lockfile change usually changes Chromium and re-renders every file. Step 3b estimates the yearly figure from the Dependabot cadence and the UI PR rate. This replaces the 3-month manual review. Because `site.yml` and `changes` use `fetch-depth: 0`, history growth also costs checkout time; step 3b records the checkout time.
   - **Security of the job:**
     - `contents: read`, `persist-credentials: false`, actions pinned by SHA;
     - artifacts only from the same run, no secrets, no `pull_request_target`;
     - it never pushes commits.
   - **Warning first, then required (maintainer decision 2026-11-28).**
     - For about a week, the job runs with `continue-on-error: true` and writes the stale report to the job summary; it is not a required check.
-    - Once the slow path on `main` has shown the same bytes for an unchanged hash every time that week, the maintainer makes `screens` required.
+    - Once the slow path on `main` has shown the same bytes for an unchanged hash every time that week, the maintainer makes `screens` required. If the week shows any differences, the warning period is extended by another week, and the cause is recorded in this plan (a missing input, the runner image, Chromium, or non-determinism). This repeats until a clean week.
     - Why: two UI PRs that merge close together can leave `main` stale, and a required check would then block every PR until it is fixed.
     - When the check becomes required, the plan recommends also turning on "Require branches to be up to date before merging" for `main`. Then the second UI PR must rebase and refresh before it merges.
 - **Refresh procedure** (for any UI PR, Dependabot `web` PRs, and a stale `main`). It is written in `CONTRIBUTING.md` ("Refresh screenshots") and in `.claude/agents/implementer.md`, which step 3b edits.
   1. Open the failed or warning `screens` job of the PR's latest run. On a stale `main`, use the latest push run on `main`.
-  2. Run `gh run download <run-id> -n site-screens -D site/public/screens`.
-  3. Commit with the message "Refresh screenshots (run <run-id>)" and push. On a stale `main`, open a PR named "Refresh screenshots" containing only that commit.
+  2. Check that `gh --version` is **2.63.0 or later** (earlier versions are affected by CVE-2024-54132, a path traversal in `gh run download`). Then run `gh run download <run-id> -n site-screens -D site/public/screens`.
+  3. Run `git status`. It must show changes **only under `site/public/screens/`**; stop and report anything else. Then commit with the message "Refresh screenshots (run <run-id>)" and push. On a stale `main`, open a PR named "Refresh screenshots" containing only that commit.
   4. The re-run of `screens` takes the fast path and passes.
 
   **Cost to a UI PR:** the slow path (measured in step 3b, expected 4–6 min), plus the download and commit, plus one more CI run. Step 3b confirms that a cloud agent can run `gh run download`, which needs `actions: read` on its token, and can commit binary files. If it cannot, the maintainer does steps 1–3.
@@ -924,12 +935,16 @@ Reviewer checklist item: every figure has the sentence in this column on the sam
   </picture>
   <figcaption>The services list with three services in project demo. Captured <time datetime="2026-11-28">28 Nov 2026</time>. Demo data: the states are staged with seeded rows and mocked API responses.</figcaption>
   <p class="screen-full">
-    <a class="only-dark" href="/screens/services-dark-1600.webp">Open full-size image<span class="vh">: services list, dark theme</span></a>
-    <a class="only-light" href="/screens/services-light-1600.webp">Open full-size image<span class="vh">: services list, light theme</span></a>
+    <a class="only-dark" href="/screens/services-dark-1600.webp">Open the full-size image file<span class="vh">: services list, dark theme (WebP)</span></a>
+    <a class="only-light" href="/screens/services-light-1600.webp">Open the full-size image file<span class="vh">: services list, light theme (WebP)</span></a>
   </p>
 </figure>
 ```
-- **Full-size link** (desktop figures only). It opens in the same tab, is at least 44 px tall, and has a unique name. One link per theme is shown with CSS only (`display:none` on the other), so only one is ever in the accessibility tree.
+- **Full-size link** (desktop figures only).
+  - Its text says it opens the image file. It opens in the same tab, is at least 44 px tall, and has a unique name.
+  - One link per theme is shown with CSS only (`display:none` on the other), so only one is ever in the accessibility tree.
+  - `.screen-full` is hidden in print.
+- **Print colours** (step 3b's site work). `.stages .dot` and `.meter .fill` get `print-color-adjust: exact`, plus a printed border, so they don't disappear when the browser drops backgrounds.
 - **Print.** The `<source>` uses `media="print, (prefers-color-scheme: light)"`, so printing uses the light image.
 - **Order at 320 px.** The h1 and sub line come before the hero image, both in the DOM and visually.
 - **Theme.** Dark is the `<img>` default and light is the `<source>`, the same logic as the site CSS (dark default, light under `prefers-color-scheme: light`). It needs no JS.
@@ -1098,5 +1113,34 @@ All four reviewers returned REVISE on Revision 3. Each fix is made in the Revisi
 - **NITs:** slow-path and checkout times are recorded; a Playwright check at 320 px; WebP quality is tuned, and a cap is raised with a written reason rather than making text unreadable.
 
 **Where I differ, for the reviewers to decide**
-- **Slow path on every push to `main`.** This costs one capture run (expected 4–6 min) per `main` push. It is the only way to verify the self-reported hash (security NIT) and to catch Go-side rendering changes (reviewer 5). I kept it. If footprint objects, the alternative is a weekly scheduled run, which already exists as the nightly `ci.yml` schedule.
+- **Slow path on every push to `main`.** This costs one capture run (expected 4–6 min) per `main` push. It is the only way to verify the self-reported hash (security NIT) and to catch Go-side rendering changes (reviewer 5). I kept it. If footprint objects, the alternative is a weekly scheduled run, which already exists as the nightly `ci.yml` schedule. *(Resolved at approval: the slow path runs only on bench-relevant, screenshot or OpenAPI pushes to `main`, plus nightly.)*
 - **Go code is not hashed.** Hashing Go packages would make most backend PRs flag `screens`. Catching this through the byte comparison on `main` instead means `main` can briefly go stale after a Go-only change that alters a view. The warning report and the refresh procedure cover that case.
+
+### Revision 3, approval NITs (folded in 2026-11-28)
+
+All four reviewers approved Revision 3 (`94a0493`). These NITs from their approvals are now in the text:
+
+**Footprint**
+- `timeout-minutes: 10`.
+- One eager image per page on Home and Features.
+- 50 MB a year (about 27 regenerations) is the effective growth limit, because the 2 MB cap cannot trigger at 1.87 MB.
+- The first view is about 125 KB as measured, not 200 KB.
+- The growth estimate includes Dependabot `web` refreshes.
+- A warning week with differences extends the warning period, and the cause is recorded.
+- The `main` slow path runs only on bench-relevant, `site/public/screens/` or `openapi.json` pushes, with the nightly run as a backstop. Step 3b records the real slow-path time and the number of `main` pushes per week.
+
+**Security**
+- The refresh procedure requires `gh` 2.63.0 or later (CVE-2024-54132), and a `git status` check that changes are only under `site/public/screens/`.
+- `runner_image` and `chromium` must match `^[A-Za-z0-9._ -]{1,64}$`; `viewport` and `theme` are enums.
+- The `main` slow path recomputes `bytes_added` instead of trusting the manifest.
+
+**Reviewer**
+- After the warning week, a hash/byte mismatch on a `main` push fails the job.
+- The job is split into `screens-hash` (no `needs`) and `screens-capture` (needs `web`, runs only on the slow path), so the fast path never waits on the `web` job.
+- Gate 10's strict schema and CODEOWNERS protect the `growth` entries.
+
+**Accessibility**
+- `print-color-adjust: exact` and a printed border on `.stages .dot` and `.meter .fill` (step 3b).
+- `.screen-full` is hidden in print.
+- The full-size link says it opens the image file.
+- The Home stage list comes from `site/src/data/stages.json`, gated against `STAGE_LABELS` in `web/src/lib/services.ts`, which the gate reads as text.
