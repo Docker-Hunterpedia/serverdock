@@ -62,7 +62,8 @@ func TestFileModesAfterFirstRun(t *testing.T) {
 		t.Skip("builds the binary")
 	}
 	data := filepath.Join(testbin.ShortDir(t), "data")
-	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--listen", testbin.FreeAddr(t), "--https-listen", testbin.FreeAddr(t),
+	ports := testbin.FreeAddrs(t, 2)
+	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--listen", ports[0], "--https-listen", ports[1],
 		"--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1", "--panel-host", "panel.example.com"}})
 	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)

@@ -193,7 +193,8 @@ func forgedXFF(t *testing.T, https bool) {
 	go func() { done <- api.Serve(ctx, ln, h, time.Second, api.WithTrustedProxy(nil)) }()
 	defer func() { cancel(); <-done }()
 
-	listen := testbin.FreeAddr(t)
+	fp := testbin.FreeAddrs(t, 2) // distinct: the HTTP listener and, with https, the panel listener
+	listen := fp[0]
 	cfg := proxy.Config{DataDir: newData(t), Listen: listen, Upstream: proxy.UnixUpstream(sock)}
 	scheme, client := "http", http.DefaultClient
 	if https {
@@ -202,7 +203,7 @@ func forgedXFF(t *testing.T, https bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		httpsAddr := testbin.FreeAddr(t)
+		httpsAddr := fp[1]
 		cfg.Panel = &proxy.Panel{Listen: httpsAddr, CertFile: leaf.CertFile}
 		scheme, listen, client = "https", httpsAddr, insecureClient()
 		defer client.CloseIdleConnections()
@@ -285,7 +286,8 @@ func TestNoTCPControlListener(t *testing.T) {
 	p.Stop()
 
 	// With the proxy: only Caddy's two public listeners (the :80 redirect and the panel).
-	listen, httpsListen := testbin.FreeAddr(t), testbin.FreeAddr(t)
+	fp := testbin.FreeAddrs(t, 2)
+	listen, httpsListen := fp[0], fp[1]
 	p2 := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--listen", listen, "--https-listen", httpsListen}})
 	if err := p2.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)

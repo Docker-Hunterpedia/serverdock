@@ -105,10 +105,12 @@ type killRig struct {
 	project  string
 	strategy string
 	args     []string
+	release  func() // lets go of the reserved ports
 }
 
 func (k *killRig) server(env ...string) *testbin.Proc {
 	k.t.Helper()
+	k.release()
 	// Started with the most permissive umask: the files under deploy-logs/ must be
 	// private whatever umask the service is started with.
 	umaskMu.Lock()
@@ -131,8 +133,12 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 	base := testbin.ShortDir(t)
 	k.data = filepath.Join(base, "data")
 	k.sock = filepath.Join(base, "cp.sock")
-	k.listen, k.https = testbin.FreeAddr(t), testbin.FreeAddr(t)
-	_, p, _ := net.SplitHostPort(testbin.FreeAddr(t))
+	// The server's two listeners and the app's public port are reserved together
+	// (distinct, held open) and released just before the first server starts.
+	var addrs []string
+	addrs, k.release = testbin.ReserveAddrs(t, 3)
+	k.listen, k.https = addrs[0], addrs[1]
+	_, p, _ := net.SplitHostPort(addrs[2])
 	k.port, _ = strconv.Atoi(p)
 	n := int(killSubnet.Add(1))
 	k.subnet = fmt.Sprintf("10.%d.%d.0/24", 231, n)
