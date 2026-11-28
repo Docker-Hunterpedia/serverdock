@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 export const NOW = Date.parse('2026-12-01T00:00:00Z');
-export const HEADERS = "/*\n  Content-Security-Policy: default-src 'none'; script-src 'none'\n";
+export const HEADERS = "/*\n  Content-Security-Policy: default-src 'none'; script-src 'none'; upgrade-insecure-requests\n";
 export const SECURITY = (exp) => `Contact: https://example.invalid/report\nExpires: ${exp}\n`;
 export const page = (body, head = '') =>
 	`<!doctype html><html lang="en"><head><title>t</title>${head}</head><body><main id="main">${body}</main></body></html>`;

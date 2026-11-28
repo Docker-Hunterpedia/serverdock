@@ -1,0 +1,21 @@
+---
+// The deploy card: an <ol> of stages in a <figure>. Each stage has a visible tick, a hidden
+// state word and the note. No role=img, no aria-live.
+interface Stage { name: string; note: string; state?: string; }
+interface Props { stages: Stage[]; result: string; caption: string; }
+const { stages, result, caption } = Astro.props;
+---
+
+<figure class="stages-figure">
+	<ol class="stages" role="list">
+		{stages.map((s) => (
+			<li>
+				<span class="dot" aria-hidden="true"></span>
+				<span><span class="sr-only">{s.state ?? 'done'}: </span>{s.name}</span>
+				<span class="note">{s.note}</span>
+			</li>
+		))}
+	</ol>
+	<p class="stages-result">{result}</p>
+	<figcaption>{caption}</figcaption>
+</figure>

@@ -20,6 +20,8 @@ web/.svelte-kit/
 /site/dist/
 /site/.astro/
 /site/node_modules/
+/site/dist-test/
+/site/e2e/.results/
 
 # Local env and secrets
 .env

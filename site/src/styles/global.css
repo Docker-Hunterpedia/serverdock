@@ -1,0 +1,159 @@
+/* Reset, layout, header, footer, skip link and focus ring. Tokens come from tokens.css. */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+	font-size: 1rem;
+	line-height: 1.55;
+}
+@media (prefers-reduced-motion: no-preference) {
+	html { scroll-behavior: smooth; }
+}
+h1, h2, h3, h4 { line-height: 1.2; scroll-margin-top: 1rem; }
+h1 { font-size: clamp(1.75rem, 6vw, 2.5rem); letter-spacing: -0.02em; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.2rem; }
+:target { scroll-margin-top: 1rem; }
+a { color: var(--accent2-text); text-underline-offset: 0.15em; }
+main a:not([class]) { padding-block: 0.25rem; overflow-wrap: anywhere; }
+code, kbd, samp { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; overflow-wrap: anywhere; }
+ul, ol { padding-inline-start: 1.25rem; }
+img, svg { max-width: 100%; }
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* Focus: a 2px ring with a 2px offset, at least 3:1 in both themes. */
+:focus-visible {
+	outline: 2px solid var(--accent2-text);
+	outline-offset: 2px;
+}
+main:focus { outline: none; }
+
+.skip-link {
+	position: absolute;
+	inset-inline-start: 0.5rem;
+	inset-block-start: -6rem;
+	z-index: 10;
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	padding: 0 1rem;
+	background: var(--text);
+	color: var(--bg);
+	border: 2px solid var(--bg);
+	font-weight: 700;
+}
+.skip-link:focus { inset-block-start: 0.5rem; }
+
+/* Header: never sticky. */
+.site-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.25rem 1rem;
+	padding: 0.5rem 1rem;
+	border-block-end: 1px solid var(--line);
+}
+.brand {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.6rem;
+	min-height: 2.75rem;
+	font-weight: 800;
+	font-size: 1.15rem;
+	color: var(--text);
+	text-decoration: none;
+}
+.pill {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	padding: 0 0.9rem;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	color: var(--text);
+	text-decoration: none;
+	font-size: 0.9rem;
+}
+.site-header ul, .site-footer ul, .docs-nav ul, .toc ul { list-style: none; margin: 0; padding: 0; }
+.nav-wide { margin-inline-start: auto; }
+.nav-wide ul { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.nav-wide a, .nav-narrow nav a, .site-footer a, .docs-nav a, .toc a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	min-width: 2.75rem;
+	padding: 0 0.6rem;
+	color: var(--text);
+}
+.nav-narrow { display: none; margin-inline-start: auto; }
+.nav-narrow nav { padding-block: 0.25rem; }
+.nav-narrow ul { display: grid; }
+
+/* <details> navs: a visible + / - marker, set from details[open]. The name stays "Menu". */
+summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 2.75rem;
+	min-width: 2.75rem;
+	padding: 0 0.9rem;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	cursor: pointer;
+	list-style: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; content: "+" / ""; font-weight: 800; font-size: 1.2em; line-height: 1; }
+details[open] > summary::after { content: "\2212"; content: "\2212" / ""; }
+@media (max-width: 47.99rem) {
+	.nav-wide { display: none; }
+	.nav-narrow { display: block; }
+}
+
+main { display: block; padding: 1.5rem 1rem 3rem; max-inline-size: 64rem; margin-inline: auto; }
+.page { display: block; }
+.page--docs { display: block; max-inline-size: 80rem; margin-inline: auto; }
+@media (min-width: 48rem) {
+	.page--docs { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 1rem; padding-inline: 1rem; }
+	.page--docs main { padding-inline: 0; margin-inline: 0; }
+}
+.docs-nav { padding: 0.5rem 1rem; }
+.docs-nav-wide { display: none; }
+@media (min-width: 48rem) {
+	.docs-nav-wide { display: block; padding-block: 1.5rem; }
+	.docs-nav-narrow { display: none; }
+	.docs-nav { padding-inline: 0; }
+}
+.docs-nav-narrow nav { padding-block: 0.25rem; }
+.toc { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 1rem; background: var(--card); }
+.toc h2 { font-size: 1rem; margin: 0.25rem 0; }
+
+.site-footer {
+	padding: 1.5rem 1rem 2.5rem;
+	border-block-start: 1px solid var(--line);
+	color: var(--muted);
+	font-size: 0.9rem;
+}
+.site-footer p { margin: 0.5rem 0; }
+.site-footer ul { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.site-footer a { color: var(--accent2-text); }
+
+@media print {
+	.site-header nav, .nav-narrow, .skip-link, .docs-nav, .site-footer nav, .scroll-cue { display: none !important; }
+	a[href^="http"]::after, a[href^="/"]::after { content: " (" attr(href) ")"; overflow-wrap: anywhere; }
+	.sr-only { display: none; }
+}

@@ -10,13 +10,17 @@
     "check": "ASTRO_TELEMETRY_DISABLED=1 astro check",
     "gates": "node scripts/gates.mjs dist",
     "weight": "node scripts/page-weight.mjs dist",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "build:test": "SITE_STYLEGUIDE=1 ASTRO_TELEMETRY_DISABLED=1 astro build --outDir dist-test",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "astro": "7.4.13"
   },
   "devDependencies": {
     "@astrojs/check": "0.9.12",
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.1",
     "typescript": "6.0.3"
   }
 }

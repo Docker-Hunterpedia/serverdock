@@ -36,7 +36,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: site
@@ -73,3 +73,27 @@ jobs:
           include-hidden-files: true # .well-known/ is a hidden directory
           retention-days: 7
           if-no-files-found: error
+      - name: test build (with /styleguide/)
+        run: npm run build:test
+      - name: cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('site/package-lock.json') }}
+      - name: install Playwright browsers and system libraries
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium webkit
+      - name: install Playwright system libraries (browsers came from the cache)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium webkit
+      - name: Playwright + axe under the real CSP
+        run: npm run e2e
+      - name: Playwright traces (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-e2e-results
+          path: site/e2e/.results
+          retention-days: 7
+          if-no-files-found: ignore

@@ -75,6 +75,7 @@ test('gate 2: _headers must have one /* rule with one strict CSP', () => {
 		['script-src-elem override', csp("default-src 'none'; script-src 'none'; script-src-elem https:")],
 		['script-src-attr override', csp("default-src 'none'; script-src 'none'; script-src-attr 'unsafe-inline'")],
 		['script-src-elem override in another rule', HEADERS + "/x/*\n  Content-Security-Policy: script-src 'none'; script-src-elem https:\n"],
+		['no upgrade-insecure-requests', csp("default-src 'none'; script-src 'none'")],
 		['no /* rule', "/docs/*\n  Content-Security-Policy: default-src 'none'; script-src 'none'\n"],
 	]) {
 		withDist({ _headers: h }, (d) => assert.ok(gateHeaders(d).length >= 1, name));

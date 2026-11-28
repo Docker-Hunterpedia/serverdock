@@ -1,0 +1,25 @@
+---
+// The docs sidebar: a plain nav on wide screens, a <details> on narrow ones. One copy is
+// ever in the accessibility tree (the other is display:none).
+interface Item { href: string; label: string; }
+interface Props { items: Item[]; current?: string; }
+const { items, current } = Astro.props;
+---
+
+<div class="docs-nav docs-nav-wide">
+	<nav aria-label="Docs">
+		<ul>
+			{items.map((i) => <li><a href={i.href} aria-current={i.href === current ? 'page' : undefined}>{i.label}</a></li>)}
+		</ul>
+	</nav>
+</div>
+<div class="docs-nav docs-nav-narrow">
+	<details>
+		<summary>Docs pages</summary>
+		<nav aria-label="Docs pages">
+			<ul>
+				{items.map((i) => <li><a href={i.href} aria-current={i.href === current ? 'page' : undefined}>{i.label}</a></li>)}
+			</ul>
+		</nav>
+	</details>
+</div>
