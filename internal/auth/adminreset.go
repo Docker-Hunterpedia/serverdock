@@ -8,7 +8,6 @@ import (
 
 	"github.com/Docker-Hunterpedia/serverdock/internal/actions"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
-	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 )
 
 // ResetArgs are the input of auth.admin_reset.
@@ -139,7 +138,7 @@ func RegisterAdminReset(r *actions.Registry, s *Store) {
 // they are never touched. With app ciphertexts and a missing or wrong key the reset
 // is refused (ErrAppSecretsAtRisk), unless forgetApp is set; then, in the same
 // transaction, every service loses its env version pointer and is flagged
-// needs_attention = env_lost, the env versions are deleted and every registry
+// env_lost = 1 (needs_attention is not touched), the env versions are deleted and every registry
 // loses its username and secret. A key file that is unusable is refused either way.
 func (s *Store) AdminReset(ctx context.Context, forgetApp bool) (ResetResult, error) {
 	var res ResetResult
@@ -190,9 +189,16 @@ func (s *Store) AdminReset(ctx context.Context, forgetApp bool) (ResetResult, er
 		res.TokensRevoked, _ = r.RowsAffected()
 		if forget {
 			// Pointers first: services.env_version_id is ON DELETE RESTRICT.
-			r, err := tx.ExecContext(ctx, `UPDATE services SET env_version_id = NULL, needs_attention = CASE
-				WHEN needs_attention IN ('delete_interrupted', 'delete_confirm_again') THEN needs_attention ELSE ? END
-				WHERE env_version_id IS NOT NULL OR id IN (SELECT service_id FROM service_env_versions)`, store.AttentionEnvLost)
+			// services.env_lost is its own column and needs_attention is never
+			// touched: it holds safety flags (versions_kept, previous_version_down)
+			// and a hint every enqueue clears.
+			// TODO(step 7): deploy, redeploy and rollback read services.env_lost and
+			// refuse ("environment variables were lost"), again at run time, so a
+			// queued deploy whose snapshot's env_version_id was deleted here fails
+			// closed; a snapshot's env_version_id must also belong to the deploy's
+			// service. A new env version clears the flag.
+			r, err := tx.ExecContext(ctx, `UPDATE services SET env_version_id = NULL, env_lost = 1
+				WHERE env_version_id IS NOT NULL OR id IN (SELECT service_id FROM service_env_versions)`)
 			if err != nil {
 				return err
 			}
@@ -205,6 +211,10 @@ func (s *Store) AdminReset(ctx context.Context, forgetApp bool) (ResetResult, er
 				return err
 			}
 			res.RegistriesCleared, _ = r.RowsAffected()
+		}
+		if rep.Key == secretbox.KeyOK {
+			// The key is not changing, so the recorded id stays valid.
+			return nil
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, secretbox.KeyIDMetaKey)
 		return err

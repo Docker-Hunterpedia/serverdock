@@ -170,6 +170,7 @@ func (s Snapshot) validateV2() error {
 		return fmt.Errorf("at most %d mounts", policy.MaxMounts)
 	}
 	targets := map[string]bool{}
+	volumes := map[string]bool{}
 	for i, m := range s.Mounts {
 		var err error
 		switch m.Kind {
@@ -190,6 +191,12 @@ func (s Snapshot) validateV2() error {
 			return fmt.Errorf("mounts[%d]: the target %s is used twice", i, m.Target)
 		}
 		targets[m.Target] = true
+		if m.Kind == policy.MountVolume {
+			if volumes[m.Source] {
+				return fmt.Errorf("mounts[%d]: the volume %s is mounted twice", i, m.Source)
+			}
+			volumes[m.Source] = true
+		}
 	}
 	if s.HasWritableMount() && s.Strategy != jobs.StrategyStopFirst {
 		return errors.New("a writable mount needs the stop_first strategy")

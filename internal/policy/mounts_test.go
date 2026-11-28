@@ -29,6 +29,9 @@ func TestMountAndLimitValidators(t *testing.T) {
 			t.Errorf("accepted volume name %q", bad)
 		}
 	}
+	if ValidateBindSourceShape("/srv/a,b") == nil || ValidateBindSourceShape("/srv/a:b") == nil || ValidateBindSourceShape("/srv/ab") != nil {
+		t.Error("bind source separators")
+	}
 	if ValidateMemoryMB(31) == nil || ValidateMemoryMB(32) != nil {
 		t.Error("memory limit bounds")
 	}

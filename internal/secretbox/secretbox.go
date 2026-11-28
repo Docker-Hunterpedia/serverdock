@@ -111,6 +111,13 @@ func (b *Box) KeyID() string { return hex.EncodeToString(b.keyID[:]) }
 // KeyIDMetaKey is the meta-table key that records the id of the master key.
 const KeyIDMetaKey = "secretbox_key_id"
 
+// CiphertextIDer is an optional part of Meta: it reports the key id in the header
+// of one existing ciphertext, so a key can be checked when no id is recorded.
+type CiphertextIDer interface {
+	// CiphertextKeyID returns the key id (hex) of one stored ciphertext, if any.
+	CiphertextKeyID(ctx context.Context) (id string, ok bool, err error)
+}
+
 // Meta stores the id of the master key next to the data it protects.
 type Meta interface {
 	// KeyID returns the recorded key id, if any.
@@ -161,6 +168,17 @@ func LoadOrCreate(ctx context.Context, dataDir string, meta Meta, ciphertextsExi
 			return nil, false, fmt.Errorf("%s does not match the key this database was written with (key id %s, expected %s). %s", path, b.KeyID(), recorded, lostKeyHint)
 		}
 		if !haveRecorded && meta != nil {
+			// No recorded id (an earlier version left it): adopt the key only if
+			// it matches the ciphertexts that already exist.
+			if ci, ok := meta.(CiphertextIDer); ok {
+				id, have, err := ci.CiphertextKeyID(ctx)
+				if err != nil {
+					return nil, false, fmt.Errorf("secretbox: reading a ciphertext's key id: %w", err)
+				}
+				if have && id != b.KeyID() {
+					return nil, false, fmt.Errorf("%s does not match the key the stored ciphertexts were sealed with (key id %s, expected %s). %s", path, b.KeyID(), id, lostKeyHint)
+				}
+			}
 			if err := meta.SetKeyID(ctx, b.KeyID()); err != nil {
 				return nil, false, fmt.Errorf("secretbox: recording the key id: %w", err)
 			}
@@ -213,6 +231,33 @@ func (m SQLMeta) KeyID(ctx context.Context) (string, bool, error) {
 		return "", false, nil
 	}
 	return v, err == nil, err
+}
+
+// CiphertextKeyID implements CiphertextIDer: the key id in the header (bytes 1 to
+// 4) of the first non-NULL ciphertext found in Columns().
+func (m SQLMeta) CiphertextKeyID(ctx context.Context) (string, bool, error) {
+	for _, c := range Columns() {
+		var n int
+		if err := m.R.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, c.Table).Scan(&n); err != nil {
+			return "", false, err
+		}
+		if n == 0 {
+			continue
+		}
+		var id sql.NullString
+		q := `SELECT lower(hex(substr("` + c.Column + `", 2, 4))) FROM "` + c.Table + `" WHERE "` + c.Column + `" IS NOT NULL AND length("` + c.Column + `") >= 5 LIMIT 1`
+		err := m.R.QueryRowContext(ctx, q).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if id.Valid && id.String != "" {
+			return id.String, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // SetKeyID implements Meta.
@@ -301,6 +346,18 @@ func CheckKey(ctx context.Context, dataDir string, meta Meta) (KeyState, error) 
 		}
 		if ok && recorded != b.KeyID() {
 			return KeyWrong, nil
+		}
+		if !ok {
+			// No recorded id: compare with the header of an existing ciphertext.
+			if ci, can := meta.(CiphertextIDer); can {
+				id, have, err := ci.CiphertextKeyID(ctx)
+				if err != nil {
+					return KeyUnusable, fmt.Errorf("secretbox: reading a ciphertext's key id: %w", err)
+				}
+				if have && id != b.KeyID() {
+					return KeyWrong, nil
+				}
+			}
 		}
 	}
 	return KeyOK, nil

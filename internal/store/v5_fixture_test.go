@@ -25,7 +25,7 @@ const (
 // migration 0005 runs, adds the rows below with plain SQL, and writes one clean
 // file with VACUUM INTO. Run it with -update-v5 only to create the file; the file
 // is then frozen. The rows: project "demo" with a subnet, service "web" with env
-// version 1 (current and active), memory and CPU limits and no-new-privileges,
+// version 1 (the current version; no deploy uses it), memory and CPU limits and no-new-privileges,
 // one named volume and one bind mount, and one registry with a sealed password.
 // The two ciphertexts are sealed under the fixed test key of v3.db (a made-up key,
 // which is also the key id recorded in meta).

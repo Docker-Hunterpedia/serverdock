@@ -249,6 +249,9 @@ ALTER TABLE services ADD COLUMN memory_mb INTEGER CHECK (memory_mb IS NULL OR me
 ALTER TABLE services ADD COLUMN cpus_milli INTEGER CHECK (cpus_milli IS NULL OR (cpus_milli >= 50 AND cpus_milli % 50 = 0));
 ALTER TABLE services ADD COLUMN no_new_privileges INTEGER NOT NULL DEFAULT 0 CHECK (no_new_privileges IN (0, 1));
 ALTER TABLE services ADD COLUMN last_oom_at TEXT;
+ALTER TABLE services ADD COLUMN env_lost INTEGER NOT NULL DEFAULT 0 CHECK (env_lost IN (0, 1));  -- own column: needs_attention holds safety flags and a hint every enqueue clears
+-- plus two triggers (BEFORE INSERT, BEFORE UPDATE OF env_version_id) that refuse an env_version_id
+-- that is not a version of the same service
 ALTER TABLE projects ADD COLUMN subnet TEXT;
 CREATE UNIQUE INDEX projects_subnet ON projects(subnet) WHERE subnet IS NOT NULL;
 ```
@@ -277,10 +280,10 @@ CREATE UNIQUE INDEX projects_subnet ON projects(subnet) WHERE subnet IS NOT NULL
 - **Lost or wrong master key.**
   - App ciphertexts exist and the key file is **missing or does not match the recorded id**: the start and `admin reset` refuse, unless `admin reset --forget-app-secrets` is used.
   - That flag first lists what is lost: each service's env versions, plain values included, and each registry credential. Then, in one transaction, it:
-    - sets `services.env_version_id` to NULL and flags `needs_attention = env_lost`;
+    - sets `services.env_version_id` to NULL and `services.env_lost = 1` (a column of its own; `needs_attention` is never touched, because it holds safety flags such as `versions_kept` and `previous_version_down` and a hint that every enqueue clears);
     - deletes the env versions and the registries' `username` and `secret`;
     - lets `admin reset` continue.
-  - `env_lost` refuses deploy, redeploy and rollback with: "Its environment variables were lost with the master key; save them again before deploying". A new env version clears it. The live container keeps running.
+  - `env_lost` refuses deploy, redeploy and rollback with: "Its environment variables were lost with the master key; save them again before deploying". A new env version clears the column. Step 7 reads `services.env_lost` and re-checks it at run time, so a queued deploy whose snapshot's env version was deleted fails closed; it also checks that a snapshot's `env_version_id` belongs to the deploy's service. The live container keeps running.
   - With the right key present, app secrets are never touched.
   - `LoadOrCreate` messages are reworded: "restore the key from a backup; `serverdock admin reset` clears the admin sign-in data, and with `--forget-app-secrets` also deletes app environment variables and registry credentials the lost key protected".
 - **Fixture:** `internal/store/testdata/v5.db`, with an upgrade test from `v4.db`.
@@ -599,7 +602,7 @@ The env and registry actions are built in steps 5 and 6 but **registered on the 
 | `services.set_resources` | mutate | admin | — | |
 | `services.delete` (changed) | destructive | admin | — | `delete_volumes` in the payload |
 | `services.rollback` (changed) | mutate | write | — | a `write` token only to the **current** env version; otherwise `admin`, checked in the enqueue transaction |
-| `services.get`, `services.list` (changed) | read | read | — | `pending_changes`, `effective_strategy`, `dns_name`, `last_oom_at`, limits, `env_lost` |
+| `services.get`, `services.list` (changed) | read | read | — | `pending_changes`, `effective_strategy`, `dns_name`, `last_oom_at`, limits, `env_lost` (from `services.env_lost`, not from `needs_attention`) |
 | `deploys.get` (changed) | read | read | — | env version, mounts, limits |
 | `deploys.log` (changed) | read | write | **AuditRead** | redacted; fails closed |
 | `system.docker` (changed) | read | read | — | new fields |

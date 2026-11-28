@@ -285,9 +285,8 @@ func ShortDir(t testing.TB) string {
 // until release is called. Call release just before starting the server that will
 // bind them; it is safe to call more than once and also runs at test cleanup.
 //
-// Several calls to FreeAddr in a row are not enough for one server's ports: each
-// one closes its listener before returning, so the next call may be given the
-// same port.
+// (A helper that picked one free port per call could hand the same port twice,
+// because each call would close its listener before returning.)
 func ReserveAddrs(t testing.TB, n int) (addrs []string, release func()) {
 	t.Helper()
 	var lns []net.Listener
@@ -328,19 +327,6 @@ func FreeAddrs(t testing.TB, n int) []string {
 	addrs, release := ReserveAddrs(t, n)
 	release()
 	return addrs
-}
-
-// FreeAddr returns a loopback TCP address that was free a moment ago. For several
-// ports of one server use ReserveAddrs or FreeAddrs: separate FreeAddr calls can
-// return the same port.
-func FreeAddr(t testing.TB) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	return ln.Addr().String()
 }
 
 // hasFlag reports whether args names the flag (as "--name" or "--name=value").

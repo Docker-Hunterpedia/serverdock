@@ -120,6 +120,15 @@ func TestSnapshotV2Validate(t *testing.T) {
 		"relative target": func(s *Snapshot) {
 			s.Mounts = []SnapMount{{Kind: "volume", Source: "d", Target: "data", ReadOnly: true}}
 		},
+		"same volume at two targets": func(s *Snapshot) {
+			s.Mounts = []SnapMount{{Kind: "volume", Source: "a", Target: "/d1", ReadOnly: true}, {Kind: "volume", Source: "a", Target: "/d2", ReadOnly: true}}
+		},
+		"bind source with a comma": func(s *Snapshot) {
+			s.Mounts = []SnapMount{{Kind: "bind", Source: "/srv/a,b", Target: "/d", ReadOnly: true}}
+		},
+		"bind source with a colon": func(s *Snapshot) {
+			s.Mounts = []SnapMount{{Kind: "bind", Source: "/srv/a:b", Target: "/d", ReadOnly: true}}
+		},
 		"duplicate target": func(s *Snapshot) {
 			s.Mounts = []SnapMount{{Kind: "volume", Source: "a", Target: "/d", ReadOnly: true}, {Kind: "volume", Source: "b", Target: "/d", ReadOnly: true}}
 		},

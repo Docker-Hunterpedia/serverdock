@@ -55,6 +55,24 @@ CREATE TABLE registries (
 ) STRICT;
 
 ALTER TABLE services ADD COLUMN env_version_id INTEGER REFERENCES service_env_versions(id) ON DELETE RESTRICT;
+-- A service's current version must be one of its own: a pointer to another
+-- service's version would run with that service's variables.
+CREATE TRIGGER services_env_version_own_insert BEFORE INSERT ON services
+WHEN NEW.env_version_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_env_versions WHERE id = NEW.env_version_id AND service_id = NEW.id)
+BEGIN
+	SELECT RAISE(ABORT, 'env_version_id must be a version of the same service');
+END;
+CREATE TRIGGER services_env_version_own_update BEFORE UPDATE OF env_version_id ON services
+WHEN NEW.env_version_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_env_versions WHERE id = NEW.env_version_id AND service_id = NEW.id)
+BEGIN
+	SELECT RAISE(ABORT, 'env_version_id must be a version of the same service');
+END;
+-- Set by `admin reset --forget-app-secrets`: the service's variables were deleted
+-- with the lost master key. A column of its own, not a needs_attention code: that
+-- slot holds safety flags (versions_kept, previous_version_down) and a hint every
+-- enqueue clears (delete_confirm_again), none of which may be overwritten or may
+-- hide this. Cleared when a new env version is saved (step 5/7 code).
+ALTER TABLE services ADD COLUMN env_lost INTEGER NOT NULL DEFAULT 0 CHECK (env_lost IN (0, 1));
 ALTER TABLE services ADD COLUMN memory_mb INTEGER CHECK (memory_mb IS NULL OR memory_mb >= 32);
 ALTER TABLE services ADD COLUMN cpus_milli INTEGER CHECK (cpus_milli IS NULL OR (cpus_milli >= 50 AND cpus_milli % 50 = 0));
 ALTER TABLE services ADD COLUMN no_new_privileges INTEGER NOT NULL DEFAULT 0 CHECK (no_new_privileges IN (0, 1));

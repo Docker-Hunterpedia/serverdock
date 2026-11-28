@@ -25,12 +25,6 @@ const (
 	readerConns = 2
 )
 
-// AttentionEnvLost is services.needs_attention of a service whose environment
-// versions were deleted because the master key was lost (`admin reset
-// --forget-app-secrets`). Deploys, redeploys and rollbacks are refused until new
-// variables are saved (enforced from M3b step 7).
-const AttentionEnvLost = "env_lost"
-
 // Store holds the writer and reader pools.
 type Store struct {
 	// W has MaxOpenConns(1) and BEGIN IMMEDIATE transactions.

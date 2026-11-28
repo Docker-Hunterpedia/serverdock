@@ -91,15 +91,6 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 	}
 
 	in := bufio.NewReader(stdin)
-	if !*yes {
-		fmt.Fprint(stdout, "This clears the admin password, two-factor and recovery codes, signs everyone out and revokes every API token.\nType reset to continue: ")
-		line, _ := in.ReadString('\n')
-		if strings.TrimSpace(line) != "reset" {
-			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; nothing was changed")
-			return 1
-		}
-	}
-
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	// store.Open takes the data-directory lock (a running server holds it) and runs
@@ -125,6 +116,9 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 	// App secrets: with the right key they are never touched. Without it they are
 	// refused, or (with the flag) listed first and then deleted in the reset's own
 	// transaction.
+	// The CLI's decision here and AdminReset's own re-check run in this process
+	// under the same data-directory lock (store.Open), so nothing can change between them.
+	askForget := false
 	rep, err := as.AppSecrets(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, "serverdock admin reset: checking the app secrets:", err)
@@ -145,17 +139,26 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 		for _, h := range rep.Registries {
 			fmt.Fprintf(stdout, "  registry credential for %s\n", h)
 		}
-		fmt.Fprintln(stdout, "Each of those services will show \"Needs attention: environment lost\" and cannot be deployed until its variables are saved again. Running containers keep running.")
-		if !*yes {
-			fmt.Fprint(stdout, "Type forget to delete them: ")
-			line, _ := in.ReadString('\n')
-			if strings.TrimSpace(line) != "forget" {
-				fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; the app secrets and everything else were left as they are")
-				return 1
-			}
-		}
+		fmt.Fprintln(stdout, "Each of those services will be flagged \"environment lost\" and cannot be deployed until its variables are saved again. Running containers keep running.")
+		askForget = true
 	case rep.Exist && *forget:
 		fmt.Fprintln(stdout, "The master key is present and matches, so --forget-app-secrets does nothing: app secrets are kept.")
+	}
+	if !*yes {
+		fmt.Fprint(stdout, "This clears the admin password, two-factor and recovery codes, signs everyone out and revokes every API token.\nType reset to continue: ")
+		line, _ := in.ReadString('\n')
+		if strings.TrimSpace(line) != "reset" {
+			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; nothing was changed")
+			return 1
+		}
+	}
+	if askForget && !*yes {
+		fmt.Fprint(stdout, "Type forget to delete them: ")
+		line, _ := in.ReadString('\n')
+		if strings.TrimSpace(line) != "forget" {
+			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; the app secrets and everything else were left as they are")
+			return 1
+		}
 	}
 	// A registry holding only auth.admin_reset (the server's never has it), run
 	// through the one-time SystemInvoker: intent and outcome rows with actor system.

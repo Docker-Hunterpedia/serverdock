@@ -44,7 +44,7 @@ func TestFreshDatabaseHasTheServiceConfigSchema(t *testing.T) {
 		}
 	}
 	for _, col := range [][2]string{{"services", "env_version_id"}, {"services", "memory_mb"}, {"services", "cpus_milli"}, {"services", "no_new_privileges"},
-		{"services", "last_oom_at"}, {"projects", "subnet"}} {
+		{"services", "last_oom_at"}, {"services", "env_lost"}, {"projects", "subnet"}} {
 		var n int
 		if err := s.R.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name = ?`, col[0], col[1]).Scan(&n); err != nil || n != 1 {
 			t.Errorf("column %s.%s: %d %v", col[0], col[1], n, err)
@@ -252,7 +252,21 @@ func TestCurrentEnvVersionCannotBeDeleted(t *testing.T) {
 	if err := s.R.QueryRow(`SELECT count(*) FROM service_env_versions`).Scan(&n); err != nil || n != 1 {
 		t.Errorf("%d %v", n, err)
 	}
-	wantErr(t, s, "pointing at another service's version", `UPDATE services SET env_version_id = 999 WHERE id = 1`)
+	wantErr(t, s, "pointing at a version that does not exist", `UPDATE services SET env_version_id = 999 WHERE id = 1`)
+	// Another service's REAL version: refused by the trigger, not by the foreign key.
+	mustExec(t, s.W, `INSERT INTO services(id, project_id, name, image_ref, health_kind, health_timeout_s, health_passes, strategy, drain_s, stop_grace_s, created_at, updated_at)
+		VALUES (2, 1, 'api', 'nginx:1', 'running', 60, 3, 'blue_green', 10, 10, ?, ?)`, ts, ts)
+	addEnvVersion(t, s, 3, 2, 1, []byte("c"))
+	wantErr(t, s, "pointing at another service's version", `UPDATE services SET env_version_id = 3 WHERE id = 1`)
+	wantErr(t, s, "a new service pointing at another service's version", `INSERT INTO services(id, project_id, name, image_ref, health_kind, health_timeout_s, health_passes, strategy, drain_s, stop_grace_s, created_at, updated_at, env_version_id)
+		VALUES (4, 1, 'x', 'nginx:1', 'running', 60, 3, 'blue_green', 10, 10, ?, ?, 3)`, ts, ts)
+	mustExec(t, s.W, `UPDATE services SET env_version_id = 3 WHERE id = 2`) // its own: fine
+	mustExec(t, s.W, `UPDATE services SET env_version_id = NULL WHERE id = 2`)
+	var lost int
+	if err := s.R.QueryRow(`SELECT env_lost FROM services WHERE id = 1`).Scan(&lost); err != nil || lost != 0 {
+		t.Errorf("env_lost default %d %v", lost, err)
+	}
+	wantErr(t, s, "env_lost 2", `UPDATE services SET env_lost = 2 WHERE id = 1`)
 }
 
 // Deleting a service removes its versions even though services.env_version_id

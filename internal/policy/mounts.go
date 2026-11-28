@@ -59,7 +59,7 @@ func ValidateMountTarget(p string) error {
 }
 
 // ValidateBindSourceShape checks only the shape of a bind source as entered:
-// absolute, canonical, at most 255 bytes, printable characters, no "..". Whether it
+// absolute, canonical, at most 255 bytes, printable characters, no ".." and no "," or ":". Whether it
 // is allowed (bind roots, denied paths, overlaps) is decided where the host is
 // known, not here.
 func ValidateBindSourceShape(p string) error {
@@ -72,6 +72,10 @@ func ValidateBindSourceShape(p string) error {
 	for _, r := range p {
 		if !unicode.IsPrint(r) {
 			return errors.New("a bind source holds printable characters only")
+		}
+		if r == ',' || r == ':' {
+			// Defence in depth: both are separators in Docker's mount syntax.
+			return errors.New("a bind source may not contain , or :")
 		}
 	}
 	if path.Clean(p) != p {
