@@ -255,8 +255,204 @@ export function gateLinks(dist) {
 	return errs;
 }
 
+// ---- Gate 10: screenshots (plan 0014, Revision 3) -------------------------------------------------
+
+/** The code-owned allowlist of captured route ids. Nothing under (auth)/ or settings/ may ever be added. */
+export const SCREEN_ROUTES = [
+	'(shell)/services/[project]/[name]/deploys/[number]',
+	'(shell)/services',
+	'(shell)/services/[project]/[name]/(service)',
+	'(shell)/services/new',
+];
+/** The last sentence of every screenshot caption. */
+export const DEMO_SENTENCE = 'Demo data: the states are staged with seeded rows and mocked API responses.';
+const MANIFEST_KEYS = ['inputs_hash', 'captured_at', 'run_id', 'runner_image', 'chromium', 'growth', 'entries'];
+const ENTRY_KEYS = ['id', 'route', 'viewport', 'theme', 'files'];
+const FILE_KEYS = ['name', 'width', 'height', 'bytes'];
+const WEBP_CHUNKS = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH']);
+const exactKeys = (o, keys) => o !== null && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length === keys.length && keys.every((k) => k in o);
+
+/** The chunk ids of a WebP file, or an error string. Only RIFF/WEBP files made of VP8/VP8L/VP8X/ALPH chunks pass. */
+export function webpProblem(buf) {
+	if (buf.length < 20 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return 'not a RIFF/WEBP file';
+	if (buf.readUInt32LE(4) + 8 !== buf.length) return 'the RIFF size does not match the file size';
+	let at = 12;
+	while (at < buf.length) {
+		if (at + 8 > buf.length) return 'truncated chunk header';
+		const id = buf.toString('latin1', at, at + 4);
+		const size = buf.readUInt32LE(at + 4);
+		if (!WEBP_CHUNKS.has(id)) return `chunk "${id.trim()}" is not allowed (only VP8, VP8L, VP8X, ALPH)`;
+		at += 8 + size + (size % 2);
+		if (at > buf.length + 1) return 'a chunk runs past the end of the file';
+	}
+	return null;
+}
+
+/** Alt text problems for one text; `others` are the alt texts of the other figures on the page, `caption` its caption. */
+export function altProblems(alt, caption, others = []) {
+	const errs = [];
+	const t = (alt ?? '').trim();
+	if (t === '' || /^(…|\.{2,})$/.test(t) || /^[\w./-]+\.(webp|png|jpe?g|gif|svg)$/i.test(t)) errs.push('alt text is empty, "...", or a file name');
+	if (/\b(screenshot|image of|picture of)\b/i.test(t)) errs.push('alt text says "screenshot", "image of" or "picture of"');
+	if (t.length > 250) errs.push(`alt text is ${t.length} characters, over 250`);
+	if (others.includes(alt)) errs.push('alt text is the same as another figure on the page');
+	if (caption !== undefined && t === caption.trim()) errs.push('alt text is the same as its caption');
+	return errs;
+}
+
+function readJson(path, errs, what) {
+	try {
+		return JSON.parse(read(path));
+	} catch (e) {
+		errs.push(`${what}: ${e.message}`);
+		return null;
+	}
+}
+
+/**
+ * Gate 10. `siteDir` is the site/ directory (public/screens, src/data). `dist` is checked too when given.
+ * Without a committed set (no manifest and no image files) only the text data is checked.
+ */
+export function gateScreens(siteDir, dist) {
+	const errs = [];
+	const screensDir = join(siteDir, 'public', 'screens');
+	const repoRoot = resolve(siteDir, '..');
+	const present = existsSync(screensDir) ? readdirSync(screensDir) : [];
+	const images = present.filter((n) => n !== 'manifest.json');
+	const manifestPath = join(screensDir, 'manifest.json');
+	let ids = null;
+
+	if (images.length > 0 && !present.includes('manifest.json')) errs.push('public/screens has image files but no manifest.json');
+	if (present.includes('manifest.json')) {
+		const m = readJson(manifestPath, errs, 'manifest.json');
+		if (m) {
+			if (!exactKeys(m, MANIFEST_KEYS)) errs.push(`manifest.json: keys must be exactly ${MANIFEST_KEYS.join(', ')}`);
+			else {
+				if (!/^[0-9a-f]{40}$/.test(m.inputs_hash)) errs.push('manifest.json: inputs_hash must be 40 hex characters');
+				if (!RFC3339.test(m.captured_at ?? '')) errs.push('manifest.json: captured_at must be an RFC 3339 date-time');
+				if (!/^\d+$/.test(m.run_id)) errs.push('manifest.json: run_id must be digits');
+				for (const k of ['runner_image', 'chromium']) if (!/^[A-Za-z0-9._ -]{1,64}$/.test(m[k] ?? '')) errs.push(`manifest.json: ${k} must match ^[A-Za-z0-9._ -]{1,64}$`);
+				if (!Array.isArray(m.growth) || !m.growth.every((g) => exactKeys(g, ['captured_at', 'bytes_added']) && RFC3339.test(g.captured_at) && Number.isInteger(g.bytes_added) && g.bytes_added >= 0)) errs.push('manifest.json: growth must be a list of { captured_at, bytes_added }');
+				if (!Array.isArray(m.entries)) errs.push('manifest.json: entries must be a list');
+				else {
+					const listed = new Set();
+					const dims = new Map(); // id + width -> [theme heights]
+					ids = new Set();
+					for (const e of m.entries) {
+						if (!exactKeys(e, ENTRY_KEYS)) {
+							errs.push(`manifest.json: an entry has keys other than ${ENTRY_KEYS.join(', ')}`);
+							continue;
+						}
+						if (!/^[a-z0-9-]+$/.test(e.id)) errs.push(`manifest.json: bad id "${e.id}"`);
+						ids.add(e.id);
+						if (typeof e.route !== 'string' || e.route.includes('..') || e.route.startsWith('(auth)/') || e.route.includes('settings/') || !SCREEN_ROUTES.includes(e.route)) errs.push(`manifest.json: route "${e.route}" is not in the allowlist`);
+						else if (!existsSync(join(repoRoot, 'web', 'src', 'routes', e.route, '+page.svelte'))) errs.push(`manifest.json: web/src/routes/${e.route}/+page.svelte does not exist`);
+						if (!['desktop', 'phone'].includes(e.viewport)) errs.push(`manifest.json: viewport of ${e.id} must be desktop or phone`);
+						if (!['dark', 'light'].includes(e.theme)) errs.push(`manifest.json: theme of ${e.id} must be dark or light`);
+						if (!Array.isArray(e.files) || e.files.length === 0) errs.push(`manifest.json: ${e.id} has no files`);
+						for (const f of Array.isArray(e.files) ? e.files : []) {
+							if (!exactKeys(f, FILE_KEYS)) {
+								errs.push(`manifest.json: a file of ${e.id} has keys other than ${FILE_KEYS.join(', ')}`);
+								continue;
+							}
+							if (!new RegExp(`^${e.id}-(dark|light)-\\d+\\.webp$`).test(f.name) || !f.name.includes(`-${e.theme}-`)) errs.push(`manifest.json: file name "${f.name}" does not match its entry`);
+							listed.add(f.name);
+							const file = join(screensDir, f.name);
+							if (!existsSync(file)) errs.push(`manifest.json: ${f.name} is listed but missing`);
+							else {
+								const buf = readFileSync(file);
+								if (buf.length !== f.bytes) errs.push(`${f.name}: ${buf.length} bytes on disk, manifest says ${f.bytes}`);
+								const p = webpProblem(buf);
+								if (p) errs.push(`${f.name}: ${p}`);
+							}
+							const key = `${e.id}/${f.width}`;
+							dims.set(key, [...(dims.get(key) ?? []), `${f.width}x${f.height}`]);
+						}
+					}
+					for (const n of images) if (!listed.has(n)) errs.push(`public/screens/${n} is not listed in the manifest`);
+					for (const [key, d] of dims) if (new Set(d).size > 1) errs.push(`${key}: both themes must have the same width and height (${d.join(', ')})`);
+					for (const [key, d] of dims) if (d.length !== 2) errs.push(`${key}: each width needs exactly one file per theme`);
+				}
+			}
+		}
+	}
+
+	// the text data: alt text and the first sentence of each caption
+	const dataPath = join(siteDir, 'src', 'data', 'screens.json');
+	if (existsSync(dataPath)) {
+		const data = readJson(dataPath, errs, 'screens.json');
+		if (data) {
+			const alts = Object.entries(data).map(([id, v]) => [id, v?.alt]);
+			for (const [id, v] of Object.entries(data)) {
+				if (!exactKeys(v, ['alt', 'shows'])) {
+					errs.push(`screens.json: ${id} must have exactly alt and shows`);
+					continue;
+				}
+				if (typeof v.shows !== 'string' || !v.shows.trim().endsWith('.') || v.shows.includes('Demo data:')) errs.push(`screens.json: ${id}.shows must be one sentence ending in a period, without the Demo data sentence`);
+				const others = alts.filter(([i]) => i !== id).map(([, a]) => a);
+				for (const e of altProblems(v.alt, v.shows, others)) errs.push(`screens.json: ${id}: ${e}`);
+			}
+			if (ids) {
+				for (const id of ids) if (!(id in data)) errs.push(`screens.json has no entry for manifest id ${id}`);
+				for (const id of Object.keys(data)) if (!ids.has(id)) errs.push(`screens.json has ${id}, which is not in the manifest`);
+			}
+		}
+	}
+
+	// the built pages
+	if (dist) {
+		for (const f of walk(dist).filter((p) => p.endsWith('.html'))) {
+			const html = read(f);
+			const name = rel(dist, f);
+			const alts = [];
+			for (const m of html.matchAll(TAG)) {
+				if (m[1].toLowerCase() !== 'img') continue;
+				for (const a of ['width', 'height', 'alt']) if (attrOf(m[2], a) === null) errs.push(`${name}: <img> has no ${a}`);
+				if (attrOf(m[2], 'decoding') !== 'async') errs.push(`${name}: <img> must have decoding="async"`);
+				if (/^\/screens\//.test(attrOf(m[2], 'src') ?? '')) alts.push(attrOf(m[2], 'alt') ?? '');
+			}
+			for (const fig of html.matchAll(/<figure\b[^>]*\bclass="[^"]*\bscreen\b[^"]*"[^>]*>[\s\S]*?<\/figure>/g)) {
+				const cap = /<figcaption[^>]*>([\s\S]*?)<\/figcaption>/.exec(fig[0]);
+				const text = cap ? cap[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '';
+				if (!text.endsWith(DEMO_SENTENCE)) errs.push(`${name}: a screenshot caption must end with "${DEMO_SENTENCE}"`);
+				const img = /<img\b[^>]*>/.exec(fig[0]);
+				const alt = img ? attrOf(img[0], 'alt') : null;
+				if (alt !== null && alt.trim() === text) errs.push(`${name}: a screenshot's alt text equals its caption`);
+			}
+			if (new Set(alts).size !== alts.length) errs.push(`${name}: two screenshots have the same alt text`);
+		}
+	}
+	return errs;
+}
+
+// ---- Gate 10b: the Home stage list against the product's labels ----------------------------------------
+
+/** The blue-green stage order, as the product runs it (web/e2e/seed.ts stageRows, internal/deploy). */
+export const BLUE_GREEN_ORDER = ['pull', 'check', 'start', 'health', 'switch', 'commit', 'drain', 'stop_old'];
+
+/** site/src/data/stages.json must use the exact on-screen labels of STAGE_LABELS (web/src/lib/services.ts, read as text). */
+export function gateStages(siteDir) {
+	const errs = [];
+	const path = join(siteDir, 'src', 'data', 'stages.json');
+	if (!existsSync(path)) return ['src/data/stages.json is missing'];
+	const stages = readJson(path, errs, 'stages.json');
+	if (!stages) return errs;
+	const ts = join(siteDir, '..', 'web', 'src', 'lib', 'services.ts');
+	if (!existsSync(ts)) return ['web/src/lib/services.ts is missing'];
+	const body = /const STAGE_LABELS[^{]*\{([\s\S]*?)\n\};/.exec(read(ts));
+	if (!body) return ['STAGE_LABELS was not found in web/src/lib/services.ts'];
+	const labels = new Map([...body[1].matchAll(/(\w+):\s*'((?:[^'\\]|\\.)*)'/g)].map((m) => [m[1], m[2].replace(/\\'/g, "'")]));
+	if (!Array.isArray(stages) || !stages.every((s) => exactKeys(s, ['key', 'label']))) return ['stages.json must be a list of { key, label }'];
+	if (stages.map((s) => s.key).join() !== BLUE_GREEN_ORDER.join()) errs.push(`stages.json: the order must be ${BLUE_GREEN_ORDER.join(', ')}`);
+	for (const s of stages) {
+		if (!labels.has(s.key)) errs.push(`stages.json: "${s.key}" is not a key of STAGE_LABELS`);
+		else if (labels.get(s.key) !== s.label) errs.push(`stages.json: label of ${s.key} is "${s.label}", STAGE_LABELS says "${labels.get(s.key)}"`);
+	}
+	return errs;
+}
+
 /** Run gates; returns { name, errs }[] . `expectedDocs` is the allowlist of doc slugs. */
-export function runGates(dist, { distOnly = false, now = Date.now(), expectedDocs = [] } = {}) {
+export function runGates(dist, { distOnly = false, now = Date.now(), expectedDocs = [], siteDir } = {}) {
 	const out = [
 		['1 no inline code', gateNoInlineCode(dist)],
 		['2 _headers', gateHeaders(dist)],
@@ -267,6 +463,10 @@ export function runGates(dist, { distOnly = false, now = Date.now(), expectedDoc
 	if (!distOnly) {
 		out.push(['6 docs routes', gateDocsRoutes(dist, expectedDocs)]);
 		out.push(['7 links', gateLinks(dist)]);
+		if (siteDir) {
+			out.push(['10 screens', gateScreens(siteDir, dist)]);
+			out.push(['10 stages', gateStages(siteDir)]);
+		}
 	}
 	return out.map(([name, errs]) => ({ name, errs }));
 }
@@ -292,7 +492,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
 		process.exit(1);
 	}
 	let failed = 0;
-	for (const g of runGates(dist, { distOnly })) {
+	for (const g of runGates(dist, { distOnly, siteDir: fileURLToPath(new URL('..', import.meta.url)) })) {
 		if (g.errs.length === 0) console.log(`ok   gate ${g.name}`);
 		else {
 			failed++;

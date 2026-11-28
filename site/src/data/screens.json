@@ -1,0 +1,26 @@
+{
+  "deploy-live": {
+    "alt": "Deploy #7 of demo/api in ServerDock: Pull the image, Checks and Start the new version are done, Health check is running, and the four stages from Switch traffic on are waiting.",
+    "shows": "The live deploy page for deploy #7 of the demo service api, with the Health check stage running."
+  },
+  "services": {
+    "alt": "ServerDock's Services page for project demo: web is Running, api is Running with deploy #7 still running, and worker is Unknown.",
+    "shows": "The services list for project demo, with one service running, one deploying and one whose state is unknown."
+  },
+  "service-detail": {
+    "alt": "The deploy history of demo/api: deploy #6 is Live, deploy #5 is Replaced and has a Roll back to #5 button, and deploy #4 is Failed with the app safe.",
+    "shows": "A service's deploy history, with a Roll back button on a replaced deploy."
+  },
+  "rollback-dialog": {
+    "alt": "A dialog titled Roll back demo/api to #5? says a new deploy will run deploy #5's image with its blue-green strategy; its buttons are Cancel and Roll back to #5.",
+    "shows": "The confirmation that opens before a rollback, naming the target deploy."
+  },
+  "new-service": {
+    "alt": "The Deploy a Docker image form, filled in with project demo, name web and the image registry.example.test/demo/web:2.1.0.",
+    "shows": "The form that deploys a service from a container image, filled in with a demo image."
+  },
+  "phone-deploy": {
+    "alt": "The deploy page on a phone: Pull the image, Checks and Start the new version are done, Health check is running, and four stages are waiting.",
+    "shows": "The same deploy page on a 390 pixel wide phone."
+  }
+}
