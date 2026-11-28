@@ -105,6 +105,14 @@
 		margin: 0;
 		overflow-wrap: anywhere;
 	}
+	/* Links in a cell are targets of their own: 44 px (plan 0004 step 12). */
+	table :global(a),
+	.cards :global(a) {
+		display: inline-flex;
+		align-items: center;
+		min-height: var(--target);
+		min-width: var(--target);
+	}
 	.empty-note {
 		margin: 0 0 1rem;
 		color: var(--muted);

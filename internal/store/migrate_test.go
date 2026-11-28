@@ -678,7 +678,7 @@ func TestV2FixtureOpensAndMigrates(t *testing.T) {
 	if err := s.R.QueryRow(`SELECT value FROM meta WHERE key='fixture'`).Scan(&v); err != nil || v != "v2" {
 		t.Fatalf("meta fixture row: %q %v", v, err)
 	}
-	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, "pre-migrate-*-v0002-v0003.db"))
+	bs, _ := filepath.Glob(filepath.Join(dir, backupDir, fmt.Sprintf("pre-migrate-*-v0002-v%04d.db", len(builtin))))
 	if len(bs) != 1 {
 		t.Fatalf("backups %v", bs)
 	}

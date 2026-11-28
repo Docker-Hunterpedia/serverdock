@@ -24,10 +24,11 @@ func testSpecs(name string) (agent.OpSpec, bool) {
 // even opened) and allowed on the in-process local session; an unknown op is
 // refused everywhere. logs, the only read-only op, works on both.
 func TestLocalOnlyOpRefusedOnRemoteAllowedOnLocal(t *testing.T) {
-	e := newEnv(t)
+	e := newEnv(t, withSpecFor(testSpecs))
+
 	startAgent(t, e.wsURL(), "remote1", newFakeLogs(), nil)
 	remote := waitSession(t, e.hub, "remote1", 0)
-	remote.specFor = testSpecs
+
 	if st, err := remote.open("test-write-op"); !errors.Is(err, ErrLocalOnly) || st != nil {
 		t.Fatalf("remote local-only op: stream=%v err=%v", st, err)
 	}
@@ -52,12 +53,12 @@ func TestLocalOnlyOpRefusedOnRemoteAllowedOnLocal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h := New(ctx, "", quiet)
+	h := New(ctx, "", quiet, withSpecFor(testSpecs))
 	a, b := net.Pipe()
 	go func() { _ = h.Attach(ctx, LocalID, a, 0) }()
-	go func() { _ = agent.ServeSession(ctx, b, newFakeLogs(), 0, quiet) }()
+	go func() { _ = agent.Serve(ctx, b, agent.Config{Logs: newFakeLogs()}, 0, quiet) }()
 	local := waitSession(t, h, LocalID, 0)
-	local.specFor = testSpecs
+
 	st, err := local.open("test-write-op")
 	if err != nil {
 		t.Fatalf("local op refused: %v", err)

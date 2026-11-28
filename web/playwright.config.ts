@@ -8,6 +8,14 @@ export const HTTPS_PORT = Number(process.env.E2E_HTTPS_PORT ?? 18443);
 export const BASE_URL = `https://127.0.0.1:${HTTPS_PORT}`;
 export const STORAGE = 'e2e/.auth.json';
 
+// The tests that deploy for real (*.docker.spec.ts) run apart from the UI ones: a Docker
+// network or container appearing changes the host's network interfaces, and Chromium then
+// aborts the in-flight requests of every other test (net::ERR_NETWORK_CHANGED). CI runs
+// them as their own step, one worker: E2E_SET=ui, then E2E_SET=docker --workers=1.
+// Unset, one run does both: the docker projects wait for all the UI projects.
+const SET = process.env.E2E_SET ?? 'all';
+const DOCKER_SPECS = /.*\.docker\.spec\.ts/;
+
 export default defineConfig({
 	testDir: 'e2e',
 	outputDir: 'e2e/.results',
@@ -18,7 +26,7 @@ export default defineConfig({
 	// is visible and cannot hide behind the retry.
 	retries: process.env.CI ? 1 : 0,
 	workers: process.env.CI ? 2 : undefined,
-	reporter: process.env.CI ? [['list'], ['github'], ['json', { outputFile: 'e2e/.results/report.json' }]] : 'list',
+	reporter: process.env.CI ? [['list'], ['github'], ['json', { outputFile: `e2e/.reports/report-${process.env.E2E_REPORT ?? SET}.json` }]] : 'list',
 	globalSetup: './e2e/global-setup.ts',
 	use: {
 		baseURL: BASE_URL,
@@ -51,4 +59,23 @@ export default defineConfig({
 			}
 		}
 	]
+		.map((p) => ({ ...p, testIgnore: DOCKER_SPECS }))
+		.filter(() => SET !== 'docker')
+		.concat(
+			[
+				// Real flows on a desktop and on a phone (WebKit is not needed: the flows are the same).
+				{ name: 'docker-desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } } },
+				{ name: 'docker-phone', use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } }
+			]
+				.filter(() => SET !== 'ui')
+				.map((p, i, all) => ({
+					...p,
+					testMatch: DOCKER_SPECS,
+					fullyParallel: false,
+					// Serial even in a local all-in-one run (Docker networks and containers appearing change the host's interfaces).
+					workers: 1,
+					// One after the other, and (unset SET) after every UI project.
+					dependencies: SET === 'all' ? ['desktop', 'phone-390', 'phone-320', 'zoom-200', 'dark', 'reduced-motion', 'forced-colors', 'webkit'].concat(i > 0 ? [all[i - 1].name] : []) : i > 0 ? [all[i - 1].name] : []
+				}))
+		)
 });

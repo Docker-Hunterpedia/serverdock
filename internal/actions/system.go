@@ -3,6 +3,8 @@ package actions
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 )
 
 // SystemInvoker runs work nobody triggered (scheduled backups, cleanup, crash
@@ -37,4 +39,28 @@ func (s *SystemInvoker) Invoke(ctx context.Context, name string, raw json.RawMes
 // effect at run time, not just at enqueue.
 func (s *SystemInvoker) InvokeAs(ctx context.Context, actor Actor, name string, raw json.RawMessage, opts Options) (Result, error) {
 	return s.r.invoke(ctx, actor, "system", name, raw, opts)
+}
+
+// RecordDenied writes a "denied" audit row for action name as actor, with
+// executor = 'system', without running or authorising anything. The job runner
+// uses it when a job's actor is refused before the action is even invoked (the
+// token was revoked, the credentials changed: auth.Store.RefreshJobActor), so the
+// refusal leaves the same trace an InvokeAs denial would. The action must exist and
+// raw must be valid input for it; reason is what the audit row says and requestID
+// is the run's ("job-<id>-a<attempt>").
+func (s *SystemInvoker) RecordDenied(ctx context.Context, actor Actor, name string, raw json.RawMessage, reason, requestID string) error {
+	act, p, err := s.r.prep(name, raw)
+	if err != nil {
+		return err
+	}
+	e := audit.Entry{ActorKind: string(actor.kind), ActorID: actor.id, Executor: "system", Action: act.name, Target: p.target,
+		Risk: act.risk.String(), ArgsJSON: p.args, RequestID: requestID, Error: reason}
+	if e.ActorKind == "" {
+		e.ActorKind, e.ActorID = "invalid", "invalid"
+	}
+	if e.ActorID == "" {
+		e.ActorID = "unknown"
+	}
+	_, err = s.r.sink.Denied(ctx, e)
+	return err
 }

@@ -84,7 +84,7 @@ func TestBackoffSchedule(t *testing.T) {
 // local-only. Marking a new op RemoteOK fails here until security has reviewed
 // it as read-only.
 func TestOpSpecTableRemoteOKRule(t *testing.T) {
-	readOnly := map[string]bool{OpLogs: true}
+	readOnly := map[string]bool{OpLogs: true, OpHello: true}
 	seen := map[string]bool{}
 	for _, s := range Specs() {
 		if s.Name == "" || seen[s.Name] {
@@ -182,7 +182,7 @@ func TestAgentStreamCap(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = ServeSession(ctx, b, src, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		_ = Serve(ctx, b, Config{Logs: src}, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 	hubSide, err := yamux.Client(a, YamuxConfig(0))
 	if err != nil {

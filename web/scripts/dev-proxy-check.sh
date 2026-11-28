@@ -25,8 +25,12 @@ go build -o "$D/serverdock" ./cmd/serverdock
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
 	-keyout "$D/key.pem" -out "$D/cert.pem" -subj "/CN=localhost" \
 	-addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1
+# --docker-socket names a path that does not exist: the server creates its app
+# network in Docker at start, and this check must never do that on the machine's
+# real Docker (it would leak one network per run).
 "$D/serverdock" server --data "$D/data" --control-socket "$D/c.sock" \
-	--listen "127.0.0.1:$HTTP" --https-listen "127.0.0.1:$HTTPS" 2>"$D/server.log" &
+	--listen "127.0.0.1:$HTTP" --https-listen "127.0.0.1:$HTTPS" \
+	--docker-socket "$D/no-docker.sock" 2>"$D/server.log" &
 PIDS="$!"
 cd "$ROOT/web"
 VITE_DEV_KEY="$D/key.pem" VITE_DEV_CERT="$D/cert.pem" VITE_DEV_API="https://127.0.0.1:$HTTPS" \

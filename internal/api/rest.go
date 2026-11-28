@@ -90,8 +90,8 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	info, ok := s.cfg.Actions.Lookup(name)
-	if !ok || info.ConsoleOnly {
-		// A console-only action is not an HTTP action at all: 404, like an unknown one.
+	if !ok || info.ConsoleOnly || info.JobOnly {
+		// A console-only or job-only action is not an HTTP action at all: 404, like an unknown one.
 		fail(http.StatusNotFound, "unknown_action", "no such action")
 		return
 	}
@@ -212,6 +212,19 @@ func (s *Server) actionError(w http.ResponseWriter, reqID string, err error) {
 	case errors.Is(err, actions.ErrInvalidInput), errors.Is(err, actions.ErrNoDryRun):
 		msg := strings.TrimPrefix(err.Error(), "actions: invalid input: ")
 		send(http.StatusBadRequest, "invalid_input", msg, nil)
+	case errors.Is(err, actions.ErrNotFound), errors.Is(err, actions.ErrConflict), errors.Is(err, actions.ErrUnavailable):
+		// A refusal the action worded for the caller (see actions.UserError).
+		// err.Error() is the registry's redacted text of the action's own message.
+		msg := err.Error()
+		switch {
+		case errors.Is(err, actions.ErrNotFound):
+			send(http.StatusNotFound, "not_found", msg, nil)
+		case errors.Is(err, actions.ErrConflict):
+			send(http.StatusConflict, "conflict", msg, nil)
+		default:
+			w.Header().Set("Retry-After", "5")
+			send(http.StatusServiceUnavailable, "unavailable", msg, nil)
+		}
 	case errors.As(err, &de):
 		code := "denied"
 		if de.Code != "" {
@@ -253,6 +266,9 @@ func (s *Server) actionError(w http.ResponseWriter, reqID string, err error) {
 		send(http.StatusConflict, "enrollment_expired", "This enrolment expired or ran out of tries; start again.", nil)
 	case errors.Is(err, auth.ErrNoSuchToken), errors.Is(err, auth.ErrNoSuchSession):
 		send(http.StatusNotFound, "not_found", "no such item", nil)
+	case errors.Is(err, auth.ErrRevokeNotApplied):
+		s.log.Error("session revoke not applied", "request_id", reqID)
+		send(http.StatusInternalServerError, "revoke_not_applied", "The session was not signed out, because the jobs it queued could not be cancelled. Nothing changed; try again.", nil)
 	case errors.Is(err, auth.ErrKeyMismatch):
 		send(http.StatusInternalServerError, "key_mismatch", err.Error(), nil)
 	default:

@@ -46,10 +46,10 @@ type env struct {
 	active atomic.Int32 // handlers currently running
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, opts ...Option) *env {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &env{hub: New(ctx, token, quiet), cancel: cancel}
+	e := &env{hub: New(ctx, token, quiet, opts...), cancel: cancel}
 	e.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.active.Add(1)
 		defer e.active.Add(-1)
@@ -381,7 +381,7 @@ func TestLocalPipeAttach(t *testing.T) {
 	a, b := net.Pipe()
 	logs := newFakeLogs()
 	go func() { _ = h.Attach(ctx, "local", a, 0) }()
-	go func() { _ = agent.ServeSession(ctx, b, logs, 0, quiet) }()
+	go func() { _ = agent.Serve(ctx, b, agent.Config{Logs: logs}, 0, quiet) }()
 	s := waitSession(t, h, "local", 0)
 	rc, err := s.Logs(ctx, "c1", 5)
 	if err != nil {

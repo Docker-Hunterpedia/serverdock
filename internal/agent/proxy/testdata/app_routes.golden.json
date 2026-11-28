@@ -1,0 +1,185 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "disabled": true
+  },
+  "apps": {
+    "http": {
+      "grace_period": "10s",
+      "servers": {
+        "apps": {
+          "automatic_https": {
+            "disable": true
+          },
+          "idle_timeout": "2m",
+          "listen": [
+            ":9000",
+            ":9001",
+            ":9002"
+          ],
+          "max_header_bytes": 65536,
+          "protocols": [
+            "h1"
+          ],
+          "read_header_timeout": "10s",
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "serverdock_app"
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "transport": {
+                    "network_proxy": {
+                      "from": "none"
+                    },
+                    "protocol": "http"
+                  },
+                  "upstreams": [
+                    {
+                      "dial": "{http.vars.sd_upstream}"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "main": {
+          "automatic_https": {
+            "disable": true
+          },
+          "idle_timeout": "2m",
+          "listen": [
+            ":80"
+          ],
+          "max_header_bytes": 65536,
+          "read_header_timeout": "10s",
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://[{http.request.host}]{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "vars_regexp": {
+                    "{http.request.host}": {
+                      "pattern": "^[0-9a-fA-F:.]*:[0-9a-fA-F:.]*$"
+                    }
+                  }
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "vars_regexp": {
+                    "{http.request.host}": {
+                      "pattern": "(?i)^(localhost|\\[[0-9a-f:.]+\\]|([0-9]{1,3}\\.){3}[0-9]{1,3})$"
+                    }
+                  }
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "body": "misdirected request\n",
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ]
+        },
+        "panel": {
+          "automatic_https": {
+            "disable": true
+          },
+          "idle_timeout": "2m",
+          "listen": [
+            ":443"
+          ],
+          "max_header_bytes": 65536,
+          "protocols": [
+            "h1",
+            "h2"
+          ],
+          "read_header_timeout": "10s",
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "unix//data/run/cp.sock"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [
+            {
+              "default_sni": "localhost",
+              "fallback_sni": "localhost",
+              "protocol_min": "tls1.2"
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/data/pki/panel.pem",
+            "format": "pem",
+            "key": "/data/pki/panel.pem"
+          }
+        ]
+      },
+      "disable_ocsp_stapling": true,
+      "disable_storage_clean": true
+    }
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "encoder": {
+          "format": "sd_redact"
+        },
+        "level": "WARN"
+      }
+    }
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/data/caddy"
+  }
+}

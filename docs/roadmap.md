@@ -32,9 +32,9 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Install script with pre-flight checks (M7a)
 - [ ] Signed releases (cosign); `serverdock bench` published with each release
 - [x] Action registry (typed ops, risk tiers, audit log) — the base for everything else — built in M1 (`internal/actions`, `internal/audit`, `internal/redact`; policy-table, tamper-detection and sentinel tests; no HTTP route yet, those arrive in M2)
-- [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked)
+- [ ] Deploy from image, Dockerfile (git), and Compose (policy-checked) — **the image part is built in M3a** ([plan 0004](plans/0004-m3a-deploy-from-image.md); public images, one container per service; tests in [security.md](security.md#m3a-surface-as-built-with-the-tests-that-pin-it)); Dockerfile is M5 and Compose is M6, so this stays open
 - [ ] GitHub push-to-deploy + generic webhook, commit status
-- [ ] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys
+- [x] Blue-green handover, health gate, automatic rollback, one-click rollback from deploy snapshots; auto-cancel superseded deploys — built in M3a ([plan 0004](plans/0004-m3a-deploy-from-image.md) steps 4a–10, 13; tests: `TestBlueGreenSwitchWithZeroNon2xx`, `TestUnhealthyCandidateKeepsOldServingWithZeroNon2xx`, `TestRollbackPinsTheImageIdAndRunsThatSnapshot`, `TestSupersedeDuringHealthGateIsUnhealthy`, the kill -9 suite; [security.md](security.md#m3a-close-out-status)). A deploy, rollback or redeploy of one app does not reload the proxy: it drops no request on other apps or on the panel, and none on the deployed app that finishes within `drain_s` (at least 10 s); longer requests and open streams end when the old version is stopped. A restart is an outage by design, and the stop-first gap answers 503 (maintenance page); adding, changing or clearing a public port reloads the proxy and can close a connection being opened at that moment (expected never to have been processed, so safe to retry; to be confirmed by the measurements). The release measurements are still pending
 - [ ] Domains with automatic HTTPS (embedded Caddy) and actionable diagnostics; TLS problems never take a running app down
 - [ ] Passkeys for the panel once it has a domain (WebAuthn), with TOTP and recovery codes as fallback (M4)
 - [ ] Env vars & secrets (encrypted, audited reveal)
@@ -43,8 +43,8 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Local builds with cgroup caps
 - [ ] Private registry credentials; persistent volumes; per-project network with service DNS
 - [ ] Automatic disk cleanup (old images, build cache) + disk alerts; size-capped BuildKit cache; build concurrency setting
-- [ ] Per-app CPU/RAM limits; stop-first strategy for stateful apps; connection draining on blue-green
-- [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables
+- [ ] Per-app CPU/RAM limits; stop-first strategy for stateful apps; connection draining on blue-green — **stop-first (explicit per service) and the blue-green drain are built in M3a** (`TestStopFirstGapThenCommit`, `TestIntegrationStopFirstGapUnderLoad`); CPU/RAM limits and choosing stop-first automatically for writable volumes are M3b, so this stays open
+- [ ] Keep logs of the last N deploys; live build/pull progress; restart and redeploy-without-rebuild; deploy context variables — **built in M3a:** the last 10 deploy logs, live pull progress, restart and redeploy (`TestDeployLogRetentionKeepsTheLastTenPerService`, `TestRestartKeepsTheAddress`, `TestRedeployRecreatesAMissingContainer`); build progress is M5 and deploy context variables are M3b, so this stays open
 - [ ] "Update available" notice for app images
 - [ ] IPv6 support; Docker API version negotiation + supported Docker range + Docker RC in CI *(negotiation and the Engine 25+ range are built (M1 step 4); IPv6 and the RC CI matrix are not)*
 - [x] Token expiry — API tokens require an expiry (default 90 days, at most 365), built in M2 (`TestTokenExpiryDefaultMaximumAndRequired` in `internal/auth/authactions_test.go`; Playwright `web/e2e/security.spec.ts`)
@@ -53,8 +53,8 @@ Goal: a solo dev can replace Coolify/Dokploy on one 1 GB VPS.
 - [ ] Self-update with candidate + rollback; ServerDock state backup + rehearse restore
 - [x] REST API (OpenAPI) — built in M2: `POST /api/v1/actions/{name}` over the action registry, with a generated OpenAPI 3.1 document ([`docs/api/openapi.json`](api/openapi.json), `make openapi`; `TestOpenAPIGolden`, `TestRESTActionPolicyMatrix` in `internal/api/rest_test.go`)
 - [ ] **Read-only MCP endpoint** with scoped `read` tokens and secret redaction (ADR 0006)
-- [ ] Accessible, phone-usable UI baseline — built in M2 and checked by axe (zero violations in eight Playwright projects: desktop, 390 px, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit; `web/e2e/`), covering the shell, setup, sign-in, Overview and Settings › Security. **Ticked when the maintainer's manual screen-reader passes for steps 12 and 13 are recorded in PR #3** (checklists in [plan 0003](plans/0003-m2-auth-first-run-spa.md#step-12-manual-screen-reader-pass-checklist-for-the-maintainer))
-- [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar)
+- [x] Accessible, phone-usable UI baseline — built in M2 and checked by axe (zero violations in eight Playwright projects: desktop, 390 px, 320 px, 200% zoom, dark, reduced motion, forced colours, WebKit; `web/e2e/`), covering the shell, setup, sign-in, Overview and Settings › Security. **Ticked 2026-11-22: the maintainer approved the manual screen-reader item for steps 12 and 13** (recorded in plan 0003) (checklists in [plan 0003](plans/0003-m2-auth-first-run-spa.md#step-12-manual-screen-reader-pass-checklist-for-the-maintainer))
+- [ ] Accessible, phone-usable UI for all of the above (each later screen repeats the same bar) — M3a screens: axe green in eight projects, manual screen-reader pass approved by the maintainer 2026-11-28 ([checklist](accessibility/m3a-screen-reader-checklist.md))
 
 **Exit:** full `bench/run.sh` on a fresh 1 GB VPS (deferred from Phase 0); fresh 1 GB VPS → first git app live on HTTPS in < 5 min; idle under the ADR 0011 ceiling (≤ 200 MB; tripwire 80 MB) / < 1% CPU published; security + accessibility reviews passed; dogfooded on our own apps for 2 weeks.
 

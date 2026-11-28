@@ -14,11 +14,13 @@
 		inputmode?: 'numeric' | 'text';
 		maxlength?: number;
 		readonly?: boolean;
+		/** id of a <datalist> of suggestions. */
+		list?: string;
 		/** Ids of extra paragraphs that describe the field (e.g. an expiry sentence). */
 		describedby?: string;
 		el?: HTMLInputElement;
 	};
-	let { id, label, value = $bindable(), type = 'text', hint, error, autocomplete, inputmode, maxlength, readonly, describedby: extra, el = $bindable() }: Props = $props();
+	let { id, label, value = $bindable(), type = 'text', hint, error, autocomplete, inputmode, maxlength, readonly, list, describedby: extra, el = $bindable() }: Props = $props();
 	const describedBy = $derived([hint ? `${id}-hint` : '', extra ?? '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined);
 </script>
 
@@ -35,6 +37,7 @@
 		{inputmode}
 		{maxlength}
 		{readonly}
+		{list}
 		spellcheck="false"
 		autocapitalize="none"
 		aria-describedby={describedBy}

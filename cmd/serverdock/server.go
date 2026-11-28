@@ -23,13 +23,17 @@ import (
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/dockerapi"
 	"github.com/Docker-Hunterpedia/serverdock/internal/agent/proxy"
+	"github.com/Docker-Hunterpedia/serverdock/internal/agentops"
 	"github.com/Docker-Hunterpedia/serverdock/internal/api"
 	"github.com/Docker-Hunterpedia/serverdock/internal/audit"
 	"github.com/Docker-Hunterpedia/serverdock/internal/auth"
 	"github.com/Docker-Hunterpedia/serverdock/internal/datadir"
+	"github.com/Docker-Hunterpedia/serverdock/internal/deploy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/hub"
+	"github.com/Docker-Hunterpedia/serverdock/internal/jobs"
 	"github.com/Docker-Hunterpedia/serverdock/internal/limits"
 	"github.com/Docker-Hunterpedia/serverdock/internal/pki"
+	"github.com/Docker-Hunterpedia/serverdock/internal/policy"
 	"github.com/Docker-Hunterpedia/serverdock/internal/secretbox"
 	"github.com/Docker-Hunterpedia/serverdock/internal/store"
 	"github.com/Docker-Hunterpedia/serverdock/web"
@@ -43,6 +47,8 @@ const (
 	agentMaxConns      = 128 // idle TLS connections are cheap; the per-IP cap does the real work
 	agentHeaderTimeout = 5 * time.Second
 	agentMaxConnsPerIP = 4
+	// bootTimeout bounds the start-up network_ensure and first container list.
+	bootTimeout = 30 * time.Second
 )
 
 type serverConfig struct {
@@ -70,8 +76,40 @@ type serverConfig struct {
 	// characters. If empty and AgentListen is set, one is generated into
 	// DATA/agent.token. It is never logged.
 	AgentToken string
-	// DockerSocket is used by the in-process local agent for log streams.
+	// DockerSocket is used by the in-process local agent for its Docker ops.
 	DockerSocket string
+	// AppSubnet is --app-subnet: the app network's subnet (/24 to /20), applied
+	// at first start only. Empty means choose one clear of every network.
+	AppSubnet string
+	// AllowLoopbackRegistry is --allow-loopback-registry: image references may
+	// name a registry on localhost, 127.0.0.0/8 or ::1 (homelab registries; the
+	// integration tests). Link-local and metadata addresses stay refused.
+	AllowLoopbackRegistry bool
+}
+
+// policyOptions are the install-wide switches the policy validators take.
+func (c serverConfig) policyOptions() policy.Options {
+	return policy.Options{AllowLoopbackRegistry: c.AllowLoopbackRegistry}
+}
+
+// reservedPorts are ServerDock's own listen ports, which no app may be exposed
+// on: --agent-listen, --listen and --https-listen (80 and 443 are refused by
+// policy.ValidatePublicPort itself). It is the one list behind the agent's
+// proxy_apply check and the service actions.
+func (c serverConfig) reservedPorts() []int {
+	var out []int
+	for _, addr := range []string{c.AgentListen, c.Listen, c.HTTPSListen} {
+		if addr == "" {
+			continue
+		}
+		if _, port, err := net.SplitHostPort(addr); err == nil {
+			// A named port (":https") is resolved, so none is silently dropped.
+			if p, err := net.LookupPort("tcp", port); err == nil && p > 0 && p <= 65535 {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // stringList is a repeatable string flag.
@@ -97,6 +135,8 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	fs.Var(&sans, "agent-san", "DNS name or IP address agents dial the hub at; repeatable; required with --agent-listen")
 	fs.IntVar(&c.AgentMaxSessions, "agent-max-sessions", hub.DefaultMaxSessions, "maximum concurrent remote agent sessions")
 	fs.StringVar(&c.DockerSocket, "docker-socket", dockerapi.DefaultSocket, "Docker socket path for the local agent")
+	fs.StringVar(&c.AppSubnet, "app-subnet", "", "subnet of the app network, /24 to /20 (default: the first free /24 in 10.250.0.0/16). Used at first start only; it is never changed afterwards")
+	fs.BoolVar(&c.AllowLoopbackRegistry, "allow-loopback-registry", false, "allow image references that name a registry on localhost, 127.0.0.0/8 or ::1 (off by default; link-local and cloud metadata addresses are always refused)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -110,6 +150,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	}
 	if c.AgentMaxSessions < 1 {
 		return c, errors.New("--agent-max-sessions must be at least 1")
+	}
+	if err := c.validateAppSubnet(); err != nil {
+		return c, err
 	}
 	return c, nil
 }
@@ -171,16 +214,54 @@ type serverAddrs struct {
 	// CAFingerprint is the hub CA fingerprint ("sha256:<hex>"); empty when the
 	// agent listener is off.
 	CAFingerprint string
+
+	// hub is the live hub, for tests that call ops on the local session; reg,
+	// routes and booter are the registry and the app side, for the same reason.
+	hub    *hub.Hub
+	reg    *actions.Registry
+	routes *deploy.Routes
+	booter *deploy.Booter
+	rec    *deploy.Reconciler
+	// sched, jobStore and db are the job scheduler (the real one, wired to the
+	// registry), its store and the database, for the tests of that wiring.
+	sched    *jobs.Scheduler
+	jobStore *jobs.Store
+	db       *store.Store
+}
+
+func (c serverConfig) validateAppSubnet() error {
+	if c.AppSubnet == "" {
+		return nil
+	}
+	if _, err := deploy.ParseAppSubnet(c.AppSubnet); err != nil {
+		return fmt.Errorf("--app-subnet %q: %w", c.AppSubnet, err)
+	}
+	return nil
 }
 
 // validate checks the agent flags and the token before anything is started.
 func (c serverConfig) validate() error {
+	if err := c.validateAppSubnet(); err != nil {
+		return err
+	}
 	if c.HTTPSListen != "" {
 		if _, _, err := net.SplitHostPort(c.HTTPSListen); err != nil {
 			return fmt.Errorf("--https-listen %q: %w", c.HTTPSListen, err)
 		}
 		if c.Proxy && c.HTTPSListen == c.Listen {
 			return errors.New("--https-listen and --listen must be different addresses")
+		}
+	}
+	// A listen port must be a number or a service name that resolves: reservedPorts
+	// would otherwise leave an unresolvable one out of the list silently.
+	for _, l := range []struct{ flag, addr string }{{"--listen", c.Listen}, {"--https-listen", c.HTTPSListen}, {"--agent-listen", c.AgentListen}} {
+		if l.addr == "" {
+			continue
+		}
+		if _, port, err := net.SplitHostPort(l.addr); err != nil {
+			return fmt.Errorf("%s %q: %w", l.flag, l.addr, err)
+		} else if _, err := net.LookupPort("tcp", port); err != nil {
+			return fmt.Errorf("%s %q: the port %q is not a number or a known service name", l.flag, l.addr, port)
 		}
 	}
 	if c.ControlSocket != "" && c.DebugSocket != "" && filepath.Clean(c.ControlSocket) == filepath.Clean(c.DebugSocket) {
@@ -226,6 +307,10 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		return err
 	}
 	defer st.Close()
+	installID, err := loadInstallID(ctx, st)
+	if err != nil {
+		return err
+	}
 	// The master key seals TOTP seeds; creating it (or refusing to start without
 	// it) belongs to this point of the startup order.
 	box, keyCreated, err := secretbox.LoadOrCreate(ctx, cfg.Data, secretbox.SQLMeta{R: st.R, W: st.W}, func() (bool, error) {
@@ -345,11 +430,66 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if maxSessions <= 0 {
 		maxSessions = hub.DefaultMaxSessions
 	}
-	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions))
+	h := hub.New(cpCtx, token, log, hub.WithMaxSessions(maxSessions), hub.WithLocalVersion(version))
 	lim := api.NewLimits(nil)
 	docker := dockerapi.New(cfg.DockerSocket)
 	defer docker.Close()
 	logDockerVersion(ctx, docker, log)
+	// The proxy's route applier: RunLocal starts it (the panel alone), and the
+	// proxy_apply op adds app routes on top of it later.
+	var applier *proxy.Applier
+	if cfg.Proxy {
+		applier = proxy.NewApplier(proxy.Config{
+			DataDir: cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Panel: panelProxy(panel, cfg),
+			// Read by the secret-sentinel test only (not a flag, not in --help).
+			LogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
+		})
+	}
+	// One list of ServerDock's own ports, shared by the agent's proxy_apply and
+	// the service actions: an app may never be exposed on one of them.
+	reserved := cfg.reservedPorts()
+	appNet, err := recordAppSubnet(ctx, st, docker, installID, cfg.AppSubnet, log)
+	if err != nil {
+		return err
+	}
+	ops, err := localOps(docker, installID, cfg.AllowLoopbackRegistry, applier, reserved, appNet.Recorded, log)
+	if err != nil {
+		return err
+	}
+	// The app side talks to the local agent over its hub session. Routes is the
+	// only code that sends proxy_apply; Booter runs network_ensure and then Sync
+	// once the panel is up (below), and lazily again from the actions.
+	opsClient := agentops.NewClient(localCaller{h: h})
+	routes := deploy.NewRoutes(st, opsClient, log)
+	// The job scheduler (plan 0004 step 8a): built here, wired to the registry's
+	// session revoke below (so a revoked session's queued jobs end cancelled) and
+	// started further down. It dispatches nothing until its start gate opens:
+	// the reconciler opens it after its first resync (plan 0004 step 10).
+	// runner and rec are set below, before the scheduler runs; a finished job asks the
+	// reconciler for the per-service resync of its service.
+	processStart := time.Now()
+	jobStore := jobs.NewStore(st, nil)
+	var runner *deploy.Runner
+	var rec *deploy.Reconciler
+	sched, err := jobs.NewScheduler(jobs.Config{Store: jobStore, Log: log, Run: func(ctx context.Context, j jobs.Job) error { return runner.Run(ctx, j) },
+		OnDone: func(j jobs.Job) { rec.ResyncService(deploy.ServiceOfJob(j)) }})
+	if err != nil {
+		return err
+	}
+	// Settle the jobs a previous process left running (database only, before the
+	// scheduler can start anything), so none holds its service's lock key forever.
+	if n, err := deploy.ResolveInterrupted(ctx, st, sched.BootID(), time.Now(), auditLog); err != nil {
+		return fmt.Errorf("resolving interrupted jobs: %w", err)
+	} else if n > 0 {
+		log.Warn("jobs interrupted by the last stop were settled", "jobs", n)
+	}
+	// panelUp is closed once the local agent has loaded the panel: the Booter does
+	// not start (or join) a run before that, whether it is the start-up run or a
+	// lazy one from an action that arrives early on the control socket.
+	panelUp := make(chan struct{})
+	booter := deploy.NewBooter(deploy.BootConfig{Instance: installID, AppNet: appNet, Net: opsClient, Routes: routes, SyncRoutes: cfg.Proxy, PanelUp: panelUp,
+		// The first container list belongs to the reconciler; the Booter only asks for it.
+		Sync: func(ctx context.Context) error { return rec.EnsureSynced(ctx) }, Log: log})
 	// The action registry behind the REST handler: built-ins and the session-only
 	// auth actions, never auth.admin_reset. The one-time system invoker is
 	// deliberately not taken here, and the api package never receives it.
@@ -360,7 +500,28 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 				RenewSoon: time.Until(panel.NotAfter) < pki.PanelRenewBefore}
 		}
 	}
-	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword})
+	reg := newServerRegistry(auditLog, log, deps, authStore, auth.ActionDeps{Hasher: hasher, PasswordGate: lim.AccountPassword, Jobs: sched})
+	deploy.RegisterServiceActions(reg, deploy.ServiceDeps{
+		DB: st, Routes: routes, Boot: booter.Run, NoProxy: !cfg.Proxy, Policy: cfg.policyOptions(), ReservedPorts: reserved,
+		Exposure: opsClient, Jobs: sched, StreamUp: func() bool { return rec.Up() }, Kick: func() { rec.Kick() }, PanelAddrs: panelAddrs(cfg.HTTPSListen), Log: log,
+	})
+	// The one-time system invoker belongs to the deploy runner: it runs each job as
+	// the actor that queued it (never as the system).
+	// The one system invoker serves the job runner (it runs each job as the actor that
+	// queued it) and the reconciler (its two system-only actions).
+	inv := reg.SystemInvoker()
+	locks := &deploy.ServiceLocks{}
+	// Deploy logs (step 11): the tail of a container's output is kept before it is removed.
+	logs := &deploy.DeployLogs{Root: filepath.Join(cfg.Data, "deploy-logs"), DB: st, Src: localLogs{h: h}, Log: log}
+	rec = deploy.NewReconciler(deploy.ReconcilerConfig{DB: st, Ops: opsClient, Routes: routes, Locks: locks, Act: inv, Proxy: cfg.Proxy,
+		OpenGate: sched.OpenGate, PanelUp: panelUp, Since: processStart, Audit: auditLog, KeepLog: logs.Keep, SweepLogs: logs.Sweep, Log: log})
+	deploy.RegisterReconcilerActions(reg, rec)
+	runner = deploy.NewRunner(deploy.RunnerConfig{DB: st, Jobs: jobStore, Inv: inv, Refresh: authStore, Locks: locks, Log: log,
+		Ops: opsClient, Alloc: deploy.NewAllocator(st, opsClient, appNet), Tracker: routes, Routes: routes, Stopping: sched.Stopping, Net: booter, AppNet: appNet,
+		DeleteSignal: sched.DeleteSignal, LogRoot: logs.Root, KeepLog: logs.Keep, KeepLogNote: logs.KeepWithNote, PruneLogs: logs.Prune,
+		Instance: installID, Policy: cfg.policyOptions()})
+	deploy.RegisterJobActions(reg, runner)
+	deploy.RegisterDeployReadActions(reg, deploy.DeployReadDeps{DB: st, Progress: runner.Progress, Logs: logs})
 	srv := api.New(api.Config{
 		SPA: web.FS(), Sessions: authStore, Actions: reg, Tokens: api.NewTokenVerifier(authStore), PanelHosts: cfg.PanelHosts,
 		Auth:       api.NewAuthHandlers(api.AuthDeps{Auth: authStore, Hasher: hasher, Audit: auditLog, Limits: lim, Log: log}),
@@ -396,6 +557,21 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	if cfg.Proxy {
 		addrs.Listen, addrs.HTTPS = cfg.Listen, cfg.HTTPSListen
 	}
+	addrs.hub, addrs.reg, addrs.routes, addrs.booter, addrs.rec = h, reg, routes, booter, rec
+	addrs.sched, addrs.jobStore, addrs.db = sched, jobStore, st
+	// The scheduler runs from here; its gate is closed until the boot succeeds.
+	// It stops BEFORE the local agent (below): a deploy that is cancelled by the
+	// shutdown removes its candidate through that agent.
+	schedCtx, schedCancel := context.WithCancel(context.Background())
+	defer schedCancel()
+	schedDone := make(chan struct{})
+	go func() { sched.Run(schedCtx); close(schedDone) }()
+	// The reconciler (the watcher, the resync and the start gate) stops right after
+	// the scheduler and before the local agent: its container work goes through it.
+	recCtx, recCancel := context.WithCancel(context.Background())
+	defer recCancel()
+	recDone := make(chan struct{})
+	go func() { rec.Run(recCtx); close(recDone) }()
 	// The local agent registers with the hub over an in-memory pipe, so the
 	// same session code path runs as for remote agents.
 	// Both session goroutines are joined before runServer returns.
@@ -403,16 +579,33 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 	pipeHub, pipeAgent := net.Pipe()
 	session.Go(func() { _ = h.Attach(cpCtx, hub.LocalID, pipeHub, 0) })
 	session.Go(func() {
-		_ = agent.ServeSession(agentCtx, pipeAgent, docker, 0, log)
+		_ = agent.Serve(agentCtx, pipeAgent, agent.Config{Logs: docker, Version: version, Mode: agent.ModeLocal, Ops: ops}, 0, log)
+	})
+	// Boot order: the panel alone first (RunLocal loads it), then network_ensure,
+	// then Sync, which opens the route gate. One short-lived goroutine, joined
+	// below; if Docker is down it logs and ends, and the actions retry it lazily.
+	var boot sync.WaitGroup
+	boot.Go(func() {
+		select {
+		case <-panelUp:
+		case <-agentCtx.Done():
+			return
+		}
+		bctx, cancel := context.WithTimeout(agentCtx, bootTimeout)
+		defer cancel()
+		if err := booter.Run(bctx); err != nil && agentCtx.Err() == nil {
+			log.Warn("app network and routes are not ready yet; they are retried when a service action needs them", "err", err.Error())
+		}
 	})
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- agent.RunLocal(agentCtx, agent.LocalOptions{
-			Panel: panelProxy(panel, cfg),
+			Panel: panelProxy(panel, cfg), Applier: applier,
 			// Read by the secret-sentinel test only (not a flag, not in --help).
 			ProxyLogLevel: os.Getenv("SERVERDOCK_TEST_PROXY_LOG_LEVEL"),
 			DataDir:       cfg.Data, Listen: cfg.Listen, Upstream: proxy.UnixUpstream(cfg.ControlSocket), Proxy: cfg.Proxy,
 		}, log, func() {
+			close(panelUp)
 			if ready != nil {
 				ready(addrs)
 			}
@@ -429,12 +622,25 @@ func runServer(ctx context.Context, cfg serverConfig, log *slog.Logger, ready fu
 		cpRunning--
 		first = err
 	}
+	schedCancel()
+	select {
+	case <-schedDone:
+	case <-time.After(shutdownGrace):
+		log.Error("the job scheduler did not stop in time")
+	}
+	recCancel()
+	select {
+	case <-recDone:
+	case <-time.After(shutdownGrace):
+		log.Error("the reconciler did not stop in time")
+	}
 	agentCancel()
 	if !agentExited {
 		if err := <-agentDone; err != nil && first == nil {
 			first = err
 		}
 	}
+	boot.Wait()
 	cpCancel()
 	for ; cpRunning > 0; cpRunning-- {
 		if err := <-cpErr; err != nil && first == nil {

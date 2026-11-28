@@ -1,7 +1,7 @@
-import { request, type APIRequestContext } from '@playwright/test';
+import { request, test, type APIRequestContext } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -50,12 +50,40 @@ export type TestServer = {
 	/** Runs the first run through the API; returns the TOTP secret and recovery codes. */
 	firstRun: () => Promise<Admin>;
 	/** Runs SQL against the server's database (tests expire or revoke sessions this way). */
-	sql: (statement: string, ...params: (string | number)[]) => void;
+	sql: (statement: string, ...params: (string | number | null)[]) => void;
+	/** Reads rows from the server's database (seeded rows, deploy status). */
+	query: <T = Record<string, unknown>>(statement: string, ...params: (string | number | null)[]) => T[];
+	/** The install id (meta.install_id): the label every container of this server carries. */
+	installId: () => string;
 	stop: () => Promise<void>;
 };
 
-/** Starts the real binary (-tags spa) on free high ports with a temp data directory. */
-export async function startServer(fixed?: { https: number }): Promise<TestServer> {
+/** The machine's Docker socket, for the tests that deploy for real (they need Docker and the local registry). */
+export const DOCKER_SOCKET = process.env.E2E_DOCKER_SOCKET ?? '/var/run/docker.sock';
+/** The test app image the e2e job pushes to its local registry (see .github/workflows/ci.yml). */
+export const TEST_APP_IMAGE = process.env.SD_TEST_APP_IMAGE ?? '127.0.0.1:5000/sd-testapp:1';
+
+export type ServerOptions = {
+	https?: number;
+	/** A Docker socket path. Default: one that does not exist (no Docker). Use DOCKER_SOCKET to deploy for real. */
+	dockerSocket?: string;
+	/** --allow-loopback-registry: image references may name the local registry (127.0.0.1:5000), as in the integration tests. */
+	allowLoopbackRegistry?: boolean;
+	/** --app-subnet. Default with a real Docker socket: a /24 in 10.233.0.0/16 derived from the worker's parallelIndex, so servers started side by side never share a subnet. */
+	appSubnet?: string;
+};
+
+/**
+ * Starts the real binary (-tags spa) on free high ports with a temp data directory.
+ *
+ * The server creates its Docker app network at start (network_ensure), and every
+ * test server has a fresh data directory, so a fresh install id and network name.
+ * Against the machine's real Docker that would create (and leak) a bridge network
+ * per server, and a changed host interface makes Chromium abort navigations in
+ * flight (net::ERR_NETWORK_CHANGED). So the server gets a Docker socket that does
+ * not exist, unless a test opts in with `dockerSocket`.
+ */
+export async function startServer(fixed?: ServerOptions): Promise<TestServer> {
 	const bin = resolve(process.env.SERVERDOCK_BIN ?? '../bin/serverdock');
 	const v = spawnSync(bin, ['version'], { encoding: 'utf8' });
 	if (v.status !== 0 || !v.stdout.includes('ui=spa')) {
@@ -66,11 +94,30 @@ export async function startServer(fixed?: { https: number }): Promise<TestServer
 	const dir = mkdtempSync(join(tmpdir(), 'sdpw-'));
 	const data = join(dir, 'data');
 	const baseURL = `https://127.0.0.1:${https}`;
-	const child: ChildProcess = spawn(
+	const realDocker = fixed?.dockerSocket !== undefined && !fixed.dockerSocket.endsWith('no-docker.sock');
+	const subnet = fixed?.appSubnet ?? (realDocker ? nextSubnet() : undefined);
+	const child = spawnBound(
 		bin,
-		['server', '--data', data, '--control-socket', join(dir, 'c.sock'), '--listen', `127.0.0.1:${http}`, '--https-listen', `127.0.0.1:${https}`],
+		[
+			'server',
+			'--data',
+			data,
+			'--control-socket',
+			join(dir, 'c.sock'),
+			'--listen',
+			`127.0.0.1:${http}`,
+			'--https-listen',
+			`127.0.0.1:${https}`,
+			'--docker-socket',
+			fixed?.dockerSocket ?? join(dir, 'no-docker.sock'),
+			...(fixed?.allowLoopbackRegistry ? ['--allow-loopback-registry'] : []),
+			...(subnet ? ['--app-subnet', subnet] : [])
+		],
 		{ stdio: ['ignore', 'ignore', 'pipe'] }
 	);
+	spawned.add(child);
+	if (realDocker) dockerOrigins.add(baseURL);
+	child.once('exit', () => spawned.delete(child));
 	let log = '';
 	child.stderr?.on('data', (d) => (log += d));
 	const api = await request.newContext({ baseURL, ignoreHTTPSErrors: true, extraHTTPHeaders: { Origin: baseURL } });
@@ -78,6 +125,8 @@ export async function startServer(fixed?: { https: number }): Promise<TestServer
 		await api.dispose();
 		child.kill('SIGTERM');
 		await new Promise((r) => (child.exitCode !== null ? r(null) : child.once('exit', r)));
+		dockerOrigins.delete(baseURL);
+		if (realDocker) removeDockerLeftovers(join(data, 'serverdock.db'), fixed!.dockerSocket!);
 		rmSync(dir, { recursive: true, force: true });
 	};
 	let ready = false;
@@ -108,6 +157,23 @@ export async function startServer(fixed?: { https: number }): Promise<TestServer
 				db.close();
 			}
 		},
+		query<T>(statement: string, ...params: (string | number | null)[]) {
+			const db = new DatabaseSync(join(data, 'serverdock.db'), { readOnly: true });
+			try {
+				db.exec('PRAGMA busy_timeout = 5000');
+				return db.prepare(statement).all(...params) as T[];
+			} finally {
+				db.close();
+			}
+		},
+		installId() {
+			const db = new DatabaseSync(join(data, 'serverdock.db'), { readOnly: true });
+			try {
+				return (db.prepare("SELECT value FROM meta WHERE key = 'install_id'").get() as { value: string }).value;
+			} finally {
+				db.close();
+			}
+		},
 		async firstRun() {
 			const token = readFileSync(tokenFile, 'utf8').trim();
 			const enroll = await api.post('/api/v1/setup/enroll', { data: { token, username: 'admin' } });
@@ -134,4 +200,85 @@ export async function signInWithRecoveryCode(server: TestServer, code: string) {
 	const state = await ctx.storageState();
 	await ctx.dispose();
 	return state;
+}
+
+/**
+ * Removes what a real-Docker test server left behind: its containers (by the
+ * serverdock.instance label) and its app network (serverdock-<first 8 of the id>).
+ * A server's data directory is fresh, so these never belong to anything else.
+ */
+function removeDockerLeftovers(dbPath: string, socket: string) {
+	let id = '';
+	try {
+		const db = new DatabaseSync(dbPath, { readOnly: true });
+		try {
+			id = (db.prepare("SELECT value FROM meta WHERE key = 'install_id'").get() as { value: string } | undefined)?.value ?? '';
+		} finally {
+			db.close();
+		}
+	} catch {
+		return;
+	}
+	if (!/^[0-9a-f]{32}$/.test(id)) return;
+	const docker = (...args: string[]) => spawnSync('docker', ['-H', `unix://${socket}`, ...args], { encoding: 'utf8' });
+	for (const c of docker('ps', '-aq', '--filter', `label=serverdock.instance=${id}`).stdout.split(/\s+/).filter(Boolean)) docker('rm', '-f', '-v', c);
+	docker('network', 'rm', `serverdock-${id.slice(0, 8)}`);
+}
+
+/**
+ * A project name no other test server uses. Container names are Docker-wide
+ * (sd-<project>-<service>-d<deploy id>-a<attempt>), and the projects run servers side
+ * by side against one Docker, so tests that deploy for real must not share "default".
+ */
+export const uniqueProject = () => `pw${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+
+let subnetSeq = 0;
+/** A /24 of its own per worker (parallelIndex) and per server started in that worker, 10.233.<n>.0/24. */
+function nextSubnet(): string {
+	let worker = 0;
+	try {
+		worker = test.info().parallelIndex;
+	} catch {
+		/* outside a test (global setup): worker 0 */
+	}
+	return `10.233.${1 + ((worker * 10 + (subnetSeq++ % 10)) % 250)}.0/24`;
+}
+
+// ---- no server outlives the run --------------------------------------------------
+// Every server this process starts is remembered and killed when the process exits
+// normally; on Linux the server is also started under `setpriv --pdeathsig SIGKILL`, so
+// it dies with its parent even when a worker is killed on a timeout or crashes. A
+// sweep in the global teardown (sweepLeftovers) removes whatever is left in the temp
+// directory (servers, containers and networks by instance label).
+const spawned = new Set<ChildProcess>();
+const dockerOrigins = new Set<string>();
+/** True for a URL on a test server that was started with a real Docker socket. */
+export const isDockerServer = (url: string) => dockerOrigins.has(new URL(url).origin);
+process.on('exit', () => {
+	for (const c of spawned) c.kill('SIGKILL');
+});
+
+const TMP_PREFIX = 'sdpw-';
+
+function spawnBound(bin: string, args: string[], opts: Parameters<typeof spawn>[2]): ChildProcess {
+	if (process.platform === 'linux' && spawnSync('setpriv', ['--version']).status === 0) {
+		return spawn('setpriv', ['--pdeathsig', 'SIGKILL', bin, ...args], opts);
+	}
+	return spawn(bin, args, opts);
+}
+
+/**
+ * The global teardown: kills any test server still running from this machine's temp
+ * directory, removes the Docker containers and networks of every install id left in
+ * a data directory, and deletes the directories. Safe to run when nothing is left.
+ */
+export function sweepLeftovers() {
+	const root = tmpdir();
+	for (const name of readdirSync(root).filter((n) => n.startsWith(TMP_PREFIX))) {
+		const dir = join(root, name);
+		spawnSync('pkill', ['-KILL', '-f', `serverdock server --data ${dir}/`]);
+		const db = join(dir, 'data', 'serverdock.db');
+		if (existsSync(db)) removeDockerLeftovers(db, DOCKER_SOCKET);
+		rmSync(dir, { recursive: true, force: true });
+	}
 }

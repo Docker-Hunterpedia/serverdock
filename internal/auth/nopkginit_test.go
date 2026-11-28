@@ -14,7 +14,9 @@ import (
 // sync.Once helpers (which only wrap a func).
 func TestNoPackageLevelWorkInNewPackages(t *testing.T) {
 	allowedCalls := map[string]bool{"errors.New": true, "sync.OnceValue": true, "sync.OnceValues": true, "sync.OnceFunc": true}
-	dirs := []string{".", "../secretbox", "../datadir", "../api"}
+	// M3a step 4a adds the deploy packages: jobs, deploy, agentops (and policy, once
+	// step 5 creates it: a missing directory is skipped, never silently passed).
+	dirs := []string{".", "../secretbox", "../datadir", "../api", "../jobs", "../deploy", "../agentops", "../policy"}
 	fset := token.NewFileSet()
 	checked := 0
 	for _, dir := range dirs {
@@ -63,6 +65,11 @@ func TestNoPackageLevelWorkInNewPackages(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+	for _, must := range []string{"../jobs", "../deploy", "../agentops"} {
+		if files, _ := filepath.Glob(filepath.Join(must, "*.go")); len(files) == 0 {
+			t.Errorf("%s has no files: the package moved, update this list", must)
 		}
 	}
 	if checked < 5 {

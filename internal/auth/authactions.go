@@ -24,6 +24,10 @@ type ActionDeps struct {
 		Fail(key string, bypassFull bool) (time.Duration, bool)
 		Reset(key string)
 	}
+	// Jobs, when set, cancels the jobs a revoked session queued, in the same
+	// transaction that deletes the session (explicit auth.sessions_revoke only;
+	// signing out or expiry leaves them). The jobs scheduler implements it.
+	Jobs JobCanceller
 }
 
 // Errors of the auth actions.
@@ -352,11 +356,21 @@ func RegisterAuthActions(r *actions.Registry, s *Store, d ActionDeps) {
 				if c.Actor.SessionID() == "" {
 					return RevokedOut{}, errors.New("all_others needs to know which session is the caller's")
 				}
-				n, err := s.RevokeOtherSessions(ctx, uid, c.Actor.SessionID())
-				return RevokedOut{Revoked: n}, err
+				ids, after, err := s.RevokeOtherSessionsAndJobs(ctx, uid, c.Actor.SessionID(), d.Jobs)
+				if err != nil {
+					return RevokedOut{}, err
+				}
+				if after != nil {
+					after()
+				}
+				return RevokedOut{Revoked: int64(len(ids))}, nil
 			}
-			if err := s.RevokeSessionByPublicID(ctx, uid, in.PublicID); err != nil {
+			after, err := s.RevokeSessionAndJobs(ctx, uid, in.PublicID, d.Jobs)
+			if err != nil {
 				return RevokedOut{}, err
+			}
+			if after != nil {
+				after()
 			}
 			return RevokedOut{Revoked: 1}, nil
 		},

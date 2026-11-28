@@ -38,6 +38,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    - Allocations are a review rule; only the ADR 0008 gates fail CI.
 3. **Background-work inventory.** `docs/architecture.md` gets a "Background work" table that lists every goroutine that wakes up on a timer, with its interval and why it exists. Any PR that adds a timer adds a row, and `footprint` checks the table.
    - No fixed-interval polling below 15 s.
+   - **Written exception (plan 0004 step 6, replaced in step 6b by Revision 11; `footprint` signed): Caddy's upstream-health metrics ticker (10 s).** Caddy starts one `metricsUpstreamsHealthyUpdater` goroutine per `reverse_proxy` handler, unconditionally; it is not configurable and only sets an in-memory gauge (the panel's own has run since M1). ServerDock adds **exactly one extra 10 s Caddy metrics ticker once at least one public port exists, not rebuilt on a switch** (it is torn down and recreated only by a reload, that is a port-set change; with no public port there is no app server and no app ticker). All app ports share one Caddy server and one `reverse_proxy` handler, so the count does not grow with the number of services. `TestOneTickerForAllAppRoutes` counts it.
    - **All scheduled work (jobs due later, cron schedules, daily housekeeping) shares ONE "next due" timer in the job scheduler** (introduced in M3a, extended with cron in M6). Daily tasks are recurring jobs on it, not separate timers.
 
    | What | Where | Interval | When it runs | Milestone |
@@ -47,7 +48,7 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
    | Reconnect backoff timer | `internal/agent/client.go` `sleepCtx` (line 77) | 1 s → 30 s, jitter | only while a remote agent is disconnected | Phase 0 |
    | Hub cert renewal back-off | `internal/pki` | ≥ 1 min | only after a failed renewal; checked lazily on handshake, no goroutine | M1 |
    | Job scheduler "next due" timer | `internal/jobs` | next due time | one timer for all scheduled work | M3a |
-   | Docker events reconnect backoff | `internal/agent/dockerapi` | 1 s → 30 s | only while the events stream is down | M3a |
+   | Docker events reconnect backoff | `internal/deploy` (`Reconciler.Run`; built in the control plane, not in `dockerapi`) | 1 s → 30 s, jittered | only while the events stream is down | M3a |
    | Caddy/certmagic maintenance (`(*certmagic.Cache).maintainAssets`) and events | embedded Caddy | 10 min renew check, 1 h OCSP check (certmagic defaults) | whenever the proxy runs, in **server and agent mode** (`caddyhttp` provisions the `tls` app); certificate expiry alerts use these, not our own timer | running since M1 (S2 and S4); confirmed by a goroutine dump in M2 step 3 |
    | BuildKit idle stop | `internal/build` | 5 min | only while the BuildKit container runs | M5 |
    | Webhook replay-cache expiry | `internal/api` | none (lazy on insert) | no timer | M5 |
@@ -69,17 +70,17 @@ A solo developer can replace Coolify or Dokploy with ServerDock on one 1 GB VPS.
 8. **ADRs.** Lasting decisions get an ADR in the milestone that makes them:
    - 0009 agent channel (M1);
    - 0010 panel access (M2);
-   - 0011 Docker client (M3a);
-   - 0012 builds (M5);
-   - 0013 Compose (M6);
-   - 0014 backups (M6);
-   - 0015 install shape (M7a);
-   - 0016 release signing (M7a);
-   - 0017 self-update handover (M7b).
+   - 0012 Docker client (M3a);
+   - 0013 builds (M5);
+   - 0014 Compose (M6);
+   - 0015 backups (M6);
+   - 0016 install shape (M7a);
+   - 0017 release signing (M7a);
+   - 0018 self-update handover (M7b).
 9. **Remote agents are read-only until Phase 2.**
    - Open item #3 (no per-agent identity) stays open through Phase 1, so anyone with the shared token could claim an agent id.
    - Every agent op is declared `LocalOnly` unless it is a read with no secrets. **The hub refuses to send a `LocalOnly` op to any session other than the in-process local agent** (`hub.LocalID`, reachable only through the in-memory pipe).
-   - All write and secret-bearing ops (deploys, env, backups) are `LocalOnly`. Remote agents get only `logs` (bench and spike use).
+   - All write and secret-bearing ops (deploys, env, backups) are `LocalOnly`. Remote agents get only `hello` (the read-only version handshake, no secrets, result at most 256 bytes) and `logs` (bench and spike use). The remote allowlist is `{hello, logs}`; the negotiated protocol version never widens it, and `serverdock agent` (remote mode) builds its handler table from `RemoteOK` ops only (ADR 0012).
 10. **One outbound-URL policy** (`internal/netpolicy`, first used in M5; then S3 in M6 and notifications in M8). Any user-supplied URL ServerDock fetches must meet these rules:
     - **https only**, unless the admin explicitly opts in to a local http endpoint.
     - **Blocked by default:**
@@ -250,6 +251,7 @@ Full step plan in **Part B**.
 
 ## M3a — Deploy from image, safely
 
+- **Status (2026-11-27):** built on `phase-1-m3a`; the detailed plan is [plan 0004](0004-m3a-deploy-from-image.md), steps 1–14 done and reviewed (Revisions 5–20), step 15 "Record and close" in progress. `security` approved the close-out and ADR 0012 is accepted. **Open:** the maintainer's manual screen-reader pass for steps 12–14 ([checklist](../accessibility/m3a-screen-reader-checklist.md)), the maintainer's item "Confirm vision, features, architecture" (still unticked in the roadmap), and the release measurements (the CI "S2 live watcher" number, S2 with one and ten exposed services, full S4, RSS after a deploy, the reload cases with 100 routes), all PENDING in [research 05](../research/05-phase0-measurements.md#m3a-release-measurements-step-15). The interrupt rule below was amended in step 15 (the commit point is authoritative).
 - **Goal:** deploy a public image with blue-green or stop-first, a health gate and automatic rollback; one-click rollback; ServerDock never leaves the app down because of its own failure.
 - **Roadmap items:** deploy from image; blue-green, health gate, automatic and one-click rollback, auto-cancel superseded; stop-first; connection draining; logs of the last N deploys, live pull progress, restart and redeploy-without-rebuild.
 - **Packages:** `internal/jobs`, `internal/deploy` (new), `internal/agent` (op protocol v1), `internal/agent/dockerapi` (containers, images, events), `internal/agent/proxy`, `internal/store`, `web/`.
@@ -258,7 +260,7 @@ Full step plan in **Part B**.
     - One yamux stream per op: request line → progress lines → one result line, with a `hello` handshake that carries the protocol version.
     - All deploy ops are `LocalOnly` (rule 9).
     - Plan 0004 must cap line and progress sizes and treat agent output as untrusted.
-  - **Docker client → ADR 0011:** keep the hand-rolled typed `dockerapi` with M1's per-call deadlines.
+  - **Docker client → ADR 0012:** keep the hand-rolled typed `dockerapi` with M1's per-call deadlines.
   - **Jobs and scheduler.** Jobs carry a lock key, state, attempts, a cancel flag, a timeout and a payload. The scheduler has one "next due" timer plus a channel notify (rule 3).
   - **Jobs never turn a user action into a system action.**
     - A job records **the actor that queued it**.
@@ -278,7 +280,10 @@ Full step plan in **Part B**.
 
       **The old container is stopped only after the commit.**
     - **Steps 3–4 cannot be cancelled.** A supersede that arrives during the health gate is treated as an unhealthy result: the candidate is removed and the newer deploy proceeds.
-    - **Interrupts:** on boot, any `running` deploy from an older `boot_id` is **rolled back**: containers labelled with its deploy + attempt are removed, routes follow `active_deploy_id`, and the deploy is marked `failed (interrupted by restart)`. There is no "resume".
+    - **Interrupts (amended in M3a step 15, ADR 0012 decision 7 and plan 0004 Revision 16: the commit point is authoritative):** on boot, a `running` deploy from an older `boot_id` is settled by whether it had **committed** (set `active_deploy_id`):
+      - **uncommitted:** **rolled back**: containers labelled with its deploy + attempt are removed, routes follow `active_deploy_id`, and the deploy is marked `failed (interrupted by restart)`; for an uncommitted **stop-first** deploy the resync removes the candidate first and then starts the previous version again (two versions never run);
+      - **committed:** **finished, not rolled back**: it is marked `succeeded`, the new version keeps serving and the old container is removed (its log tail is kept when possible);
+      - the boot pass changes only database state; one resync rule set, run after every successful events connection, does all container clean-up. There is no "resume".
     - **Idempotency:** container names include deploy + attempt (`sd-<project>-<service>-d<deploy>-a<attempt>`), so a repeated create gets Docker's 409 and is treated as "already exists" after an inspect check.
     - **Pulls** get a job deadline and a stall timeout (no progress for N seconds → fail).
     - **Caddy routes are generated from DB desired state starting here** (the active deploys' upstreams), never patched in place.
@@ -294,7 +299,7 @@ Full step plan in **Part B**.
   - unit: state machine, commit order, a supersede during the health gate, name-collision handling;
   - integration:
     - an unhealthy candidate — the old version keeps serving with zero non-2xx responses;
-    - kill -9 at each stage, then restart — rolled back and marked interrupted, and the app is reachable;
+    - kill -9 at each stage, then restart — an uncommitted deploy is rolled back and marked interrupted, a committed one is finished (`succeeded`, old container removed), and the app is reachable; each run records the outage (research 05);
     - **the Docker daemon restarts — the app is reachable again through regenerated upstreams**;
     - an events-stream drop triggers a resync;
     - a stalled pull fails;
@@ -366,7 +371,7 @@ Full step plan in **Part B**.
 - **Goal:** GitHub push-to-deploy of Dockerfile apps with live progress and commit status; builds can't OOM the server.
 - **Roadmap items:** deploy from Dockerfile (git); GitHub push-to-deploy + generic webhook, commit status; local builds with cgroup caps; size-capped BuildKit cache; build concurrency; live build progress.
 - **Packages:** `internal/build`, `internal/sources/github`, `internal/netpolicy` (new), `internal/api` (webhooks), `internal/deploy`, `web/`.
-- **Key decisions (ADR 0012, advisor A2):**
+- **Key decisions (ADR 0013, advisor A2):**
   - Recommended: on-demand pinned `moby/buildkit` container with caps and a GC-capped cache. It is **stopped after 5 min idle**, and that timer runs only while BuildKit runs.
   - `buildctl` is run through Docker exec with argv, and BuildKit fetches git itself.
   - Output goes to `POST /images/load` with its own deadline.
@@ -403,7 +408,7 @@ Full step plan in **Part B**.
 - **Roadmap items:** deploy Compose (policy-checked); Postgres/MySQL/Redis + scheduled S3 backups + restore.
 - **Packages:** `internal/compose`, `internal/databases`, `internal/backup` (new), `internal/jobs` (cron with explicit timezone, daily housekeeping job), `internal/netpolicy` (S3), `web/`.
 - **Key decisions:**
-  - **Compose → ADR 0013:** compose-go v2, our policy, our orchestrator; unsupported fields are rejected with a list. A footprint row is needed, probably with a full S4 run.
+  - **Compose → ADR 0014:** compose-go v2, our policy, our orchestrator; unsupported fields are rejected with a list. A footprint row is needed, probably with a full S4 run.
   - **Plan 0008 must require:**
     - interpolation **never reads the process environment** (only the service's own variables);
     - **no remote `include`/`extends`**;
@@ -420,7 +425,7 @@ Full step plan in **Part B**.
       - external networks and volumes;
     - user-supplied `serverdock.*` labels rejected.
   - **Databases:** pinned images, credentials as secrets, no published ports, stop-first.
-  - **Backups → ADR 0014:**
+  - **Backups → ADR 0015:**
     - argv dumps → compression → chunked AES-GCM (per-backup key wrapped by the master key) → S3 multipart, with S3 endpoints checked by netpolicy;
     - `DATA/backups/` is 0700 and backup files are 0600;
     - restore: typed confirmation, fresh 2FA, a pre-restore dump.
@@ -444,15 +449,15 @@ Full step plan in **Part B**.
 - **Roadmap items:** install script with pre-flight; signed releases + `serverdock bench` per release; `uninstall`, `start/stop/status`, `doctor --bundle`; supported Docker range published.
 - **Packages:** `install.sh`, `cmd/serverdock`, `.github/workflows/release.yml`, `web/` (onboarding server checks).
 - **Key decisions:**
-  - **Install shape → ADR 0015 (Q4).** Recommended:
+  - **Install shape → ADR 0016 (Q4).** Recommended:
     - systemd, a dedicated `serverdock` user in the `docker` group, `CAP_NET_BIND_SERVICE`.
-    - **The binary lives in a directory the service user can write (`/var/lib/serverdock/bin/`)** so self-update can swap it. ADR 0015 records that this costs nothing extra, since the docker group is already root-equivalent.
+    - **The binary lives in a directory the service user can write (`/var/lib/serverdock/bin/`)** so self-update can swap it. ADR 0016 records that this costs nothing extra, since the docker group is already root-equivalent.
     - Plan 0009 must harden the unit (`NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths=` the data dir, `PrivateTmp`, `Restart=always`) and check that each setting works with Docker socket access.
     - The unit uses **`Type=notify`**: the server sends `READY=1` (stdlib `sd_notify` over `NOTIFY_SOCKET`, about 20 lines) only after its own health check passes. M7b relies on this.
   - **Pre-flight** enforces the minimum Docker version (Q7) and offers, after asking, to install Docker from Docker's official repository.
-  - **Signing → ADR 0016.**
+  - **Signing → ADR 0017.**
     - Each artifact gets a signed manifest that **binds version, OS/arch, file name and SHA-256**.
-    - The binary embeds **a key set (current + next)**. ADR 0016 documents rotation (sign with the next key, ship a new next key, retire the old one).
+    - The binary embeds **a key set (current + next)**. ADR 0017 documents rotation (sign with the next key, ship a new next key, retire the old one).
     - Verification uses stdlib `crypto/ecdsa`.
     - Where the key lives is Q5. **If CI signs, it does so only in a protected `release` environment** (required reviewer, tag-only trigger, never `pull_request_target`).
   - **`install.sh` refuses to install when it can't verify the signature** (for example when `openssl` is missing), unless `--no-verify` is passed, in which case it prints a warning.
@@ -493,7 +498,7 @@ Full step plan in **Part B**.
   - Because of this, **scheduled daily** archives (a task of the M6 housekeeping job, when a target is configured) run unattended.
   - Free-space check first; files 0600.
   - **This is separate from the local rollback snapshot.** Before an update, the old process also takes an online `VACUUM INTO` **snapshot** into `DATA/backups/` (0600, same trust as the live DB, not encrypted). Rollback uses it without a passphrase.
-- **Self-update → ADR 0017 (A3 closed: option b, restart).** SO_REUSEPORT overlap is ruled out: the data-dir flock, the SQLite single writer and the in-process Caddy can't run twice. Apps keep running in Docker; the proxy is down for a few seconds during the restart, and the UI says so beforehand.
+- **Self-update → ADR 0018 (A3 closed: option b, restart).** SO_REUSEPORT overlap is ruled out: the data-dir flock, the SQLite single writer and the in-process Caddy can't run twice. Apps keep running in Docker; the proxy is down for a few seconds during the restart, and the UI says so beforehand.
 
   Plan 0010 must implement this trial boot.
 
@@ -798,7 +803,7 @@ ECDSA because Ed25519 certificates have weak support in TLS clients. The CA fing
 
 **Local-only ops (rule 9).**
 - The agent protocol keeps a table of op specs `{Name, RemoteOK}`; the zero value is local-only.
-- `logs` is the only op with `RemoteOK`.
+- `hello` and `logs` are the only ops with `RemoteOK` (ADR 0012; `hello` was added in M3a step 1).
 - `Session.open(name)` in the hub looks the op up in the table, refuses unknown names, and refuses non-`RemoteOK` ops unless `s.ID == LocalID`.
 - `LocalID` is reserved, and only `runServer` attaches it, over the in-memory pipe.
 - M3a and later add ops without `RemoteOK`, so they are local-only by default. A test that iterates the spec table fails if an op not on the read-only allowlist is marked `RemoteOK`.
@@ -1197,7 +1202,7 @@ Panics are recovered and recorded as an `error` outcome.
    - (b) CI signing **only** in a protected `release` environment (required reviewer, tag-only trigger), with the key in a cloud KMS or an environment-scoped secret.
 
    Either way, the binary embeds the current and next public keys.
-6. **Q6 — Dogfood, VPS and docs hosting** *(before M7a, because the first VPS bench is its exit)*. Which of our apps, which 1 GB VPS provider, and which subdomain for the docs site?
+6. **Q6 — Dogfood, VPS and docs hosting** *(before M7a, because the first VPS bench is its exit)*. Which of our apps, which 1 GB VPS provider, and which subdomain for the docs site? **Partial answer (maintainer, 2026-11-22): the M7a VPS bench runs on the maintainer's test server (Hetzner, Ubuntu 24.04, 2 vCPU, 3.8 GiB RAM).** It is not a 1 GB machine: the bench already caps the measured container at `--memory 1g --cpus 1`, and the research/06 entry must say the host is larger than 1 GB (so host-level free memory and swap pressure are not the 1 GB case). A true 1 GB VPS stays required for the M9 final run unless the maintainer decides otherwise. Dogfood apps and docs subdomain: still open.
 7. **Q7 — Minimum Docker version** *(before M1 step 4)*.
    - Engine 25 / API 1.44 excludes Debian 12's `docker.io` (20.10).
    - **Recommendation:** require 25+. Pre-flight explains why and offers (after asking) to install from Docker's official repository.
@@ -1208,8 +1213,8 @@ Panics are recovered and recorded as an `error` outcome.
 ## Decisions that need advisor input
 
 - **A1 — S4 strategy** (Q3).
-- **A2 — Build and git-fetch strategy** (M5, ADR 0012): `buildctl` in an on-demand BuildKit container (recommended) vs. the BuildKit Go client vs. go-git.
-- **A3 — Self-update handover: closed.** Option (b), restart with a trial boot (ADR 0017, M7b), as `systems` required. SO_REUSEPORT is ruled out by the flock, the single writer and the in-process Caddy.
+- **A2 — Build and git-fetch strategy** (M5, ADR 0013): `buildctl` in an on-demand BuildKit container (recommended) vs. the BuildKit Go client vs. go-git.
+- **A3 — Self-update handover: closed.** Option (b), restart with a trial boot (ADR 0018, M7b), as `systems` required. SO_REUSEPORT is ruled out by the flock, the single writer and the in-process Caddy.
 
 ## Maintainer answers (2026-11-20)
 
@@ -1256,10 +1261,10 @@ Panics are recovered and recorded as an `error` outcome.
 | # | Item | Where it was fixed |
 |---|---|---|
 | R1 | "(rule 11)" pointed at a missing rule | M7b Security now cites `docs/security.md` rule 11 |
-| R2 | Handover gets its own ADR | ADR 0017 (rule 8 list, M7b, Part D A3) |
+| R2 | Handover gets its own ADR | ADR 0018 (rule 8 list, M7b, Part D A3) |
 | R3 | M1 budget arithmetic | Allocation table, M1 summary, Part B footprint: S2 47.6 + 1.4 = 49.0; S4 44.1 + 0.9 = 45.0 |
 | SYS1 | Rollback vs downgrade protection | M7b trial boot step 4 (binary + DB snapshot restored together, trial writes discarded); expand-only rule (step 7); test: migration + failed health check |
-| SYS2 | Close A3 as restart; trial boot | M7b (`update.json`, attempts, 3rd attempt/deadline rollback, old process takes the backup, defer during jobs, migration time excluded, `OnFailure=` unit for an early crash); Part D A3 closed; M7a binary in `/var/lib/serverdock/bin/`, noted in ADR 0015 |
+| SYS2 | Close A3 as restart; trial boot | M7b (`update.json`, attempts, 3rd attempt/deadline rollback, old process takes the backup, defer during jobs, migration time excluded, `OnFailure=` unit for an early crash); Part D A3 closed; M7a binary in `/var/lib/serverdock/bin/`, noted in ADR 0016 |
 | SYS3 | FK cascade on table rebuild | Part B › Store migration runner (pinned conn, FK off → check → on); step 7 test |
 | SYS4 | Pre-migrate backup safety | Part B › Store (`.tmp` + fsync + rename + dir fsync + `quick_check`, 2.2× + 64 MiB, `.tmp` wiped on boot); step 7 |
 | SYS5 | OpenReadOnly correctness | Part B › Store read-only open (no pragmas, never creates files, `immutable=1`, "v1 (unadopted)"); rehearse restore uses `immutable`; `doctor --bundle` uses it (M7a); steps 7–8 tests as a different uid |

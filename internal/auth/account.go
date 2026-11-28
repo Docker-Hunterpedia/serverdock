@@ -256,7 +256,22 @@ var ErrNoSuchSession = errors.New("auth: no such session")
 
 // RevokeSessionByPublicID deletes one of the user's sessions.
 func (s *Store) RevokeSessionByPublicID(ctx context.Context, userID int64, publicID string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	_, err := s.RevokeSessionAndJobs(ctx, userID, publicID, nil)
+	return err
+}
+
+// ErrRevokeNotApplied: the sessions were NOT revoked, because the jobs they queued
+// could not be cancelled in the same transaction (nothing changed; try again).
+var ErrRevokeNotApplied = errors.New("auth: the session was not revoked because its queued jobs could not be cancelled")
+
+// RevokeSessionAndJobs deletes one of the user's sessions and, in the same write
+// transaction, cancels the jobs it queued (jc may be nil). Either both happen or
+// neither does. The returned function (nil when there is nothing to do) closes
+// the in-memory cancel of running jobs; call it after the error check.
+func (s *Store) RevokeSessionAndJobs(ctx context.Context, userID int64, publicID string, jc JobCanceller) (func(), error) {
+	var after func()
+	err := s.write(ctx, func(tx *sql.Tx) error {
+		after = nil
 		res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND public_id = ?`, userID, publicID)
 		if err != nil {
 			return err
@@ -264,20 +279,69 @@ func (s *Store) RevokeSessionByPublicID(ctx context.Context, userID int64, publi
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNoSuchSession
 		}
-		return nil
+		after, err = s.cancelJobsTx(ctx, tx, jc, []string{publicID})
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return after, nil
 }
 
 // RevokeOtherSessions deletes every session of the user except the one with
-// keepPublicID, and returns how many.
-func (s *Store) RevokeOtherSessions(ctx context.Context, userID int64, keepPublicID string) (int64, error) {
-	var n int64
+// keepPublicID, and returns the public ids of the sessions it deleted.
+func (s *Store) RevokeOtherSessions(ctx context.Context, userID int64, keepPublicID string) ([]string, error) {
+	ids, _, err := s.RevokeOtherSessionsAndJobs(ctx, userID, keepPublicID, nil)
+	return ids, err
+}
+
+// RevokeOtherSessionsAndJobs is RevokeOtherSessions that also cancels the revoked
+// sessions' jobs in the same transaction (jc may be nil).
+func (s *Store) RevokeOtherSessionsAndJobs(ctx context.Context, userID int64, keepPublicID string, jc JobCanceller) ([]string, func(), error) {
+	var ids []string
+	var after func()
 	err := s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID)
-		if err == nil {
-			n, _ = res.RowsAffected()
+		ids, after = nil, nil // the transaction may be retried
+		rows, err := tx.QueryContext(ctx, `SELECT public_id FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID)
+		if err != nil {
+			return err
 		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND public_id != ?`, userID, keepPublicID); err != nil {
+			return err
+		}
+		after, err = s.cancelJobsTx(ctx, tx, jc, ids)
 		return err
 	})
-	return n, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return ids, after, nil
+}
+
+// cancelJobsTx runs the jobs cancel inside the revoke's transaction. A failure
+// rolls the revoke back and is reported as ErrRevokeNotApplied (the detail is
+// logged, never returned).
+func (s *Store) cancelJobsTx(ctx context.Context, tx *sql.Tx, jc JobCanceller, sessions []string) (func(), error) {
+	if jc == nil || len(sessions) == 0 {
+		return nil, nil
+	}
+	after, err := jc.CancelSessionJobsTx(ctx, tx, sessions, SessionRevokedJobReason)
+	if err != nil {
+		s.log.Error("revoke rolled back: the jobs of the sessions could not be cancelled", "err", err.Error())
+		return nil, ErrRevokeNotApplied
+	}
+	return after, nil
 }

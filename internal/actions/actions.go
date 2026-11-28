@@ -100,10 +100,20 @@ type Def[In Validator, Out any] struct {
 	// would be worse than a gap in the log.
 	RemovesAccess bool
 	// ConsoleOnly actions are denied to every actor except the SystemInvoker
-	// (`serverdock admin reset`: the operator at the console, as the data owner,
-	// with the server stopped). REST answers 404 for them and OpenAPI omits them.
-	// Register panics if ConsoleOnly is set without a System reason.
+	// running them as the system actor via Invoke: `serverdock admin reset` (the
+	// operator at the console, as the data owner, with the server stopped) and the
+	// reconciler's own actions (plan 0004). A ConsoleOnly action is not an HTTP
+	// action at all: REST answers 404 for it and OpenAPI omits it. Register panics
+	// if ConsoleOnly is set without a System reason.
 	ConsoleOnly bool
+	// JobOnly actions (jobs.run_deploy and the like) can be invoked only by the
+	// job runner, through SystemInvoker.InvokeAs for the actor that queued the job:
+	// every other call is denied (REST, API tokens, MCP, the UI, and the
+	// SystemInvoker's own Invoke). REST answers 404 and OpenAPI omits them. Their
+	// policy is the queuing actor's: scope, token and fresh-2FA rules apply at run
+	// time. Register panics if JobOnly is combined with a System reason (a job
+	// never runs as the system actor), or with ConsoleOnly.
+	JobOnly bool
 	// WebhookAllowed lets a webhook actor run a mutate action on its bound target.
 	WebhookAllowed bool
 	Target         func(In) string
@@ -176,6 +186,7 @@ type action struct {
 	sensitive     bool
 	sessionOnly   bool
 	consoleOnly   bool
+	jobOnly       bool
 	removesAccess bool
 	system        string
 	webhookOK     bool
@@ -239,6 +250,10 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 		mustf("RemovesAccess is for mutate or destructive actions")
 	case d.ConsoleOnly && d.System == "":
 		mustf("a ConsoleOnly action needs a System reason (the SystemInvoker is the only actor that may run it)")
+	case d.JobOnly && d.System != "":
+		mustf("a JobOnly action cannot have a System reason (a job runs as the actor that queued it, never as the system)")
+	case d.JobOnly && d.ConsoleOnly:
+		mustf("JobOnly and ConsoleOnly exclude each other")
 	}
 	switch d.Risk {
 	case RiskRead:
@@ -273,7 +288,7 @@ func Register[In Validator, Out any](r *Registry, d Def[In, Out]) {
 	}
 
 	a := &action{name: d.Name, summary: d.Summary, risk: d.Risk, scope: d.Scope, sensitive: d.Sensitive,
-		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, removesAccess: d.RemovesAccess, system: d.System, webhookOK: d.WebhookAllowed, inType: inType, outType: reflect.TypeFor[Out]()}
+		sessionOnly: d.SessionOnly, consoleOnly: d.ConsoleOnly, jobOnly: d.JobOnly, removesAccess: d.RemovesAccess, system: d.System, webhookOK: d.WebhookAllowed, inType: inType, outType: reflect.TypeFor[Out]()}
 	a.prepare = func(raw []byte) (*prepared, error) {
 		var in In
 		if err := decodeStrict(raw, &in); err != nil {
@@ -431,6 +446,7 @@ type Info struct {
 	Sensitive     bool
 	SessionOnly   bool
 	ConsoleOnly   bool
+	JobOnly       bool
 	RemovesAccess bool
 	System        string
 	WebhookOK     bool
@@ -445,7 +461,7 @@ func (r *Registry) List() []Info {
 	out := make([]Info, 0, len(r.actions))
 	for _, a := range r.actions {
 		out = append(out, Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
-			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType})
+			SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, JobOnly: a.jobOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -458,7 +474,7 @@ func (r *Registry) Lookup(name string) (Info, bool) {
 		return Info{}, false
 	}
 	return Info{Name: a.name, Summary: a.summary, Risk: a.risk, Scope: a.scope, Sensitive: a.sensitive,
-		SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType}, true
+		SessionOnly: a.sessionOnly, ConsoleOnly: a.consoleOnly, JobOnly: a.jobOnly, RemovesAccess: a.removesAccess, System: a.system, WebhookOK: a.webhookOK, InputType: a.inType, OutputType: a.outType}, true
 }
 
 func (r *Registry) lookup(name string) (*action, error) {
@@ -502,7 +518,7 @@ func (r *Registry) prep(name string, raw json.RawMessage) (*action, *prepared, e
 }
 
 func (r *Registry) check(ctx context.Context, actor Actor, executor string, act *action, p *prepared, opts Options) error {
-	err := r.authorize(actor, act, p.target, opts)
+	err := r.authorize(actor, executor, act, p.target, opts)
 	if err == nil {
 		return nil
 	}

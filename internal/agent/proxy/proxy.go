@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -42,7 +45,47 @@ type Config struct {
 	// Listen address into a redirect-only HTTP server. The remote agent's proxy
 	// never sets it, so its config stays byte-identical.
 	Panel *Panel
+	// Apps are the exposed apps' routes, all in one Caddy server with one listen
+	// entry per public port (server mode only: they need Panel). Only the set of
+	// ports reaches the config; what each port answers is the Applier's table
+	// (app.go). The remote agent never sets it, so its config and the panel
+	// servers stay byte-identical.
+	Apps []AppRoute
 }
+
+// MaxApps bounds Apps (the service cap of plan 0004).
+const MaxApps = 100
+
+// Bodies of the static pages an app route can serve.
+const (
+	BodyNotRunning  = "This app is not running (ServerDock)\n"
+	BodyMaintenance = "Deploying, back in a moment\n"
+)
+
+// AppRoute is one exposed app: plain HTTP on :Port, either proxied to an
+// upstream or answered with a static page. Exactly one of Upstream and Static
+// is set.
+type AppRoute struct {
+	Port int
+	// Upstream is "ip:port": an IPv4 literal, never a name or a socket.
+	Upstream string
+	// Static is the page served when there is no upstream (the serverdock_app
+	// handler writes it; it never reaches the reverse_proxy).
+	Static *Static
+}
+
+// Static is a fixed response.
+type Static struct {
+	Status     int    // 400..599
+	Body       string // no placeholders ("{")
+	RetryAfter int    // seconds, 0 = no header
+}
+
+// NotRunning is the page for an app with no running container.
+func NotRunning() *Static { return &Static{Status: 503, Body: BodyNotRunning} }
+
+// Maintenance is the page served during a stop-first gap.
+func Maintenance() *Static { return &Static{Status: 503, Body: BodyMaintenance, RetryAfter: 10} }
 
 // Panel is the HTTPS panel part of the config (ADR 0010).
 type Panel struct {
@@ -95,6 +138,9 @@ func (c Config) validate() error {
 			return fmt.Errorf("proxy: the HTTP and HTTPS listen addresses are the same (%q)", c.Listen)
 		}
 	}
+	if err := c.validateApps(); err != nil {
+		return err
+	}
 	if sock, ok := strings.CutPrefix(c.Upstream, "unix/"); ok {
 		if !strings.HasPrefix(sock, "/") {
 			return fmt.Errorf("proxy: Upstream %q: a unix socket path must be absolute", c.Upstream)
@@ -105,6 +151,82 @@ func (c Config) validate() error {
 		return fmt.Errorf("proxy: Upstream %q: %w", c.Upstream, err)
 	}
 	return nil
+}
+
+func (c Config) validateApps() error {
+	if len(c.Apps) == 0 {
+		return nil
+	}
+	if c.Panel == nil {
+		return fmt.Errorf("proxy: app routes need the panel (server mode)")
+	}
+	if len(c.Apps) > MaxApps {
+		return fmt.Errorf("proxy: %d app routes (at most %d)", len(c.Apps), MaxApps)
+	}
+	own := map[int]bool{}
+	for _, addr := range []string{c.Listen, c.Panel.Listen} {
+		_, port, _ := net.SplitHostPort(addr)
+		p, _ := strconv.Atoi(port)
+		own[p] = true
+	}
+	seen := map[int]bool{}
+	for _, a := range c.Apps {
+		switch {
+		case a.Port < 1024 || a.Port > 65535:
+			return fmt.Errorf("proxy: app port %d is outside 1024..65535", a.Port)
+		case own[a.Port]:
+			return fmt.Errorf("proxy: app port %d is one of the panel's listen ports", a.Port)
+		case seen[a.Port]:
+			return fmt.Errorf("proxy: app port %d appears twice", a.Port)
+		}
+		seen[a.Port] = true
+		if (a.Upstream == "") == (a.Static == nil) {
+			return fmt.Errorf("proxy: app port %d needs exactly one of an upstream and a static page", a.Port)
+		}
+		if a.Static != nil {
+			s := a.Static
+			if s.Status < 400 || s.Status > 599 || s.RetryAfter < 0 || s.RetryAfter > 3600 || len(s.Body) > 1024 || strings.Contains(s.Body, "{") {
+				return fmt.Errorf("proxy: app port %d: bad static page", a.Port)
+			}
+			continue
+		}
+		host, port, err := net.SplitHostPort(a.Upstream)
+		if err != nil {
+			return fmt.Errorf("proxy: app port %d: upstream: %w", a.Port, err)
+		}
+		ip, err := netip.ParseAddr(host)
+		if p, perr := strconv.Atoi(port); err != nil || !ip.Is4() || ip.String() != host || perr != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
+			return fmt.Errorf("proxy: app port %d: the upstream must be an IPv4 address and a port", a.Port)
+		}
+	}
+	return nil
+}
+
+// appServer is the one Caddy server of every app route (plan 0004 step 6b):
+// plain HTTP on every public port (one listen entry each), HTTP/1.1 only (no
+// h2c, no HTTP/3, so no UDP), the panel's public limits. Its route is the
+// serverdock_app handler (static pages, and the sd_upstream variable for an
+// upstream) followed by the ONE reverse_proxy of all apps, which dials
+// {http.vars.sd_upstream}. Nothing else is configured on that reverse_proxy: no
+// passive health checks, no max_requests, no retries (lb_try_duration), no
+// dynamic_upstreams. The single upstream host entry is shared by every app, so
+// a failing app must never be able to mark it down or fill it for the others
+// (reverseproxy/hosts.go:93-103: health only counts failures when a health
+// policy exists, line 95; hosts.go:106-107: Full only with max_requests;
+// reverseproxy.go:1440-1442: tryAgain is false with no try duration and no
+// retries). Never follow HTTP_PROXY/HTTPS_PROXY from the environment: an app
+// route dials its container directly.
+func appServer(apps []AppRoute, limits func(m) m) m {
+	listen := make([]string, len(apps))
+	for i, a := range apps {
+		listen[i] = ":" + strconv.Itoa(a.Port)
+	}
+	proxy := reverseProxy(upstreamDial, m{"transport": m{"protocol": "http", "network_proxy": m{"from": "none"}}})
+	return limits(m{
+		"listen":    listen,
+		"routes":    []m{{"handle": []m{{"handler": appHandlerName}, proxy}}},
+		"protocols": []string{"h1"},
+	})
 }
 
 type m = map[string]any
@@ -193,6 +315,13 @@ func BuildConfig(c Config) ([]byte, error) {
 				}},
 			}),
 		}
+		servers := httpApp["servers"].(m)
+		apps := append([]AppRoute(nil), c.Apps...)
+		sort.Slice(apps, func(i, j int) bool { return apps[i].Port < apps[j].Port })
+		if len(apps) > 0 {
+			registerAppHandler()
+			servers["apps"] = appServer(apps, limits)
+		}
 		cfg["apps"].(m)["tls"] = m{
 			"certificates":          m{"load_files": []m{{"certificate": c.Panel.CertFile, "key": c.Panel.CertFile, "format": "pem"}}},
 			"disable_ocsp_stapling": true,
@@ -204,9 +333,18 @@ func BuildConfig(c Config) ([]byte, error) {
 	return json.Marshal(cfg)
 }
 
+// loadAttempts counts calls of Load. It exists only so tests can count load
+// attempts independently of Caddy's log writer (which is pooled per process and
+// so unreliable to count from); one atomic add per load, nothing else.
+var loadAttempts atomic.Int64
+
+// LoadAttempts is the number of times Load was called in this process (test use).
+func LoadAttempts() int64 { return loadAttempts.Load() }
+
 // Load builds and applies the config in-process. It can be called again with
 // a changed Config to reload live.
 func Load(c Config) error {
+	loadAttempts.Add(1)
 	b, err := BuildConfig(c)
 	if err != nil {
 		return err

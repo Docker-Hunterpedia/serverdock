@@ -55,7 +55,9 @@ func Bin(t testing.TB) string {
 		if buildErr = os.Chmod(buildDir, 0o755); buildErr != nil {
 			return
 		}
-		cmd := exec.Command("go", "build", "-trimpath", "-o", filepath.Join(buildDir, "serverdock"), "./cmd/serverdock")
+		// -tags testhooks compiles the deploy runner's pause points (SERVERDOCK_TESTHOOK_*)
+		// into this binary and no other: a shipped build has none (plan 0004 step 8a).
+		cmd := exec.Command("go", "build", "-trimpath", "-tags", "testhooks", "-o", filepath.Join(buildDir, "serverdock"), "./cmd/serverdock")
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -108,7 +110,14 @@ type Options struct {
 
 func (o Options) command(t testing.TB) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(Bin(t), o.Args...)
+	args := o.Args
+	if len(args) > 0 && args[0] == "server" && !hasFlag(args, "--docker-socket") {
+		// The server creates the app network in Docker at start (network_ensure):
+		// a test binary must never do that on the machine's real Docker, so it gets
+		// a socket that does not exist unless the test names one.
+		args = append(append([]string(nil), args...), "--docker-socket", "/nonexistent/serverdock-test-docker.sock")
+	}
+	cmd := exec.Command(Bin(t), args...)
 	cmd.Env = append(os.Environ(), o.Env...)
 	if o.Uid != 0 {
 		if os.Geteuid() != 0 {
@@ -280,4 +289,14 @@ func FreeAddr(t testing.TB) string {
 	}
 	defer ln.Close()
 	return ln.Addr().String()
+}
+
+// hasFlag reports whether args names the flag (as "--name" or "--name=value").
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
 }

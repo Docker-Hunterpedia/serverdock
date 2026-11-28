@@ -65,6 +65,11 @@ func check(dir string, st fs.FileInfo, euid int) error {
 // SecretPaths lists, relative to DATA, everything that holds a secret. Backup
 // bundles and the support bundle must treat exactly this list as secret
 // (docs/plans/0003, G6). A directory entry ends in "/".
+//
+// It holds ServerDock's own secrets only. deploy-logs/ is deliberately not on it:
+// the logs hold sensitive container output (plan 0004 step 11; files 0600, 0700
+// directories), but they are not ServerDock's secrets, and the support bundle of
+// plan 0009 must exclude them by name.
 func SecretPaths() []string {
 	return []string{"keys/", "pki/", "setup-token", "agent.token", "backups/"}
 }
