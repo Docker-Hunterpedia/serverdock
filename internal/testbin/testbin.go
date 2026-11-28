@@ -280,15 +280,53 @@ func ShortDir(t testing.TB) string {
 	return d
 }
 
-// FreeAddr returns a loopback TCP address that was free a moment ago.
-func FreeAddr(t testing.TB) string {
+// ReserveAddrs returns n distinct loopback TCP addresses and keeps their listeners
+// open, so no two of them (and nothing else on the machine) can take the same port
+// until release is called. Call release just before starting the server that will
+// bind them; it is safe to call more than once and also runs at test cleanup.
+//
+// (A helper that picked one free port per call could hand the same port twice,
+// because each call would close its listener before returning.)
+func ReserveAddrs(t testing.TB, n int) (addrs []string, release func()) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var lns []net.Listener
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			for _, ln := range lns {
+				ln.Close()
+			}
+		})
 	}
-	defer ln.Close()
-	return ln.Addr().String()
+	t.Cleanup(release)
+	seen := map[string]bool{}
+	for len(addrs) < n {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			release()
+			t.Fatal(err)
+		}
+		a := ln.Addr().String()
+		if seen[a] { // cannot happen while the first listener is open; refuse rather than hand out a duplicate
+			ln.Close()
+			release()
+			t.Fatalf("testbin: the same address %s was reserved twice", a)
+		}
+		seen[a] = true
+		lns = append(lns, ln)
+		addrs = append(addrs, a)
+	}
+	return addrs, release
+}
+
+// FreeAddrs returns n distinct loopback TCP addresses that were free a moment ago
+// (all reserved together, then released). Prefer ReserveAddrs when the gap before
+// the server binds them matters.
+func FreeAddrs(t testing.TB, n int) []string {
+	t.Helper()
+	addrs, release := ReserveAddrs(t, n)
+	release()
+	return addrs
 }
 
 // hasFlag reports whether args names the flag (as "--name" or "--name=value").

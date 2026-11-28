@@ -232,9 +232,10 @@ func TestSecretsNeverLeak(t *testing.T) {
 	}
 	base := testbin.ShortDir(t)
 	data := filepath.Join(base, "data")
-	httpsAddr := testbin.FreeAddr(t)
+	ports := testbin.FreeAddrs(t, 2)
+	httpsAddr := ports[1]
 	p := testbin.Start(t, testbin.Options{
-		Args: []string{"server", "--data", data, "--control-socket", filepath.Join(base, "c.sock"), "--listen", testbin.FreeAddr(t), "--https-listen", httpsAddr, "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"},
+		Args: []string{"server", "--data", data, "--control-socket", filepath.Join(base, "c.sock"), "--listen", ports[0], "--https-listen", httpsAddr, "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"},
 		Env:  []string{"SERVERDOCK_TEST_PROXY_LOG_LEVEL=DEBUG"},
 	})
 	for _, w := range []string{"control plane listening", "proxy listening"} {

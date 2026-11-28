@@ -133,8 +133,9 @@ func TestUmaskKeepsNewFilesPrivate(t *testing.T) {
 		t.Skip("builds the binary")
 	}
 	data := filepath.Join(testbin.ShortDir(t), "data") // does not exist yet: Prepare creates it
+	ports := testbin.FreeAddrs(t, 2)
 	p := testbin.Start(t, testbin.Options{Args: []string{"server", "--data", data, "--control-socket", filepath.Join(testbin.ShortDir(t), "c.sock"),
-		"--listen", testbin.FreeAddr(t), "--https-listen", testbin.FreeAddr(t), "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"}})
+		"--listen", ports[0], "--https-listen", ports[1], "--agent-listen", "127.0.0.1:0", "--agent-san", "127.0.0.1"}})
 	if err := p.WaitLog("control plane listening", 30*time.Second); err != nil {
 		t.Fatal(err)
 	}

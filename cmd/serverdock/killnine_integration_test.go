@@ -92,23 +92,26 @@ func runKillSuite(t *testing.T, strategy string, stages []killStage) {
 // ---- one scenario ----
 
 type killRig struct {
-	t        *testing.T
-	data     string
-	sock     string
-	listen   string
-	https    string
-	subnet   string
-	port     int
-	instance string
-	svc      int64
-	image    string
-	project  string
-	strategy string
-	args     []string
+	t                         *testing.T
+	data                      string
+	sock                      string
+	listen                    string
+	https                     string
+	subnet                    string
+	port                      int
+	instance                  string
+	svc                       int64
+	image                     string
+	project                   string
+	strategy                  string
+	args                      []string
+	releaseServer, releaseApp func() // let go of the reserved ports
 }
 
 func (k *killRig) server(env ...string) *testbin.Proc {
 	k.t.Helper()
+	k.releaseServer()
+	k.releaseApp()
 	// Started with the most permissive umask: the files under deploy-logs/ must be
 	// private whatever umask the service is started with.
 	umaskMu.Lock()
@@ -131,9 +134,17 @@ func runKillScenario(t *testing.T, image, strategy string, st killStage) {
 	base := testbin.ShortDir(t)
 	k.data = filepath.Join(base, "data")
 	k.sock = filepath.Join(base, "cp.sock")
-	k.listen, k.https = testbin.FreeAddr(t), testbin.FreeAddr(t)
-	_, p, _ := net.SplitHostPort(testbin.FreeAddr(t))
+	// The server's two listeners and the app's public port are three distinct ports,
+	// held open until use. The server binds a seeded service's public port at start
+	// (an exposure is opened at boot, not at the deploy's switch), so all three are
+	// released together, just before the first server starts. Both reservations are
+	// open at the same time, so they cannot overlap.
+	srv, relSrv := testbin.ReserveAddrs(t, 2)
+	app, relApp := testbin.ReserveAddrs(t, 1)
+	k.listen, k.https = srv[0], srv[1]
+	_, p, _ := net.SplitHostPort(app[0])
 	k.port, _ = strconv.Atoi(p)
+	k.releaseServer, k.releaseApp = relSrv, relApp
 	n := int(killSubnet.Add(1))
 	k.subnet = fmt.Sprintf("10.%d.%d.0/24", 231, n)
 	k.project = fmt.Sprintf("kn%d", n) // container names are Docker-wide: a project name of its own per scenario

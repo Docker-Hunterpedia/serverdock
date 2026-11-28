@@ -38,6 +38,9 @@ const (
 	keyFile   = "master.key"
 )
 
+// lostKeyHint is the one recovery sentence every lost-or-wrong-key refusal ends with.
+const lostKeyHint = "Restore the key from a backup; `serverdock admin reset` clears the admin sign-in data, and with `--forget-app-secrets` also deletes the app environment variables and registry credentials the lost key protected"
+
 // ErrWrongKey is returned by Open when the ciphertext was sealed under a
 // different key than the one loaded.
 var ErrWrongKey = errors.New("secretbox: the ciphertext was sealed with a different key")
@@ -108,6 +111,13 @@ func (b *Box) KeyID() string { return hex.EncodeToString(b.keyID[:]) }
 // KeyIDMetaKey is the meta-table key that records the id of the master key.
 const KeyIDMetaKey = "secretbox_key_id"
 
+// CiphertextIDer is an optional part of Meta: it reports the key id in the header
+// of one existing ciphertext, so a key can be checked when no id is recorded.
+type CiphertextIDer interface {
+	// CiphertextKeyID returns the key id (hex) of one stored ciphertext, if any.
+	CiphertextKeyID(ctx context.Context) (id string, ok bool, err error)
+}
+
 // Meta stores the id of the master key next to the data it protects.
 type Meta interface {
 	// KeyID returns the recorded key id, if any.
@@ -125,7 +135,8 @@ func KeyPath(dataDir string) string { return filepath.Join(dataDir, keyDir, keyF
 //     false: a new random key is written (mode 0600 in a 0700 directory,
 //     atomically), its id is recorded through meta, and created is true.
 //   - Missing, but a key id is recorded or ciphertexts exist: refused. A new key
-//     would orphan them. `admin reset` clears the recorded id with the ciphertexts.
+//     would orphan them. `admin reset` clears the admin ciphertexts and the recorded
+//     id; with app ciphertexts it also needs --forget-app-secrets.
 //   - Present but unreadable, the wrong size, not a regular file, or readable by
 //     group or others: refused. The file is never replaced.
 //   - Present, and a recorded id differs from the key's: refused. (A key with no
@@ -154,9 +165,20 @@ func LoadOrCreate(ctx context.Context, dataDir string, meta Meta, ciphertextsExi
 			return nil, false, err
 		}
 		if haveRecorded && recorded != b.KeyID() {
-			return nil, false, fmt.Errorf("%s does not match the key this database was written with (key id %s, expected %s). Restore the right key from a backup, or run `serverdock admin reset` to clear the encrypted admin data", path, b.KeyID(), recorded)
+			return nil, false, fmt.Errorf("%s does not match the key this database was written with (key id %s, expected %s). %s", path, b.KeyID(), recorded, lostKeyHint)
 		}
 		if !haveRecorded && meta != nil {
+			// No recorded id (an earlier version left it): adopt the key only if
+			// it matches the ciphertexts that already exist.
+			if ci, ok := meta.(CiphertextIDer); ok {
+				id, have, err := ci.CiphertextKeyID(ctx)
+				if err != nil {
+					return nil, false, fmt.Errorf("secretbox: reading a ciphertext's key id: %w", err)
+				}
+				if have && id != b.KeyID() {
+					return nil, false, fmt.Errorf("%s does not match the key the stored ciphertexts were sealed with (key id %s, expected %s). %s", path, b.KeyID(), id, lostKeyHint)
+				}
+			}
 			if err := meta.SetKeyID(ctx, b.KeyID()); err != nil {
 				return nil, false, fmt.Errorf("secretbox: recording the key id: %w", err)
 			}
@@ -166,7 +188,7 @@ func LoadOrCreate(ctx context.Context, dataDir string, meta Meta, ciphertextsExi
 		return nil, false, fmt.Errorf("%s cannot be read: %w. It is never replaced automatically; see the docs (admin reset) if it is lost", path, err)
 	}
 	if haveRecorded {
-		return nil, false, fmt.Errorf("%s is missing but the database records its key (id %s). Restore the key from a backup, or run `serverdock admin reset` to clear the encrypted admin data", path, recorded)
+		return nil, false, fmt.Errorf("%s is missing but the database records its key (id %s). %s", path, recorded, lostKeyHint)
 	}
 	if ciphertextsExist != nil {
 		exist, err := ciphertextsExist()
@@ -174,7 +196,7 @@ func LoadOrCreate(ctx context.Context, dataDir string, meta Meta, ciphertextsExi
 			return nil, false, fmt.Errorf("secretbox: checking for encrypted data: %w", err)
 		}
 		if exist {
-			return nil, false, fmt.Errorf("%s is missing but encrypted data exists. Restore the key from a backup, or run `serverdock admin reset` to clear the encrypted admin data", path)
+			return nil, false, fmt.Errorf("%s is missing but encrypted data exists. %s", path, lostKeyHint)
 		}
 	}
 	key := make([]byte, keyLen)
@@ -209,6 +231,33 @@ func (m SQLMeta) KeyID(ctx context.Context) (string, bool, error) {
 		return "", false, nil
 	}
 	return v, err == nil, err
+}
+
+// CiphertextKeyID implements CiphertextIDer: the key id in the header (bytes 1 to
+// 4) of the first non-NULL ciphertext found in Columns().
+func (m SQLMeta) CiphertextKeyID(ctx context.Context) (string, bool, error) {
+	for _, c := range Columns() {
+		var n int
+		if err := m.R.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, c.Table).Scan(&n); err != nil {
+			return "", false, err
+		}
+		if n == 0 {
+			continue
+		}
+		var id sql.NullString
+		q := `SELECT lower(hex(substr("` + c.Column + `", 2, 4))) FROM "` + c.Table + `" WHERE "` + c.Column + `" IS NOT NULL AND length("` + c.Column + `") >= 5 LIMIT 1`
+		err := m.R.QueryRowContext(ctx, q).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if id.Valid && id.String != "" {
+			return id.String, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // SetKeyID implements Meta.
@@ -261,18 +310,85 @@ func readKey(path string, st fs.FileInfo) (*Box, error) {
 	return New(key)
 }
 
+// KeyState says whether the key file on disk is the one the database was
+// written with.
+type KeyState int
+
+const (
+	// KeyOK: a usable key whose id matches the recorded id (or none is recorded yet).
+	KeyOK KeyState = iota
+	// KeyMissing: there is no key file.
+	KeyMissing
+	// KeyWrong: a usable key whose id differs from the recorded one.
+	KeyWrong
+	// KeyUnusable: the file exists but cannot be used (damaged, wrong size, loose mode).
+	KeyUnusable
+)
+
+// CheckKey inspects the key file without creating, replacing or adopting anything.
+func CheckKey(ctx context.Context, dataDir string, meta Meta) (KeyState, error) {
+	path := KeyPath(dataDir)
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return KeyMissing, nil
+	}
+	if err != nil {
+		return KeyUnusable, nil
+	}
+	b, err := readKey(path, st)
+	if err != nil {
+		return KeyUnusable, nil
+	}
+	if meta != nil {
+		recorded, ok, err := meta.KeyID(ctx)
+		if err != nil {
+			return KeyUnusable, fmt.Errorf("secretbox: reading the recorded key id: %w", err)
+		}
+		if ok && recorded != b.KeyID() {
+			return KeyWrong, nil
+		}
+		if !ok {
+			// No recorded id: compare with the header of an existing ciphertext.
+			if ci, can := meta.(CiphertextIDer); can {
+				id, have, err := ci.CiphertextKeyID(ctx)
+				if err != nil {
+					return KeyUnusable, fmt.Errorf("secretbox: reading a ciphertext's key id: %w", err)
+				}
+				if have && id != b.KeyID() {
+					return KeyWrong, nil
+				}
+			}
+		}
+	}
+	return KeyOK, nil
+}
+
 // Column names a database column that holds secretbox ciphertext.
 type Column struct{ Table, Column string }
 
-// Columns lists every column that holds ciphertext. Later milestones add theirs
-// here, so the "missing key but encrypted data exists" check covers them.
-func Columns() []Column {
+// AdminColumns lists the ciphertext columns of the admin's sign-in data. `admin
+// reset` clears them.
+func AdminColumns() []Column {
 	return []Column{
 		{"users", "totp_seed"},
 		{"users", "totp_pending_seed"},
 		{"setup_state", "pending_seed"},
 	}
 }
+
+// AppColumns lists the ciphertext columns of app data (environment variables and
+// registry credentials). `admin reset` never touches them unless the operator
+// passes --forget-app-secrets and the master key is lost.
+func AppColumns() []Column {
+	return []Column{
+		{"service_env_versions", "ciphertext"},
+		{"registries", "secret"},
+	}
+}
+
+// Columns lists every column that holds ciphertext. Later milestones add theirs
+// here, so the "missing key but encrypted data exists" check covers them.
+func Columns() []Column { return append(AdminColumns(), AppColumns()...) }
 
 // CiphertextsExist reports whether any column in cols holds a non-NULL value.
 // A table that does not exist yet (the schema has not reached it) counts as empty.

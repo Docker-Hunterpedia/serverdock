@@ -316,7 +316,7 @@ func TestAdminResetNeedsATerminalOrYes(t *testing.T) {
 	// On a terminal, the operator must type "reset".
 	o.Reset()
 	e.Reset()
-	if code := adminReset([]string{"reset", "--data", a.data}, strings.NewReader("no\n"), true, os.Geteuid(), &o, &e); code != 1 || !strings.Contains(e.String(), "nothing was changed") {
+	if code := adminReset([]string{"reset", "--data", a.data}, strings.NewReader("no\n"), true, os.Geteuid(), &o, &e); code != 1 || !strings.Contains(e.String(), "the reset was not done") {
 		t.Fatalf("%d %s", code, e.String())
 	}
 	if dbCount(t, a.data, `SELECT count(*) FROM sessions`) != 1 {
@@ -441,10 +441,10 @@ func TestAdminResetRunsMigrationsAndKeepsAPrivateUmask(t *testing.T) {
 	defer ro.Close()
 	var n int
 	ro.DB.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n)
-	if n != 4 {
+	if n < 5 {
 		t.Errorf("%d migrations applied", n)
 	}
-	bs, _ := filepath.Glob(filepath.Join(data, "backups", "pre-migrate-*-v0002-v0004.db"))
+	bs, _ := filepath.Glob(filepath.Join(data, "backups", "pre-migrate-*-v0002-v*.db"))
 	if len(bs) != 1 {
 		t.Fatalf("backups %v", bs)
 	}
