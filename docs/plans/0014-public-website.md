@@ -1,6 +1,6 @@
 # Plan 0014: Public website (serverdock.oday-bakkour.com)
 
-**Status:** APPROVED (2026-11-28), revision 2. `reviewer`, `security`, `accessibility` and `footprint` approve. The maintainer accepted the recommended answers (Q1–Q4, Q6–Q8); Q5 (Bot Fight Mode) is decided at step 6. · **Author:** planner (AI). The maintainer has not confirmed this plan, except where the [maintainer answers](#10-maintainer-answers-2026-11-28) are recorded. · **Date:** 2026-11-28
+**Status:** revision 2 APPROVED (2026-11-28) by `reviewer`, `security`, `accessibility` and `footprint`. **Revision 3** (real dashboard screenshots, a new maintainer requirement of 2026-11-28) is waiting for review by all four; steps 1 and 2 are not affected by it. The maintainer accepted the recommended answers (Q1–Q4, Q6–Q8); Q5 (Bot Fight Mode) is decided at step 6. · **Author:** planner (AI). The maintainer has not confirmed this plan, except where the [maintainer answers](#10-maintainer-answers-2026-11-28) are recorded. · **Date:** 2026-11-28
 
 **Roadmap:** this is not a product milestone. It serves the README's "Open" and "Honest" promises and gives the project reach before the early usable version. It changes nothing in the binary, the agent or the web UI.
 
@@ -83,7 +83,7 @@ The copy is plain, short and concrete, in the README's voice. The README is the 
 1. **Hero.** Two columns that stack on phones.
    - **Heading.** The h1 is **og.html's line**: "Anyone can build a server manager. **We sweat the details.**" The README uses its own variant, "Few sweat the details." The h1 must fit in two lines at 320 px.
    - **Sub line and chips.** The chips look like links and make sense on their own ("54 MB idle RAM: see benchmarks", and so on).
-   - **Deploy card** (accessibility 4). A `<figure>` holding:
+   - **Deploy card** (accessibility 4). *[Revision 3: the hero shows the real "live deploy" screenshot instead, if the maintainer confirms R3-Q1. This HTML card is used only if the answer is no.]* A `<figure>` holding:
      - an `<ol>` of stages. Each stage has a visible ✓, a visually hidden state word ("done") and the stage note;
      - a result line;
      - the figcaption "Example of a blue-green deploy in ServerDock, not a live deploy".
@@ -294,7 +294,9 @@ https://:version.:project.pages.dev/*
 6. `dist/docs` routes that differ from the allowlist;
 7. broken internal links or anchors. Every same-site `href`/`src` in `dist/**/*.html` must resolve to a file, and every `#id` must exist;
 8. page weight over budget (section 4, `site/scripts/page-weight.mjs`);
-9. the `dist` total over budget (section 4).
+9. the `dist` total over budget (section 4);
+10. *(Revision 3, in `gates.mjs`)* the screenshot checks, described in Revision 3 under "Checks";
+11. *(Revision 3, in `page-weight.mjs`)* the per-image and per-page image ceilings (section 4).
 
 The benchmark source check and the link rewriter fail inside `astro build` itself.
 
@@ -370,12 +372,20 @@ The benchmark source check and the link rewriter fail inside `astro build` itsel
   | JavaScript | **0 bytes** on every page |
   | Webfonts | 0 bytes |
   | CSS | one file, at most 15 KB |
-  | Home | at most 80 KB total and 6 requests (no page loads `og.png`) |
-  | Any other page | at most 150 KB total |
+  | Home, non-image (HTML + CSS + favicon) | at most 80 KB *(unchanged)* |
+  | Home, images | *(Revision 3)* at most 250 KB worst case: at most 1 eager image (≤ 120 KB), the rest `loading="lazy"` |
+  | Home, requests on first view | *(Revision 3)* at most 7 (lazy images not counted) |
+  | Features, non-image | at most 80 KB |
+  | Features, images | *(Revision 3)* at most 700 KB worst case (6 screenshots), all lazy except the first |
+  | One screenshot file | *(Revision 3)* desktop: 1x ≤ 50 KB, 2x ≤ 120 KB; phone: 1x ≤ 25 KB, 2x ≤ 60 KB |
+  | Screenshot files, total in `dist` | *(Revision 3)* at most 2 MB raw (24 files) |
+  | Any other page | at most 150 KB total; no screenshots |
   | HTML per page | at most 60 KB, **except the named exceptions below** |
   | `dist` total | at most 5 MB and 500 files, in raw bytes on disk (not gzip) |
 
   Step 6 confirms the current Cloudflare Pages Direct Upload limits (file count and per-file size); our ceiling is far below them.
+
+  **Image metric (Revision 3).** Images are counted in **raw bytes**, because WebP is already compressed and gzip saves nothing. For each `<picture>`, "worst case" means the largest single candidate the browser could fetch: the 2x file of whichever theme is heavier. Browsers fetch one source per `<picture>`, never both themes. Home shows two screenshots: the `deploy-live` hero and the `phone-deploy` view. Its worst-case first view is about 200 KB (80 KB non-image plus one 120 KB eager image), and its full scroll is about 260 KB, with a ceiling of 330 KB. That is honestly more than the 80 KB of revision 2, and the footprint reviewer must sign it off.
 - **Named HTML exceptions.** Listed in `site/budgets.json` with a page, a ceiling and a reason. A new exception needs footprint sign-off.
   - **`/docs/security/`: HTML ceiling 100 KB**, still inside the 150 KB page total. The source is already about 55.5 KB gzip. The threat model is one document, and splitting it would break anchors that other docs link to. Step 3 records the measured value and sets the ceiling to the measured value plus 15%, capped at 100 KB. If the measurement is above about 87 KB (where 15% headroom would pass 100 KB), step 3 has two options: split the doc, keeping the old anchors as links to the new pages, or raise the cap with a written reason and footprint sign-off.
   - `/docs/architecture/` and `/roadmap/` are measured in step 3. They get an exception only if they exceed 60 KB, under the same rule.
@@ -472,7 +482,8 @@ Each step is one PR into `main` and can be tested on its own.
      - the allowlist equals the routes;
      - GitHub-slug anchors work on the real docs;
      - axe on every doc page.
-4. **Home and Features.** *Needs P2.*
+3b. **Real screenshots** *(Revision 3)*. Needs step 2 only, and can run alongside step 3. It must land before step 4. See Revision 3.
+4. **Home and Features.** *Needs P2 and step 3b.* Use the screenshots from step 3b through the `Screen` component (Revision 3).
    - **Work:**
      - the hero and h1;
      - the deploy card;
@@ -589,9 +600,9 @@ Each step is one PR into `main` and can be tested on its own.
 | Reviewer | Required for |
 |---|---|
 | reviewer | The plan and every step. Checks that the copy matches the README and that no claim goes beyond what the repo shows. |
-| accessibility | **Required.** Steps 2–5, and the launch checklist in step 6. |
-| security | Step 1: CSP, `_headers`, gates, `bench-needed.sh`, CODEOWNERS. Step 6: deployer, token, environment, account choice, Cloudflare settings. |
-| footprint | Step 1: the page-weight script, gates and dependency counts. Steps 3 and 4: budget exceptions and Home. Also confirms the product footprint is unchanged. |
+| accessibility | **Required.** Steps 2–5, step 3b (alt text, captions, `<picture>`), and the launch checklist in step 6. |
+| security | Step 1: CSP, `_headers`, gates, `bench-needed.sh`, CODEOWNERS. Step 3b: demo data, excluded screens, the `screens` CI job. Step 6: deployer, token, environment, account choice, Cloudflare settings. |
+| footprint | Step 1: the page-weight script, gates and dependency counts. Step 3b: image budgets, encoder, repo growth (**sign-off required**). Steps 3 and 4: budget exceptions and Home. Also confirms the product footprint is unchanged. |
 | systems | Not required. The reviewer may ask for it on the `bench-needed.sh` change. |
 
 ## 9. Dependencies
@@ -761,3 +772,152 @@ AI-written; the maintainer has not confirmed it.
   - axe reports the "✓" glyph in the stage dots as a colour-contrast "incomplete" (`nonBmp`). The tick is now generated content on an empty `aria-hidden` span, and its colours are covered by the contrast unit test.
   - `<aside>` for callouts fails axe `landmark-unique` when there are two; callouts are plain `div`s with a text label.
   - The e2e files are not type-checked: `@types/node` is not a dependency, and Playwright transpiles TypeScript without checking it.
+
+## Revision 3 (real dashboard screenshots, maintainer requirement 2026-11-28)
+
+**Requirement.** The site shows the real dashboard, using real screenshots that are made automatically. Playwright opens the real ServerDock web UI with demo data and captures the views in dark and light. The site never shows an HTML copy of the dashboard. Each image is labelled "demo data" and compressed. AI-written; the maintainer has not confirmed this beyond the requirement itself.
+
+### Honesty rules
+- **Only screens that exist today.** Every capture comes from a route under `web/src/routes/` on `main` (M1–M3a). No mock-ups, no planned screens, and no feature that is not built.
+- **Mocks change data, never the UI.** API mocks are typed against `web/src/lib/api-types.ts`, which is generated from `docs/api/openapi.json`, so a mock cannot invent a field or a state the API does not have. Every state shown (running, deploying, rolled back) is one the product really produces.
+- **Labels.** Every screenshot sits in a `<figure>` whose `<figcaption>` says what it shows and ends with "Demo data." A visible HTML "Demo data" badge sits on the frame. The badge is not baked into the image, so it stays readable in forced colours and at zoom.
+- **Dates.** The caption gives the capture date and commit ("Captured <time> from commit `abc1234`"), read from the manifest.
+- **Route check.** Each manifest entry names its SvelteKit route id (for example `(shell)/services/[project]/[name]/deploys/[number]`). Gate 10 fails if `web/src/routes/<route>/+page.svelte` does not exist. This reads a repo file only and needs no web build.
+
+### Views (v1)
+
+| id | Route | Demo state | Viewports | Used on |
+|---|---|---|---|---|
+| `deploy-live` | `(shell)/services/[project]/[name]/deploys/[number]` | blue-green deploy running at "Health gate", earlier stages done, live log below | desktop | Home hero (R3-Q1), Features |
+| `services` | `(shell)/services` | three services: running, deploying, needs attention | desktop | Features |
+| `service-detail` | `(shell)/services/[project]/[name]/(service)` | live deploy and history, with a rolled-back deploy | desktop | Features |
+| `rollback-dialog` | same route, with the existing `ConfirmDialog` open on "Roll back to #N" | dialog open | desktop | Features |
+| `new-service` | `(shell)/services/new` | form filled with a demo image | desktop | Features |
+| `phone-deploy` | the deploy route | same as `deploy-live` | phone 390×844 | Home "Usable" card, Features |
+
+**Never captured:** `(auth)/setup` (setup token, TOTP secret and QR, recovery codes), `(shell)/settings/security` (API tokens are shown once, TOTP), `(auth)/login/2fa`, and any dialog that shows a token, a secret or recovery codes. That gives 6 views × 2 themes × 2 densities = **24 files**.
+
+### Pipeline
+- **The capture spec:** `web/e2e/screens.capture.ts`, run as its own Playwright set (`E2E_SET=screens`; the `ui` and `docker` sets ignore it). It reuses the existing harness:
+  - `server.ts` and `global-setup.ts`: the real binary with `-tags spa`, a temp data directory, signed in;
+  - `seed.ts` rows written through `node:sqlite` (`seedService`, `seedHistory`, `seedThreeServices`, `stageRows`, `seedDeployLog`);
+  - the API mocks (`mockServiceDetail`, `mockDeployGet` with `deployGetFixture`, `mockAction`) for states that would otherwise need containers.
+  - **No Docker and no local registry are needed.** The "running" and "deploying" states come from typed mocks, so the spec runs wherever the UI e2e set runs.
+- **Making captures deterministic:**
+  - a fixed clock (`page.clock`) and fixed seeded `createdAt` values;
+  - `animations: 'disabled'`, `caret: 'hide'`, and `reducedMotion: 'reduce'`;
+  - Chromium only, `deviceScaleFactor: 2` for desktop and 3 for phone;
+  - `colorScheme` set to `dark` and `light` in turn;
+  - each capture is clipped to the meaningful region (the main content area, or the dialog with its page behind it). No browser chrome or URL bar appears.
+- **Encoding: no new dependency.** The spec loads each PNG into a blank page and draws it on a `<canvas>` at the target widths. `canvas.toBlob('image/webp', q)` exports it, using the libwebp encoder inside Chromium, which is already in use. The starting quality is 0.8, tuned in step 3b to meet the per-file ceilings.
+  - Re-encoding through a canvas also drops all metadata.
+  - `sharp` stays unused. It is installed in `site/` only, it is not in `web/`, and with `--ignore-scripts` it is not a dependency we want to activate.
+  - Fallback, only if canvas output turns out non-deterministic or too large: the runner's apt `webp` package (`cwebp`, a system tool, not an npm dependency). That needs footprint sign-off.
+  - Format: WebP only, with no PNG fallback, because every supported browser decodes WebP.
+- **Sizes:**
+  - desktop display width at most 800 CSS px: files at **800 w (1x) and 1600 w (2x)**;
+  - phone display width 300 CSS px: files at **300 w and 600 w**.
+- **Output: committed** to `site/public/screens/` as `<id>-<theme>-<width>.webp`, plus `manifest.json`. They go in `public/`, not `src/assets/`, because the site uses no `astro:assets`, so the files are served as they are.
+  - Each manifest entry has `id`, `route`, `url`, `viewport`, `theme`, `widths`, `width`/`height` per file, `captured_at`, `commit`, and `inputs_hash`.
+  - The site build reads the committed files and the manifest only. **It never builds Go or the web UI.**
+- **Make target:** `make screens`. It builds the web UI and the binary, then runs `E2E_SET=screens` and writes into `site/public/screens/`.
+- **Freshness: the `screens` job in `ci.yml`.**
+  - **The hash.** `inputs_hash` is the git tree hash of the inputs: `web/src/`, `web/e2e/screens.capture.ts`, `web/e2e/seed.ts`, `web/e2e/server.ts` and `docs/api/openapi.json`.
+  - **When the job runs.** On every `ci.yml` run, as a cheap first step. A pathspec diff is not used, so site-only regeneration PRs are checked too. If the hash matches the manifest, the job passes in seconds.
+  - **When the hash differs.** The job:
+    1. downloads the `web-build` artifact;
+    2. builds the binary like `e2e-ui` does;
+    3. runs the capture;
+    4. uploads the result as the `site-screens` artifact;
+    5. **fails** with "screens are stale: download the `site-screens` artifact of this run and commit it to `site/public/screens/` (or run `make screens`)".
+  - **Rendering source.** Regenerating from the CI artifact is the recommended way, so rendering is always from the same runner image.
+  - **Permissions.** The job has `contents: read`, no secrets, and never pushes commits.
+  - **Result.** No PR that changes the UI can merge with stale screenshots, if `screens` is a required check (R3-Q3). Committing the files triggers `site.yml` (path `site/**`), which then deploys them.
+- **Repo growth (footprint).**
+  - Each regeneration adds at most 2 MB (the screenshot total ceiling). Only changed files add objects, because an unchanged capture re-encodes to the same bytes.
+  - Step 3b records the real total. The plan reviews this after 3 months using `git count-objects -vH`.
+  - If growth exceeds 50 MB a year, switch to "regenerate at milestone close" (R3-Q2).
+
+### Markup (the `site/src/components/Screen.astro` component)
+```html
+<figure class="screen">
+  <picture>
+    <source media="(prefers-color-scheme: light)" type="image/webp"
+            srcset="/screens/services-light-800.webp 800w, /screens/services-light-1600.webp 1600w"
+            sizes="(min-width: 60rem) 50rem, 100vw">
+    <img src="/screens/services-dark-800.webp"
+         srcset="/screens/services-dark-800.webp 800w, /screens/services-dark-1600.webp 1600w"
+         sizes="(min-width: 60rem) 50rem, 100vw"
+         width="800" height="500" alt="…" loading="lazy" decoding="async">
+  </picture>
+  <figcaption>… Demo data. Captured <time datetime="2026-11-28">28 Nov 2026</time> from commit <code>abc1234</code>.</figcaption>
+</figure>
+```
+- **Theme.** Dark is the `<img>` default and light is the `<source>`, the same logic as the site CSS (dark default, light under `prefers-color-scheme: light`). It needs no JS.
+- **Layout shift.** `width` and `height` come from the manifest. CSS uses `max-width:100%; height:auto`, so there is no layout shift. Gate 10 checks that both themes have the same dimensions.
+- **Loading.** Only the hero image (if R3-Q1 is yes) is eager, with `fetchpriority="high"` and no `loading`. Every other image is `loading="lazy"`.
+- **CSS only, no `style=`.** The frame uses `--border` (at least 3:1) and a solid `--card` background behind the caption.
+
+### Accessibility
+- **Alt text** describes what the screen shows and why it matters. Example for `deploy-live`: "ServerDock's deploy page for service api in project demo: a blue-green deploy with Pull image, Start new version done and Health gate running, the live log below." It never says "screenshot" or "image of".
+  - The alt text and captions live in `site/src/data/screens.json`, keyed by id, and the accessibility reviewer edits them there.
+  - Gate 10 fails on empty alt text, alt text matching `/\b(screenshot|image of|picture of)\b/i`, alt text over 250 characters, or a caption without "Demo data".
+- **Never the only carrier of information.** Every claim the image supports (stages, rollback, phone use) is also stated in the page text. The image adds evidence; it carries no claim alone. There are no text-in-image claims that are not also in HTML text.
+- **Captions.** Captions use `--text` or `--muted` on a solid surface, which the contrast unit test already covers. The caption is the `<figcaption>`; it does not repeat the alt text.
+- **Forced colours, zoom and print.** Images stay as they are in forced colours, while the frame and badge get real borders. At 320 px and 400% zoom, images scale to the column width with no horizontal scroll. In print, images print at their column width.
+- **Tests.** Axe on Home and Features in every project, the existing heading-order, focus and no-other-host checks, and a manual check of the alt text with VoiceOver and NVDA (added to `docs/accessibility/site-launch-checklist.md`).
+
+### Security and privacy
+- **Demo data only:**
+  - project `demo`; services `web`, `api` and `worker`;
+  - images `registry.example.test/demo/<name>:<semver>`;
+  - hostnames under `example.test`;
+  - the admin user `demo`;
+  - any IP shown taken from RFC 5737 ranges (192.0.2.0/24);
+  - no real tokens, emails or hosts.
+- **Assertions in the capture spec, before each capture (the capture fails on any of these):**
+  - the page text contains none of: the API token prefix, a TOTP or QR element, the recovery-code list, `127.0.0.1`, `localhost`, a hostname not under `example.test`, an email address, or a value that looks like a 32+ character secret;
+  - the route is not one of the "never captured" routes.
+- **Review of committed images.** GitHub shows image diffs in PRs, so the reviewer looks at every changed screenshot.
+- **CSP.** `img-src 'self'` already covers `/screens/`. No CSP change and no third-party request.
+- **The `screens` CI job.** No secrets, `contents: read`, and the same temp-directory test server as `e2e-ui`.
+
+### Checks (gate 10 in `gates.mjs`, `node:` built-ins only)
+- Every `/screens/*.webp` referenced in `dist` is in `manifest.json`, and every manifest file exists.
+- The route file exists for each entry.
+- Both themes have the same `width`/`height`.
+- Every `<img>` has `width`, `height`, `alt` and `decoding="async"`.
+- At most one eager image per page.
+- The alt and caption rules above.
+- `screens.json` and `manifest.json` have the same ids.
+- **Gate 11 in `page-weight.mjs`:** the per-file, per-page and total image ceilings in section 4.
+- **Unit tests:** a failing fixture for each check.
+
+### Step 3b (new, one PR)
+1. `web/e2e/screens.capture.ts`, the `screens` Playwright set, the canvas WebP encoder and the secret and host assertions.
+2. `make screens`.
+3. The `screens` job in `ci.yml`, plus its comment.
+4. The first committed set in `site/public/screens/` with `manifest.json`.
+5. `site/src/data/screens.json` (alt text and captions), the `Screen` component, gates 10–11 with fixtures, and the styleguide entry.
+6. Record the real file sizes, the total and the `screens` job time.
+
+**Tests:**
+- The capture spec's own assertions.
+- The gate unit tests.
+- In CI: changing a file under `web/src/` without regenerating fails the `screens` job, and committing the artifact makes it pass.
+- Axe on the styleguide page with a `Screen`.
+- No layout shift: every `<img>` has dimensions, checked by the gate.
+- Manual: both themes switch with the OS setting, and alt text is read correctly.
+
+**Reviews:**
+- accessibility (**required**): alt text, captions, figure.
+- footprint (**required sign-off**): budgets, encoder, repo growth.
+- security: demo data, excluded routes, the CI job.
+- reviewer: honesty, meaning only built screens and typed mocks.
+
+### Maintainer questions (Revision 3)
+**Maintainer answers (2026-11-28):** R3-Q1 yes (the hero shows the real `deploy-live` screenshot); R3-Q2 strict (a PR whose screenshot inputs changed fails until the regenerated screenshots are committed); R3-Q3 yes (`screens` is a required check), which follows from R3-Q2.
+
+- **R3-Q1. Replace the HTML deploy card in the hero with the real `deploy-live` screenshot?** *Recommendation: yes.* "No HTML replica" suggests it, and the real screen is stronger evidence. The 54 MB meter stays, because it shows site data and is not a copy of the UI. The deploy-stages component from step 2 is reused for the "Built with AI, led by a human" pipeline list.
+- **R3-Q2. How strict is freshness?** *Recommendation: fail on every PR whose inputs changed* (true "never out of date"), with the measured repo growth reviewed after 3 months. The alternative is regenerating at milestone close and showing the capture date, which means less repo growth but screenshots that may lag the UI by one milestone.
+- **R3-Q3. Make `screens` a required check?** *Recommendation: yes.* It runs on every `ci.yml` run and takes seconds when the screenshots are fresh, so it never blocks as a skipped path-filtered check would.
