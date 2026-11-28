@@ -40,8 +40,9 @@ export function createSiteServer(dist) {
 		for (const r of rules) {
 			if (!matches(r.pattern, path)) continue;
 			for (const [k, v] of r.headers) {
-				if (k === '!') delete headers[v];
-				else headers[k] = v;
+				if (k === '!') {
+					for (const h of Object.keys(headers)) if (h.toLowerCase() === v.toLowerCase()) delete headers[h];
+				} else headers[k] = v;
 			}
 		}
 		const body = existsSync(file) ? readFileSync(file) : 'Not found\n';

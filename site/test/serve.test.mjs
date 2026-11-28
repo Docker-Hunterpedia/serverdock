@@ -35,7 +35,7 @@ test('serves pages with the CSP, a 404 page, and never escapes dist or serves _h
 });
 
 test('a missing 404.html gives a plain-text 404, and a detach line removes a header', async () => {
-	const d = goodDist({ _headers: HEADERS + '/about/*\n  ! Content-Security-Policy\n' });
+	const d = goodDist({ _headers: HEADERS + '/about/*\n  ! content-security-policy\n' });
 	const srv = createSiteServer(d).listen(0, '127.0.0.1');
 	await new Promise((r) => srv.once('listening', r));
 	const base = `http://127.0.0.1:${srv.address().port}`;

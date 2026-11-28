@@ -51,8 +51,10 @@ export function gateNoInlineCode(dist) {
 			if (/(?:^|[\s"'/])style\s*=/i.test(attrs)) errs.push(`${name}: style= attribute on <${tag}>`);
 			for (const a of ['href', 'src', 'action', 'formaction', 'data', 'xlink:href']) {
 				const v = attrOf(attrs, a);
-				if (v !== null && /^[\s\x00-\x20]*javascript:/i.test(v)) errs.push(`${name}: javascript: URL in ${a} on <${tag}>`);
+				if (v !== null && /^[\s\x00-\x20]*javascript:/i.test(decodeUrl(v))) errs.push(`${name}: javascript: URL in ${a} on <${tag}>`);
 			}
+			if (tag === 'base' && attrOf(attrs, 'href') !== null) errs.push(`${name}: <base href>`);
+			if (tag === 'iframe' && attrOf(attrs, 'srcdoc') !== null) errs.push(`${name}: <iframe srcdoc>`);
 			if (tag === 'meta' && /^\s*refresh\s*$/i.test(attrOf(attrs, 'http-equiv') ?? '')) errs.push(`${name}: <meta http-equiv="refresh">`);
 		}
 	}
@@ -89,7 +91,22 @@ const directive = (csp, name) => {
 	const parts = csp.split(';').map((d) => d.trim().split(/\s+/)).filter((d) => d[0] !== '');
 	return parts.find((d) => d[0].toLowerCase() === name)?.slice(1) ?? null;
 };
+// Decode numeric and the few named entities that can spell "javascript:", then drop the
+// tab, CR and LF that URL parsers ignore.
+const NAMED = { tab: '\t', newline: '\n', colon: ':', lpar: '(', rpar: ')' };
+const decodeUrl = (v) =>
+	v
+		.replace(/&#x([0-9a-f]+);?/gi, (_, h) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
+		.replace(/&#(\d+);?/g, (_, d) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
+		.replace(/&([a-z]+);/gi, (m, n) => NAMED[n.toLowerCase()] ?? m)
+		.replace(/[\t\r\n]/g, '');
 const isNone = (t) => t !== null && t.length === 1 && t[0].toLowerCase() === "'none'";
+
+// script-src-elem and script-src-attr override script-src (CSP Level 3): absent or exactly 'none'.
+const overrides = (csp, where) =>
+	['script-src-elem', 'script-src-attr']
+		.filter((n) => directive(csp, n) !== null && !isNone(directive(csp, n)))
+		.map((n) => `${where}: ${n} must be absent or exactly 'none'`);
 
 /** Gate 2: _headers has one /* rule with one CSP (script-src and default-src exactly 'none'). */
 export function gateHeaders(dist) {
@@ -112,11 +129,15 @@ export function gateHeaders(dist) {
 		else {
 			if (!isNone(directive(c[0], 'script-src'))) errs.push("_headers CSP: script-src must be exactly 'none'");
 			if (!isNone(directive(c[0], 'default-src'))) errs.push("_headers CSP: default-src must be exactly 'none'");
+			errs.push(...overrides(c[0], '_headers CSP'));
 		}
 	}
 	for (const r of rules) {
 		if (r.pattern === '/*') continue;
-		for (const c of csps(r)) if (!isNone(directive(c, 'script-src'))) errs.push(`_headers: CSP under ${r.pattern} lacks script-src 'none'`);
+		for (const c of csps(r)) {
+			if (!isNone(directive(c, 'script-src'))) errs.push(`_headers: CSP under ${r.pattern} lacks script-src 'none'`);
+			errs.push(...overrides(c, `_headers CSP under ${r.pattern}`));
+		}
 	}
 	return errs;
 }

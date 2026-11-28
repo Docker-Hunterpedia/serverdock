@@ -35,6 +35,12 @@ test('gate 1: script, style element, on*= and style= are each rejected', () => {
 		['p slash style', '<p/style="color:red">a</p>'],
 		['stray quote hides a script', `<a title=x'><script>alert(1)</script><p>it's</p>`],
 		['javascript: URL', '<a href="javascript:alert(1)">a</a>'],
+		['entity-encoded javascript:', '<a href="&#106;avascript:alert(1)">a</a>'],
+		['hex entity javascript:', '<a href="&#x6A;avascript:alert(1)">a</a>'],
+		['tab inside javascript:', '<a href="java\tscript:alert(1)">a</a>'],
+		['named entity colon', '<a href="javascript&colon;alert(1)">a</a>'],
+		['base href', '<base href="https://x.invalid/">'],
+		['iframe srcdoc', '<iframe srcdoc="x"></iframe>'],
 		['meta refresh', '<meta http-equiv="refresh" content="0;url=/">'],
 	]) {
 		withDist({ 'index.html': page(html) }, (d) => assert.notEqual(gateNoInlineCode(d).length, 0, name));
@@ -66,6 +72,9 @@ test('gate 2: _headers must have one /* rule with one strict CSP', () => {
 		['report-only only', "/*\n  Content-Security-Policy-Report-Only: default-src 'none'; script-src 'none'\n"],
 		['two CSPs in /*', HEADERS + "  Content-Security-Policy: default-src 'none'; script-src 'none'\n"],
 		['weaker CSP in another rule', HEADERS + "/docs/*\n  Content-Security-Policy: script-src 'self'\n"],
+		['script-src-elem override', csp("default-src 'none'; script-src 'none'; script-src-elem https:")],
+		['script-src-attr override', csp("default-src 'none'; script-src 'none'; script-src-attr 'unsafe-inline'")],
+		['script-src-elem override in another rule', HEADERS + "/x/*\n  Content-Security-Policy: script-src 'none'; script-src-elem https:\n"],
 		['no /* rule', "/docs/*\n  Content-Security-Policy: default-src 'none'; script-src 'none'\n"],
 	]) {
 		withDist({ _headers: h }, (d) => assert.ok(gateHeaders(d).length >= 1, name));
