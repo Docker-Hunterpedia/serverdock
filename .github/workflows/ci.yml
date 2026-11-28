@@ -248,7 +248,9 @@ jobs:
   # artifact `site-screens` (changed files plus the manifest). Nothing is ever pushed from CI; the
   # refresh procedure is in CONTRIBUTING.md. WARNING WEEK: continue-on-error, not a required check.
   # Once main shows the same bytes for an unchanged hash for a clean week, remove continue-on-error
-  # and the maintainer makes `screens-capture` required.
+  # and the maintainer makes the job `screens` required. Require `screens`, not `screens-capture`:
+  # a required job that is skipped counts as passing, and screens-capture is skipped on the fast path
+  # and whenever `web` or `screens-hash` fails. `screens` always runs and fails in those cases.
   screens-hash:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -351,6 +353,29 @@ jobs:
           path: ${{ runner.temp }}/screens-out
           if-no-files-found: ignore
           retention-days: 7
+
+  # The one job to require: always runs, and fails when the hash job did not succeed, or the set is
+  # stale (or main needs verifying) and the capture did not succeed.
+  screens:
+    needs: [screens-hash, screens-capture]
+    if: always()
+    runs-on: ubuntu-latest
+    continue-on-error: true # warning week, like screens-capture
+    timeout-minutes: 5
+    steps:
+      - name: the screenshots are fresh, or were captured and match
+        env:
+          HASH_RESULT: ${{ needs.screens-hash.result }}
+          CAPTURE_RESULT: ${{ needs.screens-capture.result }}
+          STALE: ${{ needs.screens-hash.outputs.stale }}
+        run: |
+          echo "screens-hash: $HASH_RESULT (stale: $STALE), screens-capture: $CAPTURE_RESULT"
+          [ "$HASH_RESULT" = success ] || { echo "the hash job did not succeed"; exit 1; }
+          case "$CAPTURE_RESULT" in
+            success) ;;
+            skipped) [ "$STALE" != true ] || { echo "the screenshots are stale and the capture did not run (did the web job fail?)"; exit 1; } ;;
+            *) echo "the capture job did not succeed"; exit 1 ;;
+          esac
 
   build:
     needs: [lint-test, web]

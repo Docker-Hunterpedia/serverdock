@@ -47,6 +47,7 @@ Playwright with `@axe-core/playwright` runs against `site/scripts/serve.mjs`, wh
 | 20 | A forced-colours screenshot of a figure: the frame and the "Demo data" badge keep their borders | Windows high contrast, Edge; screenshot attached | | | |
 | 21 | Home at 400% zoom: the hero image scales to the column, no horizontal scroll, the h1 and sub line come first | Chrome or Firefox | | | |
 | 22 | Print preview of Features: the light images are used, the full-size links are hidden, the stage ticks and meter keep their border | Any browser | | | |
+| 23 | The full-size link under a desktop figure: its name says it opens the image file; it opens the bare image in the same tab; the browser's Back returns to the page with focus on the link | Keyboard, Safari and Firefox | | | |
 
 A 1 GB VPS check is not relevant: nothing runs on the user's server.
 

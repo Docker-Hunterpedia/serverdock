@@ -20,3 +20,5 @@
 /web/e2e/screens.capture.ts @Docker-Hunterpedia
 /site/public/screens/ @Docker-Hunterpedia
 /site/src/data/screens.json @Docker-Hunterpedia
+/site/scripts/screens.mjs @Docker-Hunterpedia
+/web/playwright.screens.config.ts @Docker-Hunterpedia
