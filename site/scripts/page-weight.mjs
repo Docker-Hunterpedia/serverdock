@@ -45,6 +45,7 @@ const JS = /\.(m?js|cjs)$/i;
 /** The resource URLs (as written) a page names, with their kind. */
 function pageRefs(html) {
 	const refs = [];
+	const add = (url, kind) => url && refs.push({ url, kind });
 	for (const m of html.matchAll(TAG)) {
 		const name = m[1].toLowerCase();
 		const a = m[2];
@@ -52,17 +53,38 @@ function pageRefs(html) {
 			const rels = (attr(a, 'rel') ?? '').toLowerCase().split(/\s+/);
 			const href = attr(a, 'href');
 			if (href === null) continue;
-			if (rels.includes('stylesheet')) refs.push({ url: href, kind: 'css' });
-			else if (rels.includes('icon')) refs.push({ url: href, kind: 'icon' });
-			else if (rels.includes('modulepreload') || rels.includes('preload')) refs.push({ url: href, kind: 'preload' });
-		} else if (name === 'img') {
-			const src = attr(a, 'src');
-			if (src !== null) refs.push({ url: src, kind: 'img' });
+			if (rels.includes('stylesheet')) add(href, 'css');
+			else if (rels.includes('icon')) add(href, 'icon');
+			else if (rels.includes('manifest')) add(href, 'manifest');
+			else if (rels.includes('modulepreload') || rels.includes('preload')) add(href, 'preload');
 		} else if (name === 'script') {
 			refs.push({ url: attr(a, 'src') ?? '', kind: 'script' });
+		} else {
+			if (['img', 'source', 'video', 'audio', 'embed', 'track', 'iframe', 'input'].includes(name)) add(attr(a, 'src'), 'img');
+			if (name === 'video') add(attr(a, 'poster'), 'img');
+			if (name === 'object') add(attr(a, 'data'), 'img');
+			if (name === 'img' || name === 'source') {
+				for (const cand of (attr(a, 'srcset') ?? '').split(',')) add(cand.trim().split(/\s+/)[0], 'img');
+			}
 		}
+		const style = attr(a, 'style');
+		if (style) for (const u of style.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)/gi)) add(u[1] ?? u[2] ?? u[3], 'cssurl');
 	}
 	return refs;
+}
+
+/** Validate budgets.json exceptions. Returns a list of problems (empty when valid). */
+export function validateExceptions(list) {
+	if (!Array.isArray(list)) return ['"exceptions" must be an array'];
+	const errs = [];
+	list.forEach((e, i) => {
+		const at = `exceptions[${i}]`;
+		if (typeof e !== 'object' || e === null) return errs.push(`${at} must be an object`);
+		if (typeof e.page !== 'string' || !e.page.startsWith('/')) errs.push(`${at}.page must be a string starting with /`);
+		if (typeof e.html_kb !== 'number' || !Number.isFinite(e.html_kb) || e.html_kb <= 0 || e.html_kb > 100) errs.push(`${at}.html_kb must be a number above 0 and at most 100`);
+		if (typeof e.reason !== 'string' || e.reason.trim() === '') errs.push(`${at}.reason must be a non-empty string`);
+	});
+	return errs;
 }
 
 /**
@@ -158,8 +180,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
 		console.error('usage: page-weight.mjs <dist> [budgets.json]');
 		process.exit(2);
 	}
+	let exceptions = [];
 	const bpath = budgetsArg ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'budgets.json');
-	const exceptions = existsSync(bpath) ? (JSON.parse(readFileSync(bpath, 'utf8')).exceptions ?? []) : [];
+	try {
+		exceptions = JSON.parse(readFileSync(bpath, 'utf8')).exceptions ?? [];
+	} catch (e) {
+		console.error(`page-weight: cannot read budgets (${bpath}): ${e.message}`);
+		process.exit(2);
+	}
+	const bad = validateExceptions(exceptions);
+	if (bad.length) {
+		for (const b of bad) console.error(`page-weight: budgets.json: ${b}`);
+		process.exit(2);
+	}
 	const res = measure(distArg, exceptions);
 	const t = table(res);
 	console.log(t);

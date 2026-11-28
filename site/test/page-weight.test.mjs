@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { LIMITS, measure } from '../scripts/page-weight.mjs';
+import { LIMITS, measure, validateExceptions } from '../scripts/page-weight.mjs';
 import { cleanup, fixture, page } from './helpers.mjs';
 
 const script = fileURLToPath(new URL('../scripts/page-weight.mjs', import.meta.url));
@@ -101,4 +104,53 @@ test('CLI: exit 0 under budget, 1 over, 2 on usage errors', () => {
 		cleanup(d);
 		cleanup(bad);
 	}
+});
+
+test('srcset, source, video, object, embed, manifest and inline style url() are counted', () => {
+	const r = run({
+		'index.html': page(
+			'<img src="/a.png" srcset="/b.png 1x, /c.png 2x" alt=""><video poster="/p.png"><source src="/v.mp4"></video><object data="/o.bin"></object><embed src="/e.bin"><p>x</p>',
+			css + '<link rel="manifest" href="/m.json">',
+		),
+		...Object.fromEntries(['a.png', 'b.png', 'c.png', 'p.png', 'v.mp4', 'o.bin', 'e.bin', 'm.json'].map((f) => [f, 'x'])),
+	});
+	assert.equal(r.rows[0].requests, 10);
+	const s = run({ 'index.html': page('<p style="background:url(/a.png)">x</p>', css), 'a.png': 'x' });
+	assert.equal(s.rows[0].requests, 3);
+});
+
+test('validateExceptions rejects typos, strings, ranges and missing reasons', () => {
+	const ok = { page: '/a/', html_kb: 100, reason: 'r' };
+	assert.deepEqual(validateExceptions([ok]), []);
+	for (const bad of [{ ...ok, html_kb: undefined, htmlKb: 100 }, { ...ok, html_kb: '100' }, { ...ok, html_kb: 101 }, { ...ok, html_kb: 0 },
+		{ ...ok, html_kb: NaN }, { ...ok, page: 'a/' }, { ...ok, reason: ' ' }, null]) {
+		assert.ok(validateExceptions([bad]).length >= 1, JSON.stringify(bad));
+	}
+	assert.ok(validateExceptions({}).length >= 1);
+});
+
+test('CLI: invalid, unparsable or missing budgets exit 2', () => {
+	const d = fixture({ '_astro/a.css': 'a{}', 'index.html': page('', css) });
+	const tmp = mkdtempSync(join(tmpdir(), 'budgets-'));
+	const b = (name, text) => { const p = join(tmp, name); writeFileSync(p, text); return p; };
+	try {
+		for (const p of [
+			b('typo.json', JSON.stringify({ exceptions: [{ page: '/a/', htmlKb: 100, reason: 'r' }] })),
+			b('str.json', JSON.stringify({ exceptions: [{ page: '/a/', html_kb: '100', reason: 'r' }] })),
+			b('bad.json', '{nope'),
+			join(tmp, 'missing.json'),
+		]) assert.equal(spawnSync('node', [script, d, p]).status, 2, p);
+		assert.equal(spawnSync('node', [script, d, b('ok.json', '{"exceptions":[]}')]).status, 0);
+	} finally { cleanup(d); cleanup(tmp); }
+});
+
+test('CLI writes the table to GITHUB_STEP_SUMMARY', () => {
+	const d = fixture({ '_astro/a.css': 'a{}', 'index.html': page('', css) });
+	const tmp = mkdtempSync(join(tmpdir(), 'summary-'));
+	const sum = join(tmp, 'summary.md');
+	try {
+		const r = spawnSync('node', [script, d], { env: { ...process.env, GITHUB_STEP_SUMMARY: sum } });
+		assert.equal(r.status, 0);
+		assert.match(readFileSync(sum, 'utf8'), /### Page weight[\s\S]*\| \/ \|/);
+	} finally { cleanup(d); cleanup(tmp); }
 });
