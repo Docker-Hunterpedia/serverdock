@@ -10,7 +10,7 @@ Playwright with `@axe-core/playwright` runs against `site/scripts/serve.mjs`, wh
 
 - zero axe violations (tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, `best-practice`), and no colour-contrast "incomplete" result;
 - no CSP violation in the console, and no request to any other host;
-- skip link first in tab order and moving focus to `main`; visible focus on every link and summary; the narrow menu opening with Enter and Space;
+- skip link first in tab order and moving focus to `main`, and visible focus on every link and summary: Chromium projects only, plus WebKit on Linux CI. Playwright's WebKit on macOS does not Tab to links, so Safari on macOS is manual (row 17). The narrow menu opening with Enter and Space runs in every project;
 - one `h1` and no skipped heading levels; no horizontal scroll at 320 px or 400% zoom; no sticky header;
 - 44 by 44 px targets and 24 px in-text links at phone, 320 px and 400% zoom widths;
 - text-spacing override (WCAG 1.4.12) with nothing clipped.
@@ -41,6 +41,7 @@ Playwright with `@axe-core/playwright` runs against `site/scripts/serve.mjs`, wh
 | 14 | "Fast 3G": Home is readable in under 2 s | Chrome DevTools throttling | | | |
 | 15 | Zero CSP violations in the console on every page type, on the custom domain | Chrome DevTools | | | |
 | 16 | One Lighthouse run, recorded for information only | Lighthouse | | | |
+| 17 | Safari on macOS with Option+Tab (or Full Keyboard Access): the skip link comes first and moves focus to `main`; the focus ring is visible on every link and summary, on every page type | Keyboard, Safari on macOS | | | |
 
 A 1 GB VPS check is not relevant: nothing runs on the user's server.
 
