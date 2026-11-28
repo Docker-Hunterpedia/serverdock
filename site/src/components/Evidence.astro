@@ -1,0 +1,7 @@
+---
+// A link with a unique accessible name: "Evidence for <subject>", plus " (on GitHub)" when it leaves the site.
+interface Props { href: string; subject: string; label?: string; external?: boolean; }
+const { href, subject, label = 'Evidence for', external = false } = Astro.props;
+---
+
+<a class="evidence" href={href}>{label} {subject}{external && <span class="sr-only"> (on GitHub)</span>}</a>

@@ -1,0 +1,78 @@
+---
+// Built only in test builds (SITE_STYLEGUIDE=1). Shows every component, including the focus
+// ring, summaries, the skip link and a scrolling table. A production build has no /styleguide/.
+import Base from '../../layouts/Base.astro';
+import Card from '../../components/Card.astro';
+import Chip from '../../components/Chip.astro';
+import Callout from '../../components/Callout.astro';
+import Evidence from '../../components/Evidence.astro';
+import Stages from '../../components/Stages.astro';
+import Meter from '../../components/Meter.astro';
+import TableRegion from '../../components/TableRegion.astro';
+import DocsNav from '../../components/DocsNav.astro';
+import Toc from '../../components/Toc.astro';
+import { REPO } from '../../config';
+
+export function getStaticPaths() {
+	return process.env.SITE_STYLEGUIDE === '1' ? [{ params: { slug: undefined } }] : [];
+}
+const docs = [
+	{ href: '/styleguide/', label: 'Styleguide' },
+	{ href: '/docs/', label: 'Docs index' },
+];
+---
+
+<Base title="Styleguide" description="Every component of the ServerDock site. Test builds only." path="/styleguide/" noindex docs>
+	<DocsNav slot="sidebar" items={docs} current="/styleguide/" />
+	<h1>Styleguide</h1>
+	<p>This page exists in test builds only. A <a href="/">link in running text</a> sits here.</p>
+	<Toc items={[{ href: '#chips', label: 'Chips' }, { href: '#cards', label: 'Cards' }, { href: '#callouts', label: 'Callouts' }, { href: '#stages', label: 'Deploy stages' }, { href: '#meter', label: 'Meter' }, { href: '#table', label: 'Table' }, { href: '#code', label: 'Code' }]} />
+
+	<h2 id="chips">Chips</h2>
+	<ul class="chips">
+		<li><Chip href="/benchmarks/"><b>54 MB</b> idle RAM: see benchmarks</Chip></li>
+		<li><Chip href="/roadmap/">Pre-release: see roadmap</Chip></li>
+	</ul>
+
+	<h2 id="cards">Cards</h2>
+	<div class="cards">
+		<Card heading="Light"><p>Small footprint on a 1 GB VPS.</p><Evidence href="/benchmarks/" subject="Light" /></Card>
+		<Card heading="Honest"><p>State is reported only when the work finishes.</p><Evidence href={`${REPO}/blob/main/README.md`} subject="Honest" external /></Card>
+	</div>
+
+	<h2 id="callouts">Callouts</h2>
+	<Callout kind="info"><p>Pre-release. There is no install script yet.</p></Callout>
+	<Callout kind="warn" title="Not measured yet"><p>The real 1 GB VPS check is still to do.</p></Callout>
+
+	<h2 id="stages">Deploy stages</h2>
+	<Stages
+		stages={[
+			{ name: 'Pull image', note: 'example.invalid/app:1' },
+			{ name: 'Health check', note: 'passed' },
+			{ name: 'Switch traffic', note: 'new container live' },
+		]}
+		result="Deployed with no dropped requests (example)"
+		caption="Example of a blue-green deploy in ServerDock, not a live deploy"
+	/>
+
+	<h2 id="meter">Meter</h2>
+	<Meter text="54 MB of 1 GB" value={54} max={1024} />
+
+	<h2 id="table">Table</h2>
+	<TableRegion captionId="sg-table-cap">
+		<table>
+			<caption id="sg-table-cap">Example figures</caption>
+			<thead>
+				<tr><th scope="col">Row</th><th scope="col">Value</th><th scope="col">Environment</th><th scope="col">Commit</th><th scope="col">Date</th><th scope="col">Source</th></tr>
+			</thead>
+			<tbody>
+				<tr><th scope="row">Idle RAM</th><td>54 MB</td><td>CI runner</td><td>0123456789abcdef0123456789abcdef01234567</td><td><time datetime="2026-11-20">2026-11-20</time></td><td>not measured yet</td></tr>
+				<tr><th scope="row">Binary size (gzip)</th><td>not measured yet</td><td>CI runner</td><td>0123456789abcdef0123456789abcdef01234567</td><td><time datetime="2026-11-20">2026-11-20</time></td><td>not measured yet</td></tr>
+			</tbody>
+		</table>
+	</TableRegion>
+
+	<h2 id="code">Code</h2>
+	<pre><code><span class="token comment"># a comment</span>
+<span class="token keyword">const</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token string">"x"</span><span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span></code></pre>
+</Base>

@@ -1,0 +1,183 @@
+/* Components (plan 0014 section 3.4). Text sits on solid surfaces only. */
+
+/* Chip */
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	min-height: 2.75rem;
+	padding: 0 1rem;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--card);
+	color: var(--text);
+	text-decoration: none;
+}
+.chip b { color: var(--accent-text); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.75rem; padding: 0; margin: 1rem 0; list-style: none; }
+
+/* Card */
+.card {
+	border: 1px solid var(--border);
+	border-radius: 1rem;
+	background: var(--card);
+	padding: 1.25rem;
+	overflow-wrap: anywhere;
+}
+.card > :first-child { margin-block-start: 0; }
+.card > :last-child { margin-block-end: 0; }
+.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+
+/* Evidence / Edit / Source links */
+.evidence {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	min-width: 2.75rem;
+	color: var(--accent2-text);
+}
+
+/* Status pill is styled in global.css (.pill). */
+
+/* Callout (info / warn): a real border and a text label, so colour is never the only cue */
+.callout {
+	border: 1px solid var(--border);
+	border-inline-start-width: 0.35rem;
+	border-radius: 0.5rem;
+	background: var(--bg2);
+	padding: 0.75rem 1rem;
+	margin-block: 1rem;
+}
+.callout > :first-child { margin-block-start: 0; }
+.callout > :last-child { margin-block-end: 0; }
+.callout-title { font-weight: 800; }
+.callout--info { border-inline-start-color: var(--accent2-text); }
+.callout--info .callout-title { color: var(--accent2-text); }
+.callout--warn { border-inline-start-color: var(--warn-text); }
+.callout--warn .callout-title { color: var(--warn-text); }
+
+/* Deploy stages: an <ol> in a <figure> */
+.stages-figure { margin: 1rem 0; }
+.stages-figure figcaption { color: var(--muted); font-size: 0.9rem; margin-block-start: 0.5rem; }
+.stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.stages li { display: grid; grid-template-columns: 1.6rem minmax(0, 1fr); gap: 0.2rem 0.75rem; align-items: center; }
+.stages .dot {
+	display: grid;
+	place-items: center;
+	width: 1.4rem;
+	height: 1.4rem;
+	border-radius: 50%;
+	background: var(--accent-text);
+	color: var(--bg);
+	font-size: 0.8rem;
+	font-weight: 800;
+}
+.stages .note { grid-column: 2; color: var(--muted); font-size: 0.9rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+.stages-result {
+	margin-block-start: 1rem;
+	padding: 0.6rem 0.9rem;
+	border: 1px solid var(--accent-text);
+	border-radius: 0.5rem;
+	color: var(--accent-text);
+	font-weight: 700;
+}
+
+/* The tick is generated content: axe cannot measure a symbol glyph (nonBmp), and the colours are covered by contrast.test.mjs. */
+.stages .dot::before { content: "\2713"; content: "\2713" / ""; }
+
+/* Meter: a fixed figure. The visible text carries the meaning; the SVG is decorative. */
+.meter { margin: 1rem 0; }
+.meter-text { margin: 0 0 0.4rem; font-weight: 700; }
+.meter svg { display: block; width: 100%; height: 0.75rem; }
+.meter .track { fill: var(--meter-track); stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.meter .fill { fill: var(--meter-fill); }
+
+/* Table region: scrolls sideways when it must, with a sticky first column */
+.scroll-cue { display: none; margin: 0 0 0.25rem; color: var(--muted); font-size: 0.9rem; }
+.table-region {
+	container-type: inline-size;
+	overflow: auto;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	background: var(--card);
+	margin-block: 0.5rem 1.5rem;
+	padding: 2px;
+}
+.table-region table { border-collapse: separate; border-spacing: 0; min-width: 100%; }
+.table-region caption { text-align: start; font-weight: 700; padding: 0.6rem 0.75rem; }
+.table-region th, .table-region td {
+	padding: 0.6rem 0.75rem;
+	text-align: start;
+	vertical-align: top;
+	border-block-start: 1px solid var(--border);
+	overflow-wrap: anywhere;
+}
+.table-region thead th { background: var(--bg2); }
+@media (max-width: 37.49rem) {
+	.scroll-cue { display: block; }
+	.table-region td, .table-region th { min-width: 8rem; }
+	.table-region th:first-child {
+		position: sticky;
+		inset-inline-start: 0;
+		max-width: 40cqi;
+		min-width: 0;
+		background: var(--card);
+		border-inline-end: 1px solid var(--border);
+	}
+	.table-region thead th:first-child { background: var(--bg2); }
+}
+
+/* Code (Prism token classes; colours are tokens in tokens.css) */
+pre {
+	background: var(--code-bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	padding: 0.75rem 1rem;
+	overflow: auto;
+}
+pre code { overflow-wrap: normal; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 0.25rem; }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: var(--prism-comment); }
+.token.punctuation { color: var(--prism-punctuation); }
+.token.property { color: var(--prism-property); }
+.token.tag { color: var(--prism-tag); }
+.token.boolean { color: var(--prism-boolean); }
+.token.number { color: var(--prism-number); }
+.token.constant { color: var(--prism-constant); }
+.token.symbol { color: var(--prism-symbol); }
+.token.deleted { color: var(--prism-deleted); }
+.token.selector { color: var(--prism-selector); }
+.token.attr-name { color: var(--prism-attr-name); }
+.token.string { color: var(--prism-string); }
+.token.char { color: var(--prism-char); }
+.token.builtin { color: var(--prism-builtin); }
+.token.inserted { color: var(--prism-inserted); }
+.token.operator { color: var(--prism-operator); }
+.token.entity { color: var(--prism-entity); }
+.token.url { color: var(--prism-url); }
+.token.atrule { color: var(--prism-atrule); }
+.token.attr-value { color: var(--prism-attr-value); }
+.token.keyword { color: var(--prism-keyword); }
+.token.function { color: var(--prism-function); }
+.token.class-name { color: var(--prism-class-name); }
+.token.regex { color: var(--prism-regex); }
+.token.important, .token.bold { color: var(--prism-important); font-weight: 700; }
+.token.variable { color: var(--prism-variable); }
+.token.italic { font-style: italic; }
+
+/* Forced colours: system colours, real borders, no colour-only meaning */
+@media (forced-colors: active) {
+	.stages .dot { background: Highlight; color: HighlightText; border: 1px solid CanvasText; }
+	.meter .fill { fill: Highlight; }
+	.meter .track { fill: Canvas; stroke: CanvasText; }
+	.pill, .chip, .callout, .card, .table-region, summary, .toc, pre, .stages-result { border: 1px solid CanvasText; }
+	.callout { border-inline-start-width: 0.35rem; }
+	:focus-visible { outline-color: Highlight; }
+}
+
+/* A <details> opening may ease in, but only when motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+	details > nav { animation: nav-in 0.15s ease-out; }
+	@keyframes nav-in { from { opacity: 0; } to { opacity: 1; } }
+}

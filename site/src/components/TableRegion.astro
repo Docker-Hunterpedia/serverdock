@@ -1,0 +1,10 @@
+---
+// Wrap a <table> in a focusable, labelled scroll region. The table must have a <caption id>.
+interface Props { captionId: string; }
+const { captionId } = Astro.props;
+---
+
+<p class="scroll-cue">Scroll sideways for more columns</p>
+<div class="table-region" role="region" tabindex="0" aria-labelledby={captionId}>
+	<slot />
+</div>

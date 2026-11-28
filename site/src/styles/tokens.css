@@ -1,0 +1,102 @@
+/*
+ * Design tokens (plan 0014 section 3.4). The dark values are og.html's :root; the light
+ * values apply under prefers-color-scheme: light. test/contrast.test.mjs parses this file:
+ * keep one `--name: #hex;` per line, and put new text tokens in the lists the test reads.
+ */
+:root {
+	color-scheme: dark light;
+	--bg: #0b0f14;
+	--bg2: #111821;
+	--card: #111821;
+	--code-bg: #0e141b;
+	--text: #e8eef5;
+	--muted: #8b9bb0;
+	--accent: #3ddc97;
+	--accent-text: #3ddc97;
+	--accent2: #5ab0ff;
+	--accent2-text: #5ab0ff;
+	--warn-text: #f5b74a;
+	--line: #1f2a36; /* decorative only */
+	--border: #5b6b80; /* boundaries that matter, at least 3:1 */
+	--meter-track: #1a2430;
+	--meter-fill: var(--accent);
+	--prism-comment: #8b9bb0;
+	--prism-punctuation: #b4c0cf;
+	--prism-property: #7cc4ff;
+	--prism-tag: #ff9aa8;
+	--prism-boolean: #f5b74a;
+	--prism-number: #f5b74a;
+	--prism-constant: #f5b74a;
+	--prism-symbol: #f5b74a;
+	--prism-deleted: #ff9aa8;
+	--prism-selector: #7ee3b0;
+	--prism-attr-name: #7ee3b0;
+	--prism-string: #7ee3b0;
+	--prism-char: #7ee3b0;
+	--prism-builtin: #7ee3b0;
+	--prism-inserted: #7ee3b0;
+	--prism-operator: #e8eef5;
+	--prism-entity: #e8eef5;
+	--prism-url: #e8eef5;
+	--prism-atrule: #7cc4ff;
+	--prism-attr-value: #7cc4ff;
+	--prism-keyword: #7cc4ff;
+	--prism-function: #d6a8ff;
+	--prism-class-name: #f5b74a;
+	--prism-regex: #ffb48a;
+	--prism-important: #ffb48a;
+	--prism-variable: #ffb48a;
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--bg: #ffffff;
+		--bg2: #f4f7fa;
+		--card: #ffffff;
+		--code-bg: #eef2f6;
+		--text: #0b0f14;
+		--muted: #52627a;
+		--accent: #3ddc97; /* fills only */
+		--accent-text: #0a7a50;
+		--accent2: #5ab0ff; /* fills only */
+		--accent2-text: #1f66b8;
+		--warn-text: #8a5a00;
+		--line: #e3e8ee;
+		--border: #7a8899;
+		--meter-track: #d5dde6;
+		--meter-fill: var(--accent-text);
+		--prism-comment: #52627a;
+		--prism-punctuation: #3d4a5c;
+		--prism-property: #1f66b8;
+		--prism-tag: #b3261e;
+		--prism-boolean: #8a5a00;
+		--prism-number: #8a5a00;
+		--prism-constant: #8a5a00;
+		--prism-symbol: #8a5a00;
+		--prism-deleted: #b3261e;
+		--prism-selector: #0a6b45;
+		--prism-attr-name: #0a6b45;
+		--prism-string: #0a6b45;
+		--prism-char: #0a6b45;
+		--prism-builtin: #0a6b45;
+		--prism-inserted: #0a6b45;
+		--prism-operator: #0b0f14;
+		--prism-entity: #0b0f14;
+		--prism-url: #0b0f14;
+		--prism-atrule: #1f66b8;
+		--prism-attr-value: #1f66b8;
+		--prism-keyword: #1f66b8;
+		--prism-function: #6b3fa0;
+		--prism-class-name: #8a5a00;
+		--prism-regex: #a3330f;
+		--prism-important: #a3330f;
+		--prism-variable: #a3330f;
+	}
+}
+
+@media (prefers-contrast: more) {
+	:root {
+		--muted: var(--text);
+		--line: var(--border);
+	}
+}

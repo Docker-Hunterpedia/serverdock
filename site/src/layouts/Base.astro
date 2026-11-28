@@ -1,5 +1,7 @@
 ---
-import '../styles/base.css';
+import '../styles/tokens.css';
+import '../styles/global.css';
+import '../styles/components.css';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import { SITE } from '../config';
@@ -10,8 +12,10 @@ interface Props {
 	/** Path with leading and trailing slash, e.g. "/features/". */
 	path: string;
 	noindex?: boolean;
+	/** Use the docs layout: the sidebar slot comes before <main> in the DOM. */
+	docs?: boolean;
 }
-const { title, description, path, noindex = false } = Astro.props;
+const { title, description, path, noindex = false, docs = false } = Astro.props;
 const fullTitle = `${title} · ServerDock`;
 const canonical = SITE + path;
 ---
@@ -38,9 +42,12 @@ const canonical = SITE + path;
 	<body>
 		<a class="skip-link" href="#main">Skip to main content</a>
 		<Header />
-		<main id="main" tabindex="-1">
-			<slot />
-		</main>
+		<div class={docs ? 'page page--docs' : 'page'}>
+			<slot name="sidebar" />
+			<main id="main" tabindex="-1">
+				<slot />
+			</main>
+		</div>
 		<Footer />
 	</body>
 </html>

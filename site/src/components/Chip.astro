@@ -1,0 +1,6 @@
+---
+interface Props { href: string; }
+const { href } = Astro.props;
+---
+
+<a class="chip" href={href}><slot /></a>

@@ -1,0 +1,10 @@
+---
+interface Props { heading: string; level?: 2 | 3 | 4; }
+const { heading, level = 3 } = Astro.props;
+const H = `h${level}` as 'h2' | 'h3' | 'h4';
+---
+
+<article class="card">
+	<H>{heading}</H>
+	<slot />
+</article>
