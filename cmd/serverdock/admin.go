@@ -148,7 +148,7 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 		fmt.Fprint(stdout, "This clears the admin password, two-factor and recovery codes, signs everyone out and revokes every API token.\nType reset to continue: ")
 		line, _ := in.ReadString('\n')
 		if strings.TrimSpace(line) != "reset" {
-			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; nothing was changed")
+			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; the reset was not done (no sign-in data, tokens or app secrets were changed)")
 			return 1
 		}
 	}
@@ -156,7 +156,7 @@ func adminReset(args []string, stdin io.Reader, tty bool, euid int, stdout, stde
 		fmt.Fprint(stdout, "Type forget to delete them: ")
 		line, _ := in.ReadString('\n')
 		if strings.TrimSpace(line) != "forget" {
-			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; the app secrets and everything else were left as they are")
+			fmt.Fprintln(stderr, "serverdock admin reset: not confirmed; the reset was not done (no sign-in data, tokens or app secrets were changed)")
 			return 1
 		}
 	}

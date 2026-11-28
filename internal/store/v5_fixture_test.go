@@ -128,6 +128,7 @@ func TestV5FixtureOpensAndKeepsItsRows(t *testing.T) {
 	if ok, err := secretbox.CiphertextsExist(ctx, s.R, secretbox.AppColumns()); err != nil || !ok {
 		t.Errorf("AppColumns do not see the fixture's app ciphertexts: %v %v", ok, err)
 	}
+	assertEnvTriggers(t, s)
 	if _, err := s.W.ExecContext(ctx, `UPDATE service_env_versions SET names_json = '[]' WHERE id = 1`); err == nil {
 		t.Error("the env version trigger is gone")
 	}

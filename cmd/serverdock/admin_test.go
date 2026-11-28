@@ -316,7 +316,7 @@ func TestAdminResetNeedsATerminalOrYes(t *testing.T) {
 	// On a terminal, the operator must type "reset".
 	o.Reset()
 	e.Reset()
-	if code := adminReset([]string{"reset", "--data", a.data}, strings.NewReader("no\n"), true, os.Geteuid(), &o, &e); code != 1 || !strings.Contains(e.String(), "nothing was changed") {
+	if code := adminReset([]string{"reset", "--data", a.data}, strings.NewReader("no\n"), true, os.Geteuid(), &o, &e); code != 1 || !strings.Contains(e.String(), "the reset was not done") {
 		t.Fatalf("%d %s", code, e.String())
 	}
 	if dbCount(t, a.data, `SELECT count(*) FROM sessions`) != 1 {

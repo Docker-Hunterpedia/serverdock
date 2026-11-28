@@ -50,9 +50,21 @@ func TestFreshDatabaseHasTheServiceConfigSchema(t *testing.T) {
 			t.Errorf("column %s.%s: %d %v", col[0], col[1], n, err)
 		}
 	}
+	assertEnvTriggers(t, s)
 	var maxV int
 	if err := s.R.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&maxV); err != nil || maxV < 5 {
 		t.Errorf("max version %d %v", maxV, err)
+	}
+}
+
+// A later migration that rebuilds services must recreate these triggers; this fails loudly if it does not.
+func assertEnvTriggers(t *testing.T, s *store.Store) {
+	t.Helper()
+	for _, name := range []string{"services_env_version_own_insert", "services_env_version_own_update", "service_env_versions_immutable"} {
+		var n int
+		if err := s.R.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, name).Scan(&n); err != nil || n != 1 {
+			t.Errorf("trigger %s: %d %v", name, n, err)
+		}
 	}
 }
 
