@@ -1,0 +1,17 @@
+{
+	"//": "Type-checks the screenshot capture and the seed helpers it uses (plan 0014, Revision 3). Node modules are typed loosely by e2e/node-shim.d.ts; what matters here is that mocked API answers satisfy the generated API types.",
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"strict": true,
+		"noImplicitAny": false,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"types": [],
+		"allowImportingTsExtensions": true
+	},
+	"files": ["e2e/node-shim.d.ts"],
+	"include": ["e2e/screens.capture.ts", "e2e/seed.ts"]
+}

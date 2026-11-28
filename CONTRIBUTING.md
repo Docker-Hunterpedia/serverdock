@@ -50,6 +50,21 @@ Do not open public issues for vulnerabilities. See [SECURITY.md](SECURITY.md).
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
+## Refresh screenshots
+
+The public website shows real screenshots of the web UI with demo data (six views, dark and light, in `site/public/screens/`). They are made by `web/e2e/screens.capture.ts` in CI, never by hand. A change to the UI (`web/src/`), the capture, the lockfile or `docs/api/openapi.json` makes them stale, and the `screens` check in CI says so. A Dependabot `web` PR flags it too: a new lockfile usually means a new Chromium.
+
+**Only the CI artifact may be committed.** Local captures differ in fonts and rendering. `make screens` is for previewing only; it writes to a scratch folder, never to `site/public/screens/`.
+
+To refresh:
+
+1. Open the failed or warning `screens-capture` job of the PR's latest run. On a stale `main`, use the latest push run on `main`.
+2. Check that `gh --version` is **2.63.0 or later** (earlier versions have a path traversal in `gh run download`, CVE-2024-54132). Then run `gh run download <run-id> -n site-screens -D site/public/screens`.
+3. Run `git status`. It must show changes **only under `site/public/screens/`**. Stop and report anything else. Commit with the message "Refresh screenshots (run <run-id>)" and push. On a stale `main`, open a PR named "Refresh screenshots" with only that commit.
+4. The re-run of `screens-hash` then takes the fast path, and `screens-capture` is skipped.
+
+If the job reports that committed files are no longer produced, remove them with `git rm`. Review every changed image in the PR: GitHub shows image diffs, and the pictures must show only demo data.
+
 ## The web app
 
 The single-page app lives in `web/` (SvelteKit, static output). Node (see `web/.nvmrc`) is needed only to build it: `go build` and `go test` work without it and embed a placeholder page (`serverdock version` prints `ui=placeholder`).

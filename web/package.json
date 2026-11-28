@@ -10,7 +10,9 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "size": "node scripts/size-check.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "check:e2e": "tsc --noEmit -p tsconfig.e2e.json",
+    "screens": "playwright test -c playwright.screens.config.ts"
   },
   "dependencies": {
     "@sveltejs/kit": "3.4.0",

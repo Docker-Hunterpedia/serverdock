@@ -57,6 +57,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: svelte-check
         run: npm run check
+      - name: type-check the screenshot capture (mocked API answers against api-types.ts)
+        run: npm run check:e2e
       - name: build, gzip and check the 250 KB JavaScript budget
         run: npm run build
       - name: generated API types match docs/api/openapi.json
@@ -237,6 +239,143 @@ jobs:
         if: always()
         run: node e2e/flaky-report.mjs
         working-directory: web
+
+  # Screenshots of the real dashboard for the public website (plan 0014, Revision 3). Two jobs, so the
+  # fast path never waits for the `web` job. `screens-hash` compares the hash of the inputs with the
+  # committed manifest in seconds. `screens-capture` runs only when the set is stale, or on a push to
+  # main that may have changed a view (bench-relevant, screenshots or openapi.json), or nightly: it
+  # captures into a scratch folder, compares bytes with the committed files and uploads the refresh
+  # artifact `site-screens` (changed files plus the manifest). Nothing is ever pushed from CI; the
+  # refresh procedure is in CONTRIBUTING.md. WARNING WEEK: continue-on-error, not a required check.
+  # Once main shows the same bytes for an unchanged hash for a clean week, remove continue-on-error
+  # and the maintainer makes the job `screens` required. Require `screens`, not `screens-capture`:
+  # a required job that is skipped counts as passing, and screens-capture is skipped on the fast path
+  # and whenever `web` or `screens-hash` fails. `screens` always runs and fails in those cases.
+  screens-hash:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      stale: ${{ steps.state.outputs.stale }}
+      paths: ${{ steps.paths.outputs.paths }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: site/.nvmrc
+      - id: state
+        run: node site/scripts/screens.mjs state
+      - id: paths
+        # On a push: did the committed screenshots or the API description change? (verify them on main)
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          paths=false
+          if [ "$EVENT" = push ]; then
+            if [ "${BEFORE#0000000}" = "$BEFORE" ] && git fetch --no-tags --depth=1 origin "$BEFORE" 2>/dev/null; then
+              git diff --name-only "$BEFORE" HEAD | grep -Eq '^(site/public/screens/|docs/api/openapi\.json$)' && paths=true
+            else
+              paths=true
+            fi
+          fi
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+
+  screens-capture:
+    needs: [changes, screens-hash, web]
+    if: >-
+      needs.screens-hash.outputs.stale == 'true' ||
+      needs.screens-hash.outputs.paths == 'true' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.bench == 'true')
+    runs-on: ubuntu-latest
+    continue-on-error: true # warning week (plan 0014, Revision 3)
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      ON_MAIN: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 0 || 1 }} # main verifies the growth entry from history
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build
+      - name: build the binary with the app embedded
+        run: |
+          CGO_ENABLED=0 go build -tags spa -trimpath -o bin/serverdock ./cmd/serverdock
+          bin/serverdock version | tee /dev/stderr | grep -q ' ui=spa$'
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - name: install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: capture the six views (dark and light) into a scratch folder
+        env:
+          SCREENS_OUT: ${{ runner.temp }}/screens-raw
+        run: npm run screens
+        working-directory: web
+      - name: compare with the committed set and write the refresh artifact
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RAW: ${{ runner.temp }}/screens-raw
+          OUT: ${{ runner.temp }}/screens-out
+        run: |
+          set -eu
+          RUNNER_IMAGE="$(printf '%s-%s' "${ImageOS:-unknown}" "${ImageVersion:-unknown}" | tr -c 'A-Za-z0-9._ -' '_' | cut -c1-64)"
+          chromium_bin="$(cd web && node -e "import('@playwright/test').then((m) => console.log(m.chromium.executablePath()))")"
+          CHROMIUM="$("$chromium_bin" --version | tr -c 'A-Za-z0-9._ -' '_' | sed 's/[ _]*$//' | cut -c1-64)"
+          export RUNNER_IMAGE CHROMIUM
+          flags=""
+          [ "$ON_MAIN" = true ] && flags="--main"
+          status=0
+          node site/scripts/screens.mjs finish --raw "$RAW" --committed site/public/screens --out "$OUT" $flags || status=$?
+          if [ "$ON_MAIN" = true ]; then node site/scripts/screens.mjs verify-growth || status=$?; fi
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: site-screens
+          path: ${{ runner.temp }}/screens-out
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The one job to require: always runs, and fails when the hash job did not succeed, or the set is
+  # stale (or main needs verifying) and the capture did not succeed.
+  screens:
+    needs: [screens-hash, screens-capture]
+    if: always()
+    runs-on: ubuntu-latest
+    continue-on-error: true # warning week, like screens-capture
+    timeout-minutes: 5
+    steps:
+      - name: the screenshots are fresh, or were captured and match
+        env:
+          HASH_RESULT: ${{ needs.screens-hash.result }}
+          CAPTURE_RESULT: ${{ needs.screens-capture.result }}
+          STALE: ${{ needs.screens-hash.outputs.stale }}
+        run: |
+          echo "screens-hash: $HASH_RESULT (stale: $STALE), screens-capture: $CAPTURE_RESULT"
+          [ "$HASH_RESULT" = success ] || { echo "the hash job did not succeed"; exit 1; }
+          case "$CAPTURE_RESULT" in
+            success) ;;
+            skipped) [ "$STALE" != true ] || { echo "the screenshots are stale and the capture did not run (did the web job fail?)"; exit 1; } ;;
+            *) echo "the capture job did not succeed"; exit 1 ;;
+          esac
 
   build:
     needs: [lint-test, web]

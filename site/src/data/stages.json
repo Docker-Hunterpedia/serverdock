@@ -1,0 +1,10 @@
+[
+  { "key": "pull", "label": "Pull the image" },
+  { "key": "check", "label": "Checks" },
+  { "key": "start", "label": "Start the new version" },
+  { "key": "health", "label": "Health check" },
+  { "key": "switch", "label": "Switch traffic" },
+  { "key": "commit", "label": "Record the switch" },
+  { "key": "drain", "label": "Drain the old version" },
+  { "key": "stop_old", "label": "Retire the old version" }
+]

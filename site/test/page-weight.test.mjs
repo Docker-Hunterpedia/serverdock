@@ -154,3 +154,80 @@ test('CLI writes the table to GITHUB_STEP_SUMMARY', () => {
 		assert.match(readFileSync(sum, 'utf8'), /### Page weight[\s\S]*\| \/ \|/);
 	} finally { cleanup(d); cleanup(tmp); }
 });
+
+// ---- gate 11: screenshots (Revision 3) ----
+const shot = (n, size) => [`screens/${n}.webp`, randomBytes(size)];
+const pic = (id, { eager = false, dark = 800, light = 800 } = {}) =>
+	`<picture><source media="print, (prefers-color-scheme: light)" srcset="/screens/${id}-light-${light}.webp ${light}w"><img src="/screens/${id}-dark-${dark}.webp" srcset="/screens/${id}-dark-${dark}.webp ${dark}w" width="800" height="500" alt="a" decoding="async"${eager ? ' fetchpriority="high"' : ' loading="lazy"'}></picture>`;
+const files = (...pairs) => Object.fromEntries(pairs);
+
+test('gate 11: a Home with one eager image and lazy images passes, and counts the worst case, not the sum', () => {
+	const r = run({
+		'index.html': page(pic('a', { eager: true }) + pic('b'), css),
+		...files(shot('a-dark-800', 40000), shot('a-light-800', 40000), shot('b-dark-800', 40000), shot('b-light-800', 40000)),
+	});
+	assert.deepEqual(r.errs, []);
+	assert.equal(r.rows[0].images, 80000); // 40 KB + 40 KB, one candidate per picture
+	assert.equal(r.rows[0].requests, 3, 'html + css + the eager image; lazy images are not first-view requests');
+});
+
+test('gate 11: the heavier theme decides the worst case of a picture', () => {
+	const r = run({ 'index.html': page(pic('a', { eager: true }), css), ...files(shot('a-dark-800', 10000), shot('a-light-800', 45000)) });
+	assert.equal(r.rows[0].images, 45000);
+});
+
+test('gate 11: Home images over 190 KB (worst case) fail', () => {
+	const r = run({
+		'index.html': page(pic('a', { eager: true, dark: 1600, light: 1600 }) + pic('b', { dark: 1600, light: 1600 }), css),
+		...files(shot('a-dark-1600', 119000), shot('a-light-1600', 100000), shot('b-dark-1600', 119000), shot('b-light-1600', 100000)),
+	});
+	assert.ok(r.errs.some((e) => /^\/: screenshots \d+ bytes \(worst case\), over 190000/.test(e)), r.errs.join());
+});
+
+test('gate 11: a second eager image fails, and the eager image is capped at 120 KB', () => {
+	let r = run({ 'index.html': page(pic('a', { eager: true }) + pic('b', { eager: true }), css), ...files(shot('a-dark-800', 20000), shot('a-light-800', 20000), shot('b-dark-800', 20000), shot('b-light-800', 20000)) });
+	assert.ok(r.errs.some((e) => /2 eager images, at most 1/.test(e)));
+	r = run({ 'index.html': page(pic('a', { eager: true, dark: 1600, light: 1600 }), css), ...files(shot('a-dark-1600', 125000), shot('a-light-1600', 10000)) });
+	assert.ok(r.errs.some((e) => /the eager image is 125000 bytes, over 120000/.test(e)));
+});
+
+test('gate 11: more than 5 first-view requests on Home fails', () => {
+	const extra = '<img src="/i1.png" alt=""><img src="/i2.png" alt="">';
+	const r = run({ 'index.html': page(extra + pic('a', { eager: true }), css + '<link rel="icon" href="/f.svg">'), 'i1.png': 'x', 'i2.png': 'y', 'f.svg': '<svg/>', ...files(shot('a-dark-800', 20000), shot('a-light-800', 20000)) });
+	assert.ok(r.errs.some((e) => /6 requests, at most 5/.test(e)), r.errs.join());
+});
+
+test('gate 11: a screenshot file over its cap fails, by width', () => {
+	for (const [name, size] of [['a-dark-800', 50001], ['a-dark-1600', 120001], ['a-dark-300', 25001], ['a-dark-600', 60001]]) {
+		const r = run({ 'index.html': page('', css), ...files(shot(name, size)) });
+		assert.ok(r.errs.some((e) => /over the \d+ cap/.test(e)), name);
+	}
+	assert.deepEqual(run({ 'index.html': page('', css), ...files(shot('a-dark-800', 50000), shot('a-dark-1600', 120000), shot('a-dark-300', 25000), shot('a-dark-600', 60000)) }).errs, []);
+	assert.ok(run({ 'index.html': page('', css), ...files(shot('a-dark-999', 100)) }).errs.some((e) => /has no cap/.test(e)));
+});
+
+test('gate 11: the screenshot files in total are capped at 2 MB', () => {
+	const many = Object.fromEntries(Array.from({ length: 18 }, (_, i) => shot(`s${i}-dark-1600`, 115000)));
+	const r = run({ 'index.html': page('', css), ...many });
+	assert.ok(r.errs.some((e) => /screenshot files total/.test(e)));
+});
+
+test('gate 11: screenshots on any page other than Home and Features fail; Features has a 700 KB ceiling', () => {
+	const f = files(shot('a-dark-800', 20000), shot('a-light-800', 20000));
+	assert.ok(run({ 'about/index.html': page(pic('a', { eager: true }), css), ...f }).errs.some((e) => /Home and Features only/.test(e)));
+	assert.deepEqual(run({ 'features/index.html': page(pic('a', { eager: true }), css), ...f }).errs, []);
+	const six = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`screens/p${i}-dark-1600.webp`, randomBytes(119000)]));
+	const six2 = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`screens/p${i}-light-1600.webp`, randomBytes(119000)]));
+	const html = Array.from({ length: 6 }, (_, i) => pic(`p${i}`, { eager: i === 0, dark: 1600, light: 1600 })).join('');
+	const r = run({ 'features/index.html': page(html, css), ...six, ...six2 });
+	assert.ok(r.errs.some((e) => /^\/features\/: screenshots \d+ bytes \(worst case\), over 700000/.test(e)), r.errs.join());
+});
+
+test('gate 11: a missing screenshot file is named', () => {
+	assert.ok(run({ 'index.html': page(pic('a', { eager: true }), css) }).errs.some((e) => /is named but missing/.test(e)));
+});
+
+test('gate 11: a screenshot named in CSS url() fails', () => {
+	const r = run({ 'index.html': page('', css), '_astro/a.css': 'a{background:url(/screens/a-dark-800.webp)}', ...files(shot('a-dark-800', 1000)) });
+	assert.ok(r.errs.some((e) => /named in CSS url\(\)/.test(e)), r.errs.join());
+});

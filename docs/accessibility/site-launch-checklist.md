@@ -42,6 +42,12 @@ Playwright with `@axe-core/playwright` runs against `site/scripts/serve.mjs`, wh
 | 15 | Zero CSP violations in the console on every page type, on the custom domain | Chrome DevTools | | | |
 | 16 | One Lighthouse run, recorded for information only | Lighthouse | | | |
 | 17 | Safari on macOS with Option+Tab (or Full Keyboard Access): the skip link comes first and moves focus to `main`; the focus ring is visible on every link and summary, on every page type | Keyboard, Safari on macOS | | | |
+| 18 | Screenshot figures: alt text of every figure read (Home and Features) so it names the on-screen labels and says nothing the page text does not | VoiceOver, Safari; NVDA, Firefox | | | |
+| 19 | The screenshots switch between the dark and light image with the OS theme, with no reload | OS setting, any browser | | | |
+| 20 | A forced-colours screenshot of a figure: the frame and the "Demo data" badge keep their borders | Windows high contrast, Edge; screenshot attached | | | |
+| 21 | Home at 400% zoom: the hero image scales to the column, no horizontal scroll, the h1 and sub line come first | Chrome or Firefox | | | |
+| 22 | Print preview of Features: the light images are used, the full-size links are hidden, the stage ticks and meter keep their border | Any browser | | | |
+| 23 | The full-size link under a desktop figure: its name says it opens the image file; it opens the bare image in the same tab; the browser's Back returns to the page with focus on the link | Keyboard, Safari and Firefox | | | |
 
 A 1 GB VPS check is not relevant: nothing runs on the user's server.
 

@@ -82,3 +82,59 @@ test.describe('styleguide components', () => {
 		expect(await page.evaluate(() => getComputedStyle(document.documentElement).scrollBehavior)).toBe('auto');
 	});
 });
+
+test.describe('screenshot figures (Screen)', () => {
+	test('the figure has a decorative badge, dimensions, a caption ending in the Demo data sentence and a picture source for light', async ({ page }) => {
+		await page.goto('/styleguide/');
+		const fig = page.locator('figure.screen').first();
+		await expect(fig.locator('.badge')).toHaveAttribute('aria-hidden', 'true');
+		const img = fig.locator('img');
+		for (const a of ['width', 'height', 'alt']) expect(await img.getAttribute(a), a).toBeTruthy();
+		await expect(img).toHaveAttribute('decoding', 'async');
+		await expect(fig.locator('source')).toHaveAttribute('media', 'print, (prefers-color-scheme: light)');
+		await expect(fig.locator('figcaption')).toContainText('Demo data: the states are staged with seeded rows and mocked API responses.');
+		expect((await fig.locator('figcaption').innerText()).trim().endsWith('mocked API responses.')).toBe(true);
+	});
+
+	test('one full-size link per theme: only the one for the active theme is in the page, with a unique name, in the same tab', async ({ page }, info) => {
+		test.skip(!['dark', 'light'].includes(info.project.name), 'dark and light projects only');
+		await page.goto('/styleguide/');
+		const visible = page.locator('figure.screen').first().locator('.screen-full a:visible');
+		await expect(visible).toHaveCount(1);
+		await expect(visible).toContainText(`${info.project.name} theme`);
+		await expect(visible).toContainText('Open the full-size image file');
+		expect(await visible.getAttribute('target')).toBeNull();
+		const box = (await visible.boundingBox())!;
+		expect(box.height).toBeGreaterThanOrEqual(44);
+	});
+
+	test('the phone figure has no full-size link and is at most 300 px wide', async ({ page }) => {
+		await page.goto('/styleguide/');
+		const fig = page.locator('figure.screen--phone');
+		await expect(fig.locator('.screen-full')).toHaveCount(0);
+		expect((await fig.boundingBox())!.width).toBeLessThanOrEqual(301);
+	});
+
+	test('only the eager image loads on the first view at 320 px; lazy images wait', async ({ page }, info) => {
+		test.skip(info.project.name !== 'phone-320', '320 px only');
+		// The lazy figure is far below the first screen, so a browser that honours loading="lazy" never requests it
+		// without scrolling. Browsers may fetch lazy images near the viewport, so the request count alone could pass or
+		// fail by layout: assert the markup (the lasting guarantee) and then the count, and keep the lazy figure far down.
+		const seen: string[] = [];
+		page.on('request', (r) => {
+			if (r.url().includes('/styleguide/screens/')) seen.push(new URL(r.url()).pathname);
+		});
+		await page.goto('/styleguide/');
+		await page.waitForLoadState('load');
+		await page.waitForTimeout(300);
+		const imgs = page.locator('figure.screen img');
+		expect(await imgs.count()).toBe(2);
+		expect(await imgs.nth(0).getAttribute('loading'), 'the eager image has no loading attribute').toBeNull();
+		expect(await imgs.nth(0).getAttribute('fetchpriority')).toBe('high');
+		expect(await imgs.nth(1).getAttribute('loading')).toBe('lazy');
+		const below = await imgs.nth(1).evaluate((el) => el.getBoundingClientRect().top - window.innerHeight);
+		expect(below, 'the lazy figure is more than two screens below the first view').toBeGreaterThan(1136);
+		expect(seen, 'screenshot requests before any scrolling').toHaveLength(1);
+		expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+	});
+});

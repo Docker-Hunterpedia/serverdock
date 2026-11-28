@@ -15,3 +15,4 @@ Rules:
 - Keep the footprint promise: no new background loops, caches, or containers unless the plan says so. Prefer the standard library.
 - Never log or return secrets. Validate all input at the boundary.
 - Report: what changed (files), test output, anything that deviated from the plan, and which reviews are needed next.
+- Screenshots of the web UI on the public website are made in CI. After a change under `web/src/`, `web/e2e/screens.capture.ts`, `web/package-lock.json` or `docs/api/openapi.json`, the `screens` check reports stale. Refresh them from the CI artifact, never from a local capture: check `gh --version` is 2.63.0 or later, run `gh run download <run-id> -n site-screens -D site/public/screens`, check `git status` shows changes only under `site/public/screens/`, and commit "Refresh screenshots (run <run-id>)". The full steps are in `CONTRIBUTING.md` ("Refresh screenshots"). If your token cannot download artifacts, stop and ask the maintainer to do it.
