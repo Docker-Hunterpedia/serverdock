@@ -26,41 +26,120 @@ const read = (p) => readFileSync(p, 'utf8');
 // A start tag, allowing ">" inside quoted attribute values.
 const TAG = /<([a-zA-Z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
 
-/** Gate 1: no <script>, <style>, on*= or style= in any HTML or SVG file. */
+const attrOf = (attrs, name) => {
+	const m = new RegExp(`(?:^|[\\s"'/])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(attrs);
+	return m ? (m[1] ?? m[2] ?? m[3]) : null;
+};
+
+/**
+ * Gate 1: no <script>, <style>, on*= , style=, javascript: URLs or meta refresh in
+ * any HTML, XHTML, SVG or XML file. Attributes may follow "/", a quote or space.
+ */
 export function gateNoInlineCode(dist) {
 	const errs = [];
 	for (const f of walk(dist)) {
-		if (!/\.(html|svg)$/i.test(f)) continue;
+		if (!/\.(html?|xhtml|svg|xml)$/i.test(f)) continue;
+		const name = rel(dist, f);
 		const src = read(f);
+		// Whole-file check: a stray quote can make the tag scanner swallow a real <script>.
+		const el = /<\s*\/?\s*(script|style)\b/i.exec(src);
+		if (el) errs.push(`${name}: <${el[1].toLowerCase()}> element`);
 		for (const m of src.matchAll(TAG)) {
-			const name = m[1].toLowerCase();
-			if (name === 'script') errs.push(`${rel(dist, f)}: <script> element`);
-			if (name === 'style') errs.push(`${rel(dist, f)}: <style> element`);
-			if (/\s(on[a-z]+)\s*=/i.test(' ' + m[2])) errs.push(`${rel(dist, f)}: on*= attribute on <${name}>`);
-			if (/\sstyle\s*=/i.test(' ' + m[2])) errs.push(`${rel(dist, f)}: style= attribute on <${name}>`);
+			const tag = m[1].toLowerCase();
+			const attrs = m[2];
+			if (/(?:^|[\s"'/])on[a-z]+\s*=/i.test(attrs)) errs.push(`${name}: on*= attribute on <${tag}>`);
+			if (/(?:^|[\s"'/])style\s*=/i.test(attrs)) errs.push(`${name}: style= attribute on <${tag}>`);
+			for (const a of ['href', 'src', 'action', 'formaction', 'data', 'xlink:href']) {
+				const v = attrOf(attrs, a);
+				if (v !== null && /^[\s\x00-\x20]*javascript:/i.test(v)) errs.push(`${name}: javascript: URL in ${a} on <${tag}>`);
+			}
+			if (tag === 'meta' && /^\s*refresh\s*$/i.test(attrOf(attrs, 'http-equiv') ?? '')) errs.push(`${name}: <meta http-equiv="refresh">`);
 		}
 	}
 	return errs;
 }
 
-/** Gate 2: _headers exists and forbids scripts. */
+/**
+ * Parse a Cloudflare _headers file. Returns [{ pattern, headers: [[name, value]] }].
+ * A "! Name" detach line is kept as ['!', name]. "#" lines are comments. Rules whose
+ * pattern is a host (https://...) are kept only with { hosts: true }.
+ */
+export function parseHeaders(text, { hosts = false } = {}) {
+	const rules = [];
+	let cur = null;
+	for (const line of text.split('\n')) {
+		if (line.trim() === '' || line.trim().startsWith('#')) continue;
+		if (!/^\s/.test(line)) {
+			const pat = line.trim();
+			cur = pat.startsWith('/') || (hosts && /^https?:\/\//.test(pat)) ? { pattern: pat, headers: [] } : null;
+			if (cur) rules.push(cur);
+		} else if (cur) {
+			const t = line.trim();
+			if (t.startsWith('!')) cur.headers.push(['!', t.slice(1).trim()]);
+			else {
+				const i = t.indexOf(':');
+				if (i > 0) cur.headers.push([t.slice(0, i).trim(), t.slice(i + 1).trim()]);
+			}
+		}
+	}
+	return rules;
+}
+
+const directive = (csp, name) => {
+	const parts = csp.split(';').map((d) => d.trim().split(/\s+/)).filter((d) => d[0] !== '');
+	return parts.find((d) => d[0].toLowerCase() === name)?.slice(1) ?? null;
+};
+const isNone = (t) => t !== null && t.length === 1 && t[0].toLowerCase() === "'none'";
+
+/** Gate 2: _headers has one /* rule with one CSP (script-src and default-src exactly 'none'). */
 export function gateHeaders(dist) {
 	const p = join(dist, '_headers');
 	if (!existsSync(p)) return ['_headers is missing'];
-	if (!read(p).includes("script-src 'none'")) return ["_headers has no script-src 'none'"];
-	return [];
+	const rules = parseHeaders(read(p), { hosts: true });
+	const errs = [];
+	for (const r of rules) {
+		for (const [k, v] of r.headers) {
+			if (k === '!') errs.push(`_headers: "! ${v}" detaches a header under ${r.pattern}`);
+			else if (/^content-security-policy-report-only$/i.test(k)) errs.push(`_headers: Content-Security-Policy-Report-Only under ${r.pattern}`);
+		}
+	}
+	const csps = (r) => r.headers.filter(([k]) => /^content-security-policy$/i.test(k)).map(([, v]) => v);
+	const roots = rules.filter((r) => r.pattern === '/*');
+	if (roots.length !== 1) errs.push('_headers must have exactly one /* rule');
+	else {
+		const c = csps(roots[0]);
+		if (c.length !== 1) errs.push('_headers /* rule must set exactly one Content-Security-Policy');
+		else {
+			if (!isNone(directive(c[0], 'script-src'))) errs.push("_headers CSP: script-src must be exactly 'none'");
+			if (!isNone(directive(c[0], 'default-src'))) errs.push("_headers CSP: default-src must be exactly 'none'");
+		}
+	}
+	for (const r of rules) {
+		if (r.pattern === '/*') continue;
+		for (const c of csps(r)) if (!isNone(directive(c, 'script-src'))) errs.push(`_headers: CSP under ${r.pattern} lacks script-src 'none'`);
+	}
+	return errs;
 }
 
-/** Gate 3: security.txt exists and Expires is at least 30 days away. */
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i;
+
+/** Gate 3: security.txt has Contact and one Expires, 30 days to 11 months away. */
 export function gateSecurityTxt(dist, now = Date.now()) {
 	const p = join(dist, '.well-known', 'security.txt');
 	if (!existsSync(p)) return ['.well-known/security.txt is missing'];
-	const m = /^Expires:[ \t]*(\S+)[ \t]*$/im.exec(read(p));
-	if (!m) return ['security.txt has no Expires field'];
-	const t = Date.parse(m[1]);
-	if (Number.isNaN(t)) return ['security.txt Expires is not a date'];
-	if (t - now < MIN_EXPIRY_DAYS * DAY) return [`security.txt Expires is less than ${MIN_EXPIRY_DAYS} days away`];
-	return [];
+	const text = read(p);
+	const errs = [];
+	if (!/^Contact:[ \t]*\S/im.test(text)) errs.push('security.txt has no Contact field');
+	const ex = [...text.matchAll(/^Expires:[ \t]*(.*?)[ \t]*$/gim)];
+	if (ex.length === 0) return [...errs, 'security.txt has no Expires field'];
+	if (ex.length > 1) return [...errs, 'security.txt has more than one Expires field'];
+	if (!RFC3339.test(ex[0][1]) || Number.isNaN(Date.parse(ex[0][1]))) return [...errs, 'security.txt Expires is not an RFC 3339 date-time with a timezone'];
+	const t = Date.parse(ex[0][1]);
+	const max = new Date(now);
+	max.setUTCMonth(max.getUTCMonth() + 11);
+	if (t - now < MIN_EXPIRY_DAYS * DAY) errs.push(`security.txt Expires is less than ${MIN_EXPIRY_DAYS} days away`);
+	if (t > max.getTime()) errs.push('security.txt Expires is more than 11 months away');
+	return errs;
 }
 
 /** Gate 4: no Pages Functions or worker output. */
@@ -73,24 +152,28 @@ export function gateNoStyleguide(dist) {
 	return existsSync(join(dist, 'styleguide')) ? ['styleguide/ must not exist in a production build'] : [];
 }
 
-/** Gate 6: the dist/docs/<slug>/ routes equal the expected set. */
+/** Gate 6: every HTML file under dist/docs is <slug>/index.html, and the slugs equal the allowlist. */
 export function gateDocsRoutes(dist, expected) {
 	const base = join(dist, 'docs');
-	const got = existsSync(base)
-		? readdirSync(base, { withFileTypes: true })
-				.filter((e) => e.isDirectory() && existsSync(join(base, e.name, 'index.html')))
-				.map((e) => e.name)
-		: [];
+	const errs = [];
+	const got = [];
+	for (const f of walk(base)) {
+		if (!/\.html?$/i.test(f)) continue;
+		const r = relative(base, f).split(sep).join('/');
+		if (r === 'index.html') continue;
+		if (!r.endsWith('/index.html')) errs.push(`docs/${r} is not a directory route`);
+		else got.push(r.slice(0, -'/index.html'.length));
+	}
 	const want = new Set(expected);
 	const have = new Set(got);
 	return [
+		...errs,
 		...got.filter((s) => !want.has(s)).map((s) => `docs/${s}/ is published but not in the allowlist`),
 		...expected.filter((s) => !have.has(s)).map((s) => `docs/${s}/ is in the allowlist but not built`),
 	];
 }
 
 const ATTR = /\s(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
-const ID = /\s(?:id|name)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 /** Gate 7: every same-site href/src resolves to a file, and every #id exists. */
 export function gateLinks(dist) {
@@ -101,7 +184,14 @@ export function gateLinks(dist) {
 	const idsOf = (file) => {
 		if (!ids.has(file)) {
 			const set = new Set();
-			for (const m of read(file).matchAll(ID)) set.add(m[1] ?? m[2]);
+			for (const m of read(file).matchAll(TAG)) {
+				const id = attrOf(m[2], 'id');
+				if (id !== null) set.add(id);
+				if (m[1].toLowerCase() === 'a') {
+					const nm = attrOf(m[2], 'name');
+					if (nm !== null) set.add(nm);
+				}
+			}
 			ids.set(file, set);
 		}
 		return ids.get(file);

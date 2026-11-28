@@ -5,30 +5,17 @@
 //   node scripts/serve.mjs <dist> [port]      (listens on 127.0.0.1 only)
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { extname, join, resolve, sep } from 'node:path';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseHeaders } from './gates.mjs';
+
+export { parseHeaders };
 
 const TYPES = {
 	'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
 	'.png': 'image/png', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml',
 };
 
-/** Parse _headers into [{ pattern, headers: [[name, value]] }], skipping https:// host rules. */
-export function parseHeaders(text) {
-	const rules = [];
-	let cur = null;
-	for (const line of text.split('\n')) {
-		if (line.trim() === '') continue;
-		if (!/^\s/.test(line)) {
-			cur = line.trim().startsWith('/') ? { pattern: line.trim(), headers: [] } : null;
-			if (cur) rules.push(cur);
-		} else if (cur) {
-			const i = line.indexOf(':');
-			if (i > 0) cur.headers.push([line.slice(0, i).trim(), line.slice(i + 1).trim()]);
-		}
-	}
-	return rules;
-}
 const matches = (pattern, path) => (pattern.endsWith('*') ? path.startsWith(pattern.slice(0, -1)) : path === pattern);
 
 export function createSiteServer(dist) {
@@ -45,14 +32,22 @@ export function createSiteServer(dist) {
 		let status = 200;
 		const inside = !path.includes('\0') && (file === root || file.startsWith(root + sep));
 		if (inside && existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
-		if (!inside || !existsSync(file) || !statSync(file).isFile() || file.endsWith(`${sep}_headers`)) {
+		if (!inside || !existsSync(file) || !statSync(file).isFile() || basename(file).toLowerCase() === '_headers') {
 			status = 404;
 			file = join(root, '404.html');
 		}
 		const headers = { 'Content-Type': TYPES[extname(file)] ?? 'application/octet-stream' };
-		for (const r of rules) if (matches(r.pattern, path)) for (const [k, v] of r.headers) headers[k] = v;
+		for (const r of rules) {
+			if (!matches(r.pattern, path)) continue;
+			for (const [k, v] of r.headers) {
+				if (k === '!') delete headers[v];
+				else headers[k] = v;
+			}
+		}
+		const body = existsSync(file) ? readFileSync(file) : 'Not found\n';
+		if (!existsSync(file)) headers['Content-Type'] = 'text/plain; charset=utf-8';
 		res.writeHead(status, headers);
-		res.end(req.method === 'HEAD' ? undefined : readFileSync(file));
+		res.end(req.method === 'HEAD' ? undefined : body);
 	});
 }
 
